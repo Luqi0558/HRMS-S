@@ -2,21 +2,31 @@
 
 namespace Database\Seeders;
 
-// use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
+/**
+ * Runs inside a tenant context: `php artisan tenants:seed`.
+ *
+ * Plain `db:seed` would write to the central database, which holds only
+ * tenants and domains — none of these tables exist there.
+ */
 class DatabaseSeeder extends Seeder
 {
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // \App\Models\User::factory(10)->create();
+        // Required for the app to function at all: without the permission grid
+        // every can() check denies, so a signed-in user reaches no page.
+        $this->call([
+            RolePermissionSeeder::class,
+            SettingsListSeeder::class,
+        ]);
 
-        // \App\Models\User::factory()->create([
-        //     'name' => 'Test User',
-        //     'email' => 'test@example.com',
-        // ]);
+        // Demo accounts share a known password, so they are gated on
+        // environment rather than left to a deployer to remember to skip.
+        if (app()->environment(['local', 'testing'])) {
+            $this->call(DemoUserSeeder::class);
+        } else {
+            $this->command?->warn('Skipping DemoUserSeeder outside local/testing.');
+        }
     }
 }
