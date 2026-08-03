@@ -39,7 +39,18 @@ class Kernel extends HttpKernel
         ],
 
         'api' => [
-            \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
+            // EnsureFrontendRequestsAreStateful is deliberately NOT here.
+            //
+            // It switches Sanctum to cookie-session authentication for requests
+            // whose origin appears in SANCTUM_STATEFUL_DOMAINS, which then
+            // requires a CSRF token — a browser POST to /api/login failed with
+            // "CSRF token mismatch" while curl succeeded, because curl sends no
+            // Origin header.
+            //
+            // This API issues Bearer tokens and the SPA runs on its own origin,
+            // so there is no session to protect and no cookie to forge. If a
+            // same-origin cookie SPA is ever added, this goes back and the
+            // client must call /sanctum/csrf-cookie first.
             \Illuminate\Routing\Middleware\ThrottleRequests::class.':api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
         ],
