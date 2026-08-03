@@ -1,0 +1,119 @@
+﻿<script setup>
+// Role router for the dashboard: picks the component for the current role and
+// hosts the two modals that more than one role opens.
+import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useStore } from '../store/index.js'
+import TicketDetailModal from '../components/TicketDetailModal.vue'
+import CameraCheckInModal from '../components/CameraCheckInModal.vue'
+import TeamLeadDashboard from '../components/TeamLeadDashboard.vue'
+import EmployeeDashboard from '../components/EmployeeDashboard.vue'
+import ManagerDashboard from '../components/ManagerDashboard.vue'
+import HrDashboard from '../components/HrDashboard.vue'
+import SuperAdminDashboard from '../components/SuperAdminDashboard.vue'
+
+const router = useRouter()
+const { state, can } = useStore()
+
+// Modules a non-standard role can reach, driven by the permission table.
+const fallbackLinks = computed(() => [
+  { name: 'projects', label: 'Projects', module: 'Projects' },
+  { name: 'leave-requests', label: 'Leave Requests', module: 'Leave Request' },
+  { name: 'medical-claims', label: 'Medical Claims', module: 'Medical Request' },
+  { name: 'payroll', label: 'Payroll', module: 'Payroll' },
+  { name: 'reports', label: 'Reports', module: 'Reports' },
+  { name: 'messages', label: 'Messages', module: 'Messages' },
+  { name: 'company-hub', label: 'Company Hub', module: 'Company Hub' },
+  { name: 'profile', label: 'My Profile', module: null }
+].filter(link => !link.module || can(link.module, 'view')))
+
+const isTeamLead = computed(() => state.currentUser.role === 'team_lead')
+const isSuperAdmin = computed(() => state.currentUser.role === 'super_admin')
+const isManager = computed(() => state.currentUser.role === 'manager')
+const isEmployee = computed(() => state.currentUser.role === 'employee')
+const isHR = computed(() => state.currentUser.role === 'hr')
+const dashboardTicket = ref(null)
+const dashboardTicketDraft = ref(null)
+const dashboardNewComment = ref('')
+const dashboardNewAttachmentName = ref('')
+function goToRoute(route) {
+  if (!route) return
+  router.push(route)
+}
+
+function openDashboardTicket(ticket) {
+  dashboardTicket.value = ticket
+  dashboardTicketDraft.value = {
+    title: ticket.title,
+    description: ticket.description || '',
+    status: ticket.status,
+    priority: ticket.priority,
+    assigneeId: ticket.assigneeId,
+    assignedById: ticket.assignedById || null,
+    deadline: ticket.deadline || ''
+  }
+  dashboardNewComment.value = ''
+  dashboardNewAttachmentName.value = ''
+}
+
+function closeDashboardTicket() {
+  dashboardTicket.value = null
+  dashboardTicketDraft.value = null
+  dashboardNewComment.value = ''
+  dashboardNewAttachmentName.value = ''
+}
+
+</script>
+
+<template>
+  <!-- Single root. The role branch plus the two modals are three root nodes
+       otherwise, and a fragment root breaks patching when the modals mount
+       (Vue throws "Cannot read properties of null (reading 'parentNode')"). -->
+  <div>
+  <!-- EMPLOYEE DASHBOARD -->
+  <EmployeeDashboard v-if="isEmployee" @open-ticket="openDashboardTicket" />
+
+  <!-- MANAGER DASHBOARD -->
+  <ManagerDashboard v-else-if="isManager" />
+
+  <!-- HR DASHBOARD -->
+  <HrDashboard v-else-if="isHR" />
+
+  <!-- SUPER ADMIN DASHBOARD -->
+  <!-- Team Lead: a working engineer who also runs a squad. Top row is their
+       own IC work; everything below is the modules they lead. Deliberately no
+       budgets, commissions, or company-wide attendance. -->
+  <TeamLeadDashboard v-else-if="isTeamLead" @open-ticket="openDashboardTicket" />
+
+  <!-- Super admin overview. Explicitly gated: a bare v-else here served this
+       full finance/company dashboard to ANY role that was not employee,
+       manager, or HR. -->
+  <SuperAdminDashboard v-else-if="isSuperAdmin" />
+
+  <!-- Any role outside the four built-in dashboards (e.g. a custom role added
+       via Access Control) gets a neutral overview instead of falling through
+       to another role's page. -->
+  <div v-else class="space-y-6">
+    <div>
+      <div class="text-2xl font-bold text-slate-900">Welcome, {{ state.currentUser.name }}</div>
+      <div class="text-sm text-slate-600 mt-1">Here is what you have access to.</div>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <button
+        v-for="link in fallbackLinks"
+        :key="link.name"
+        @click="goToRoute({ name: link.name })"
+        class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm text-left hover:border-slate-300 transition-colors"
+      >
+        <div class="text-sm font-bold text-slate-900">{{ link.label }}</div>
+        <div class="text-xs text-slate-500 mt-1">Open {{ link.label.toLowerCase() }}</div>
+      </button>
+    </div>
+  </div>
+
+  <CameraCheckInModal />
+
+  <!-- Ticket detail, shared by the Employee and Team Lead dashboards. -->
+  <TicketDetailModal :ticket="dashboardTicket" @close="closeDashboardTicket" />
+  </div>
+</template>

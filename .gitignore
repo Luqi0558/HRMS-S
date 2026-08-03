@@ -1,0 +1,47 @@
+# Monorepo: the Vue SPA at the root, the Laravel API in orbit-hrms-api/.
+# One repo covers both, so a schema change and the frontend change that
+# depends on it land in the same commit.
+
+# --- Frontend ---------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# --- Laravel API ------------------------------------------------------------
+orbit-hrms-api/vendor/
+orbit-hrms-api/node_modules/
+orbit-hrms-api/public/build/
+orbit-hrms-api/public/hot
+orbit-hrms-api/public/storage
+orbit-hrms-api/storage/*.key
+orbit-hrms-api/storage/framework/cache/*
+orbit-hrms-api/storage/framework/sessions/*
+orbit-hrms-api/storage/framework/views/*
+orbit-hrms-api/storage/logs/*
+orbit-hrms-api/bootstrap/cache/*
+orbit-hrms-api/.phpunit.cache
+orbit-hrms-api/.phpunit.result.cache
+
+# --- Secrets ----------------------------------------------------------------
+# .env holds APP_KEY and the database password. Never commit it; commit
+# .env.example instead so the required keys stay documented.
+.env
+.env.*
+!.env.example
+orbit-hrms-api/.env
+orbit-hrms-api/.env.*
+!orbit-hrms-api/.env.example
+
+# --- Editor / OS ------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

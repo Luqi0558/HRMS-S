@@ -1,0 +1,2584 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #app {
+  min-height: 100%;
+}
+
+body {
+  /* System fallbacks matter here: the Google Fonts stylesheet now loads
+     without blocking paint, so the first frame renders in whatever is listed
+     next. These are metrically close to Inter, which keeps the swap subtle
+     instead of reflowing the layout. */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  color: #0f172a;
+  background-color: #e8f0f7;
+}
+
+/* Set by the inline script in index.html before Vue mounts, so a dark-mode
+   user does not see a white flash on refresh. Vue then adds its own
+   `.night-mode` class and takes over; these two agree on the background so the
+   handover is invisible. */
+html.night-mode-preload,
+html.night-mode-preload body {
+  background-color: #0f172a;
+  color: #e5edf7;
+}
+
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+}
+
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Space Grotesk is loaded in index.html and configured in tailwind.config.js
+   but was never applied — headings rendered in Inter like everything else.
+   Applying it here gives the product its own voice without touching markup. */
+h1, h2, .font-display {
+  font-family: 'Space Grotesk', 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  letter-spacing: -0.015em;
+}
+
+/* Figures line up in columns only with tabular numerals. Scoped to table cells
+   and the explicit stat classes rather than every .text-2xl/.font-extrabold —
+   a blanket rule would also change headings and labels that contain no digits. */
+td,
+th,
+.kpi-value,
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* KPI tiles carry the headline numbers, so they get more presence than the
+   supporting cards: bigger figures, more breathing room, and a lift on hover.
+
+   Deliberately sets ONLY spacing/motion here — background, border and shadow
+   stay as Tailwind utility classes in the markup so the `.night-mode` rules
+   below (which target .bg-white / .border-slate-200) still apply. Setting them
+   in raw CSS here is what broke dark mode on these tiles. */
+.kpi-tile {
+  /* Tighter horizontal padding: with five tiles per row every pixel of inner
+     width matters for keeping the value on one line. */
+  padding: 1rem 0.875rem;
+  /* Flex column, top-aligned. `space-between` looked right only when every
+     tile had the same number of children — a tile without a caption pushed its
+     value to the bottom while its neighbours centred theirs, so a row with
+     mixed content came out visibly misaligned. Starting from the top keeps the
+     label and value on one baseline regardless of whether a caption exists. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.375rem;
+  min-height: 104px;
+  min-width: 0;
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+/* Children must be allowed to shrink or the nowrap value above forces the
+   tile wider than its grid column. The margin reset stops the markup's
+   mb-1/mt-1 utilities from stacking on top of the flex gap, which made the
+   internal spacing uneven from tile to tile. */
+.kpi-tile > * {
+  min-width: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* Label and caption may wrap to two lines — unlike the value, which is a
+   single figure and looks broken when split. */
+.kpi-tile > *:first-child,
+.kpi-tile > *:last-child {
+  line-height: 1.3;
+}
+
+/* Push a third child (the caption) to the bottom, so tiles that have one still
+   align it across the row without disturbing tiles that do not. */
+.kpi-tile > *:nth-child(3) {
+  margin-top: auto;
+}
+
+.kpi-tile:hover {
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.night-mode .kpi-tile:hover {
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.32);
+}
+
+.kpi-value {
+  font-family: 'Space Grotesk', 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Fluid, and deliberately modest at the top end. These tiles can sit five to
+     a row inside a three-quarter-width container, so the column is narrow;
+     "PKR 999,999" (the capped claims maximum) has to fit on one line there.
+     A larger fixed size is what pushed values onto a second line. */
+  font-size: clamp(1rem, 0.85vw + 0.4rem, 1.25rem);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sidebar navigation.
+   The active item was a near-black pill, which fought the brand palette and
+   read heavier than the page content it points at. It is now brand teal with a
+   left rail, and inactive icons pick up the accent only on hover. */
+/* Inactive rows only — the active row keeps its white icon on hover. */
+.nav-item:not(.nav-item-active):hover svg {
+  color: #0F8B76;
+}
+
+.nav-item-active {
+  background: linear-gradient(135deg, #12977E 0%, #0B6B5B 100%);
+  box-shadow: 0 8px 18px rgba(15, 139, 118, 0.28);
+}
+
+/* Deepen slightly on hover rather than inheriting the inactive white fill. */
+.nav-item-active:hover {
+  background: linear-gradient(135deg, #0F8B76 0%, #085041 100%);
+  box-shadow: 0 10px 22px rgba(15, 139, 118, 0.34);
+}
+
+/* The label sits on a saturated teal fill, so it must stay white in BOTH
+   themes. Without this the night-mode text rules (which use !important) win
+   and the active item's text disappears into its own background. */
+.nav-item-active,
+.nav-item-active span,
+.night-mode .nav-item-active,
+.night-mode .nav-item-active span {
+  color: #fff !important;
+}
+
+.nav-item-active svg {
+  color: #fff !important;
+}
+
+.nav-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+/* Lift the label against the dark sidebar. */
+.night-mode .nav-section-label {
+  color: #7c8ba1;
+}
+
+/* Inactive nav rows: the night-mode .text-slate-600 rule handles the label,
+   but the hover fill must not stay white-on-dark. Same for the profile row. */
+.night-mode .nav-item:not(.nav-item-active):hover,
+.night-mode .sidebar-profile:hover {
+  background-color: rgba(30, 41, 59, 0.75) !important;
+}
+
+/* Sidebar dividers. */
+.night-mode aside .bg-slate-300\/50 {
+  background-color: rgba(71, 85, 105, 0.6) !important;
+}
+
+.dashboard-click-card {
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.dashboard-click-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(15, 23, 42, 0.24) !important;
+}
+
+.dashboard-click-card:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.18);
+  outline-offset: 2px;
+}
+
+.theme-toggle {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.theme-toggle-track {
+  width: 52px;
+  height: 30px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  transition: background 180ms ease, border-color 180ms ease;
+}
+
+.theme-toggle-track.active {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(71, 85, 105, 0.9);
+}
+
+.theme-toggle-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.16);
+  transform: translateX(0);
+  transition: transform 180ms ease, color 180ms ease, background 180ms ease;
+}
+
+.theme-toggle-track.active .theme-toggle-thumb {
+  color: #e2e8f0;
+  background: #1e293b;
+  transform: translateX(22px);
+}
+
+.topbar-meta-label,
+.topbar-meta-value {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  filter: none;
+  text-shadow: none;
+}
+
+.topbar-dashboard-title,
+.topbar-dashboard-date {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  filter: none;
+  text-shadow: none;
+}
+
+.project-time-label,
+.project-time-value {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  filter: none;
+  text-shadow: none;
+}
+
+.punch-ledger {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.punch-ledger-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.punch-ledger-search {
+  width: min(100%, 240px);
+  border: 1px solid #d5dde8;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.punch-ledger-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.punch-ledger-filter {
+  border: 1px solid #d5dde8;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.punch-ledger-filter.active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.punch-ledger-count,
+.punch-ledger-more,
+.punch-ledger-empty {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.punch-ledger-count {
+  margin-left: auto;
+}
+
+.punch-ledger-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.punch-ledger-header {
+  display: grid;
+  grid-template-columns: minmax(96px, 1.3fr) 42px 58px 58px 68px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.punch-ledger-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 1.3fr) 42px 58px 58px 68px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.punch-ledger-name,
+.punch-ledger-department,
+.punch-ledger-time,
+.punch-ledger-hours,
+.punch-ledger-status {
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.punch-ledger-person {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.punch-ledger-name {
+  color: #1f3147;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.punch-ledger-department {
+  color: #64748b;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.punch-ledger-time {
+  color: #40546b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.punch-ledger-missing {
+  color: #e11d48;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+}
+
+.punch-ledger-hours {
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.punch-ledger-status {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 4px 7px;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.punch-ledger-status-present {
+  background: rgba(20, 184, 166, 0.12);
+  color: #0f766e;
+}
+
+.punch-ledger-status-late {
+  background: rgba(244, 63, 94, 0.12);
+  color: #be123c;
+}
+
+.punch-ledger-status-active {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.punch-ledger-track {
+  height: 4px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  position: relative;
+  grid-column: 1 / -1;
+}
+
+.punch-ledger-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+}
+
+.punch-ledger-more,
+.punch-ledger-empty {
+  text-align: center;
+  padding: 8px 0 2px;
+}
+
+.timesheet-chart-card {
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(248, 251, 254, 0.96), rgba(233, 242, 250, 0.84));
+  padding: 10px 12px 8px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.timesheet-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 230px;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  text-rendering: geometricPrecision;
+}
+
+.timesheet-grid line {
+  stroke: rgba(116, 134, 155, 0.34);
+  stroke-dasharray: 4 4;
+}
+
+.timesheet-grid text {
+  fill: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.timesheet-axis {
+  stroke: rgba(71, 85, 105, 0.56);
+}
+
+.timesheet-day-divider {
+  stroke: rgba(148, 163, 184, 0.24);
+}
+
+.timesheet-bar.attendance {
+  fill: #10b981;
+  filter: drop-shadow(0 6px 10px rgba(16, 185, 129, 0.18));
+}
+
+.timesheet-bar.logged {
+  fill: #3b82f6;
+  filter: drop-shadow(0 6px 10px rgba(59, 130, 246, 0.18));
+}
+
+.timesheet-value {
+  font-size: 12px;
+  font-weight: 900;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.attendance-value {
+  fill: #047857;
+}
+
+.logged-value {
+  fill: #1d4ed8;
+}
+
+.timesheet-day-label {
+  fill: #0f172a;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.timesheet-date-label,
+.timesheet-legend text {
+  fill: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.legend-attendance {
+  fill: #10b981;
+}
+
+.legend-logged {
+  fill: #3b82f6;
+}
+
+.app-shell:not(.night-mode) {
+  background:
+    radial-gradient(circle at 10% -8%, rgba(255, 255, 255, 0.92) 0, rgba(255, 255, 255, 0) 34%),
+    radial-gradient(circle at 90% 5%, rgba(203, 213, 225, 0.5) 0, rgba(203, 213, 225, 0) 30%),
+    linear-gradient(135deg, #dde9f4 0%, #eef4f9 48%, #e5eef7 100%);
+}
+
+.app-shell:not(.night-mode) .app-main {
+  background:
+    radial-gradient(rgba(100, 116, 139, 0.13) 0.75px, transparent 0.75px),
+    linear-gradient(135deg, #eff5fa 0%, #e8f0f7 56%, #edf4fa 100%);
+  background-size: 20px 20px, auto;
+}
+
+.night-mode {
+  color: #e5edf7;
+  background:
+    radial-gradient(circle at 18% 8%, rgba(59, 130, 246, 0.14) 0, rgba(59, 130, 246, 0) 32%),
+    linear-gradient(135deg, #0f172a 0%, #111827 52%, #020617 100%);
+}
+
+.night-mode .app-main {
+  background:
+    radial-gradient(rgba(148, 163, 184, 0.14) 0.75px, transparent 0.75px),
+    linear-gradient(135deg, #111827 0%, #0f172a 52%, #020617 100%);
+  background-size: 18px 18px, auto;
+}
+
+.night-mode aside {
+  background-color: rgba(15, 23, 42, 0.94) !important;
+  border-color: rgba(51, 65, 85, 0.9) !important;
+  box-shadow: 12px 0 38px rgba(0, 0, 0, 0.28) !important;
+}
+
+.night-mode header {
+  background-color: rgba(15, 23, 42, 0.9) !important;
+  border-color: rgba(51, 65, 85, 0.9) !important;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22) !important;
+}
+
+.night-mode .bg-white {
+  background-color: rgba(15, 23, 42, 0.78) !important;
+}
+
+.night-mode .bg-slate-50,
+.night-mode .bg-slate-50\/80,
+.night-mode .bg-slate-50\/60 {
+  background-color: rgba(30, 41, 59, 0.78) !important;
+}
+
+.night-mode .border-slate-200 {
+  border-color: rgba(71, 85, 105, 0.82) !important;
+}
+
+.night-mode .text-slate-950,
+.night-mode .text-slate-900,
+.night-mode .text-slate-800,
+.night-mode .text-slate-700 {
+  color: #e5edf7 !important;
+}
+
+.night-mode .text-slate-600,
+.night-mode .text-slate-500 {
+  color: #a8b3c5 !important;
+}
+
+.night-mode .shadow-sm,
+.night-mode .shadow-xl,
+.night-mode .shadow-2xl {
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.26) !important;
+}
+
+.night-mode thead tr {
+  background: rgba(30, 41, 59, 0.78) !important;
+}
+
+.night-mode tbody tr:hover {
+  background: rgba(30, 41, 59, 0.54) !important;
+}
+
+.night-mode button.bg-emerald-600,
+.night-mode .bg-emerald-600 {
+  background-color: #f8fafc !important;
+  color: #020617 !important;
+}
+
+.night-mode button.hover\:bg-emerald-700:hover {
+  background-color: #dbe4ef !important;
+}
+
+.night-mode .bg-emerald-50,
+.night-mode .bg-emerald-100,
+.night-mode .bg-blue-50,
+.night-mode .bg-amber-bg,
+.night-mode .bg-teal-bg,
+.night-mode .bg-coral-bg {
+  background-color: rgba(51, 65, 85, 0.8) !important;
+}
+
+.night-mode .text-blue-700,
+.night-mode .text-amber,
+.night-mode .text-amber-dark,
+.night-mode .text-teal,
+.night-mode .text-teal-dark,
+.night-mode .text-coral,
+.night-mode .text-coral-dark {
+  color: #dbeafe !important;
+}
+
+.night-mode input,
+.night-mode select,
+.night-mode textarea {
+  background-color: rgba(15, 23, 42, 0.86) !important;
+  border-color: rgba(71, 85, 105, 0.92) !important;
+  color: #e5edf7 !important;
+}
+
+.night-mode input::placeholder,
+.night-mode textarea::placeholder {
+  color: #7d8aa0 !important;
+}
+
+.night-mode input:focus,
+.night-mode select:focus,
+.night-mode textarea:focus {
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 0 0 3px rgba(226, 232, 240, 0.12) !important;
+}
+
+.night-mode .fixed.inset-0 > div {
+  background-color: #1e293b !important;
+  border-color: rgba(71, 85, 105, 0.94) !important;
+  color: #e5edf7 !important;
+}
+
+.app-shell:not(.night-mode) aside {
+  background:
+    linear-gradient(180deg, rgba(204, 220, 236, 0.98), rgba(190, 210, 229, 0.98)) !important;
+  border-color: rgba(146, 168, 191, 0.88) !important;
+  box-shadow: 16px 0 38px rgba(30, 41, 59, 0.16) !important;
+}
+
+.app-shell:not(.night-mode) aside nav button:not(.nav-item-active) {
+  color: #334860 !important;
+}
+
+.app-shell:not(.night-mode) aside nav button:not(.nav-item-active):hover {
+  background: rgba(255, 255, 255, 0.68) !important;
+  color: #0f172a !important;
+}
+
+.app-shell:not(.night-mode) aside nav button:not(.nav-item-active) svg {
+  color: #4a617a !important;
+  stroke-width: 2.15;
+}
+
+.app-shell:not(.night-mode) aside nav button:not(.nav-item-active):hover svg {
+  color: #0f172a !important;
+}
+
+.app-shell:not(.night-mode) aside .text-slate-400,
+.app-shell:not(.night-mode) aside .text-slate-500 {
+  color: #50677f !important;
+}
+
+.app-shell:not(.night-mode) aside .uppercase {
+  color: #7d91a8 !important;
+  letter-spacing: 0.14em !important;
+  font-weight: 850 !important;
+}
+
+/* Non-nav dark chips inside the sidebar. The nav's active item is handled by
+   .nav-item-active (brand teal) — this rule used to force it near-black and
+   fought the new styling. */
+.app-shell:not(.night-mode) aside .bg-slate-950 {
+  background: #07111f !important;
+  color: #ffffff !important;
+}
+
+.app-shell:not(.night-mode) header {
+  background:
+    linear-gradient(90deg, rgba(248, 251, 254, 0.96), rgba(232, 241, 249, 0.94)) !important;
+  border-color: rgba(186, 202, 220, 0.82) !important;
+  box-shadow: 0 12px 32px rgba(30, 41, 59, 0.1) !important;
+}
+
+.app-shell:not(.night-mode) .bg-white {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(247, 251, 254, 0.86)) !important;
+}
+
+.app-shell:not(.night-mode) .bg-slate-50,
+.app-shell:not(.night-mode) .bg-slate-50\/80,
+.app-shell:not(.night-mode) .bg-slate-50\/60 {
+  background-color: rgba(236, 244, 251, 0.86) !important;
+}
+
+.app-shell:not(.night-mode) .border-slate-200 {
+  border-color: rgba(178, 195, 214, 0.78) !important;
+}
+
+.app-shell:not(.night-mode) .rounded-xl {
+  border-radius: 22px !important;
+}
+
+.app-shell:not(.night-mode) .rounded-lg {
+  border-radius: 14px !important;
+}
+
+.app-shell:not(.night-mode) .shadow-sm,
+.app-shell:not(.night-mode) .shadow-xl,
+.app-shell:not(.night-mode) .shadow-2xl {
+  box-shadow: 0 18px 42px rgba(30, 41, 59, 0.1) !important;
+}
+
+.app-shell:not(.night-mode) .text-slate-950,
+.app-shell:not(.night-mode) .text-slate-900,
+.app-shell:not(.night-mode) .text-slate-800 {
+  color: #07111f !important;
+}
+
+.app-shell:not(.night-mode) .text-slate-700 {
+  color: #1f3147 !important;
+}
+
+.app-shell:not(.night-mode) .text-slate-600 {
+  color: #40546b !important;
+}
+
+.app-shell:not(.night-mode) .text-slate-500 {
+  color: #62758c !important;
+}
+
+.app-shell table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+}
+
+.table-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(203, 213, 225, 0.72);
+}
+
+.app-shell:not(.night-mode) .table-tools {
+  background:
+    linear-gradient(180deg, rgba(242, 247, 252, 0.84), rgba(232, 241, 249, 0.62));
+  border-color: rgba(178, 195, 214, 0.72);
+}
+
+.table-filter-input {
+  width: min(100%, 320px);
+  border: 1px solid #d5dde8;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.table-filter-input:focus {
+  border-color: #111827;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+}
+
+.table-count {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.table-scroll {
+  max-height: 520px;
+  overflow-y: auto;
+  overscroll-behavior: auto;
+  scroll-behavior: smooth;
+}
+
+.table-scroll::after {
+  content: "";
+  display: block;
+  height: 1px;
+}
+
+.app-empty-state {
+  border: 1px dashed rgba(148, 163, 184, 0.72);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.88), rgba(241, 245, 249, 0.72));
+  padding: 28px 18px;
+  text-align: center;
+  color: #64748b;
+}
+
+.app-empty-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.app-empty-copy {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+  margin-top: 4px;
+}
+
+.app-shell:not(.night-mode) .app-empty-state {
+  background:
+    linear-gradient(180deg, rgba(248, 251, 254, 0.92), rgba(235, 243, 250, 0.82));
+  border-color: rgba(148, 163, 184, 0.62);
+  color: #52657b;
+}
+
+.app-shell button,
+.app-shell input,
+.app-shell select,
+.app-shell textarea,
+.fixed.inset-0 button,
+.fixed.inset-0 input,
+.fixed.inset-0 select,
+.fixed.inset-0 textarea {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-shell input[type="date"],
+.app-shell input[type="time"],
+.fixed.inset-0 input[type="date"],
+.fixed.inset-0 input[type="time"] {
+  color-scheme: light;
+}
+
+.app-shell input[type="file"],
+.fixed.inset-0 input[type="file"] {
+  padding: 8px 10px !important;
+}
+
+.app-shell input[type="file"]::file-selector-button,
+.fixed.inset-0 input[type="file"]::file-selector-button {
+  border: 1px solid #d5dde8;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 750;
+  padding: 6px 10px;
+  margin-right: 10px;
+}
+
+.modal-scroll-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.modal-scroll-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+.app-shell:not(.night-mode) .bg-white.border-slate-200.rounded-xl:has(table) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(239, 247, 253, 0.84)) !important;
+  box-shadow: 0 18px 42px rgba(30, 41, 59, 0.09) !important;
+}
+
+/* Header sits on white with a single rule beneath it, so the striped body
+   below carries the visual rhythm instead of competing with a tinted header. */
+.app-shell:not(.night-mode) thead tr {
+  background: #ffffff !important;
+  border-bottom: 1px solid rgba(203, 213, 225, 0.9) !important;
+}
+
+.app-shell:not(.night-mode) th {
+  color: #64748b !important;
+  letter-spacing: 0.06em !important;
+  font-weight: 600 !important;
+  font-size: 11px !important;
+  text-transform: uppercase;
+  padding: 14px 20px !important;
+}
+
+.app-shell:not(.night-mode) td {
+  padding: 16px 20px !important;
+  vertical-align: middle;
+}
+
+/* Zebra striping: alternating rows are far easier to scan across, especially
+   on wide tables where the eye has to travel from a name on the left to an
+   action on the right. Applied globally so every table matches — including
+   ones rendered inside modals, which sit outside .app-shell (see below). */
+.app-shell:not(.night-mode) tbody tr {
+  background: #ffffff;
+}
+
+.app-shell:not(.night-mode) tbody tr:nth-child(even) {
+  background: #f7f9fb;
+}
+
+.app-shell:not(.night-mode) tbody tr:hover {
+  background: rgba(219, 234, 246, 0.9) !important;
+}
+
+/* Striping AND a visible divider under every row — the reference design uses
+   both, and an earlier attempt faded the border to 55% opacity, which made it
+   effectively invisible against the striped fills. */
+.app-shell:not(.night-mode) tbody tr {
+  border-bottom: 1px solid #d8e0ea !important;
+}
+
+/* The markup uses `last:border-0`, but the divider should run under the final
+   row too so the body closes cleanly against the card edge. */
+.app-shell:not(.night-mode) tbody tr:last-child {
+  border-bottom: 1px solid #d8e0ea !important;
+}
+
+/* Modals are teleported to <body>, so they sit outside .app-shell and the
+   rules above never reach them. These fallbacks give tables in dialogs the
+   same striping. */
+body:not(.night-mode) [data-modal] tbody tr,
+body:not(.night-mode) .fixed tbody tr {
+  background: #ffffff;
+}
+
+body:not(.night-mode) [data-modal] tbody tr:nth-child(even),
+body:not(.night-mode) .fixed tbody tr:nth-child(even) {
+  background: #f7f9fb;
+}
+
+body:not(.night-mode) [data-modal] tbody tr:hover,
+body:not(.night-mode) .fixed tbody tr:hover {
+  background: rgba(219, 234, 246, 0.9);
+}
+
+/* Divider lists (modal detail rows, approval queues) get the same alternating
+   treatment so they read consistently with the tables. */
+body:not(.night-mode) .striped-list > *:nth-child(even) {
+  background: rgba(241, 246, 251, 0.6);
+}
+
+/* Record lists inside dialogs. These were detached rounded cards floating on
+   the modal background; as striped rows with dividers they match the tables
+   elsewhere in the app. */
+.modal-row {
+  background: #ffffff;
+  border-bottom: 1px solid #d8e0ea;
+  transition: background-color 0.15s ease;
+}
+
+.modal-row:nth-child(even) {
+  background: #f7f9fb;
+}
+
+.modal-row:hover {
+  background: #dbeaf6;
+}
+
+.modal-row:last-child {
+  border-bottom: 0;
+}
+
+.night-mode .modal-row,
+body.night-mode .modal-row {
+  background: rgba(15, 23, 42, 0.28);
+  border-bottom-color: rgba(71, 85, 105, 0.55);
+}
+
+.night-mode .modal-row:nth-child(even),
+body.night-mode .modal-row:nth-child(even) {
+  background: rgba(38, 51, 71, 0.42);
+}
+
+.night-mode .modal-row:hover,
+body.night-mode .modal-row:hover {
+  background: rgba(51, 65, 85, 0.62);
+}
+
+.employees-table-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(239, 247, 253, 0.84)) !important;
+}
+
+/* Employees table opts into the same striping rather than a flat fill, which
+   would otherwise override the global rule above. */
+.employees-table tbody tr {
+  background: #ffffff;
+}
+
+.employees-table tbody tr:nth-child(even) {
+  background: #f7f9fb;
+}
+
+.employees-table tbody tr:hover {
+  background: rgba(219, 234, 246, 0.9) !important;
+}
+
+.employees-table td,
+.employees-table th {
+  vertical-align: middle;
+}
+
+.app-shell:not(.night-mode) button.bg-emerald-600,
+.app-shell:not(.night-mode) .bg-emerald-600 {
+  background-color: #0f172a !important;
+}
+
+.app-shell:not(.night-mode) button.hover\:bg-emerald-700:hover {
+  background-color: #020617 !important;
+}
+
+.app-shell:not(.night-mode) .text-emerald-600,
+.app-shell:not(.night-mode) .text-emerald-700,
+.app-shell:not(.night-mode) .text-emerald-800 {
+  color: #0f172a !important;
+}
+
+.app-shell:not(.night-mode) .bg-emerald-50,
+.app-shell:not(.night-mode) .bg-emerald-100 {
+  background-color: #eaf3f2 !important;
+}
+
+.app-shell:not(.night-mode) .border-emerald-200,
+.app-shell:not(.night-mode) .border-emerald-300 {
+  border-color: #bfd5d4 !important;
+}
+
+.app-shell:not(.night-mode) .hover\:border-emerald-300:hover {
+  border-color: #111827 !important;
+}
+
+.app-shell:not(.night-mode) input,
+.app-shell:not(.night-mode) select,
+.app-shell:not(.night-mode) textarea {
+  border-color: #c4d1df !important;
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  color: #07111f !important;
+}
+
+.app-shell:not(.night-mode) input:focus,
+.app-shell:not(.night-mode) select:focus,
+.app-shell:not(.night-mode) textarea:focus {
+  border-color: #111827 !important;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.09) !important;
+}
+
+.app-shell .fixed.inset-0 {
+  backdrop-filter: blur(6px);
+}
+
+.fixed.inset-0 > div {
+  background-color: #eef2f7 !important;
+  border-color: rgba(203, 213, 225, 0.9) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18) !important;
+}
+
+.fixed.inset-0 input,
+.fixed.inset-0 select,
+.fixed.inset-0 textarea {
+  background-color: #ffffff !important;
+  border-color: #d7dee9 !important;
+  border-radius: 12px !important;
+}
+
+.fixed.inset-0 button.bg-emerald-600,
+.fixed.inset-0 .bg-emerald-600 {
+  background-color: #0f172a !important;
+}
+
+.fixed.inset-0 button.hover\:bg-emerald-700:hover {
+  background-color: #020617 !important;
+}
+
+body.night-mode .fixed.inset-0 {
+  background-color: rgba(2, 6, 23, 0.66) !important;
+}
+
+body.night-mode .fixed.inset-0 > div {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.96), rgba(15, 23, 42, 0.96)) !important;
+  background-color: #0f172a !important;
+  border-color: rgba(71, 85, 105, 0.95) !important;
+  color: #eaf1fb !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.42) !important;
+}
+
+body.night-mode .fixed.inset-0 .text-slate-950,
+body.night-mode .fixed.inset-0 .text-slate-900,
+body.night-mode .fixed.inset-0 .text-slate-800,
+body.night-mode .fixed.inset-0 .text-slate-700 {
+  color: #eaf1fb !important;
+}
+
+body.night-mode .fixed.inset-0 .text-slate-600,
+body.night-mode .fixed.inset-0 .text-slate-500 {
+  color: #aab8cb !important;
+}
+
+body.night-mode .fixed.inset-0 .bg-emerald-50,
+body.night-mode .fixed.inset-0 .bg-emerald-100 {
+  background-color: rgba(51, 65, 85, 0.86) !important;
+}
+
+body.night-mode .fixed.inset-0 .text-emerald-600,
+body.night-mode .fixed.inset-0 .text-emerald-700,
+body.night-mode .fixed.inset-0 .text-emerald-800 {
+  color: #bbf7d0 !important;
+}
+
+body.night-mode .fixed.inset-0 input,
+body.night-mode .fixed.inset-0 select,
+body.night-mode .fixed.inset-0 textarea {
+  background-color: rgba(15, 23, 42, 0.9) !important;
+  border-color: rgba(71, 85, 105, 0.95) !important;
+  color: #eaf1fb !important;
+}
+
+body.night-mode .fixed.inset-0 input::placeholder,
+body.night-mode .fixed.inset-0 textarea::placeholder {
+  color: #7d8aa0 !important;
+}
+
+body.night-mode .fixed.inset-0 button.bg-emerald-600,
+body.night-mode .fixed.inset-0 .bg-emerald-600 {
+  background-color: #f8fafc !important;
+  color: #020617 !important;
+}
+
+body.night-mode .fixed.inset-0 button.hover\:bg-emerald-700:hover {
+  background-color: #dbe4ef !important;
+  color: #020617 !important;
+}
+
+.app-shell.night-mode .bg-white {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.86), rgba(15, 23, 42, 0.86)) !important;
+  background-color: rgba(15, 23, 42, 0.86) !important;
+}
+
+.app-shell.night-mode .bg-slate-50,
+.app-shell.night-mode .bg-slate-50\/80,
+.app-shell.night-mode .bg-slate-50\/60 {
+  background-color: rgba(30, 41, 59, 0.72) !important;
+}
+
+.app-shell.night-mode .border-slate-200 {
+  border-color: rgba(71, 85, 105, 0.86) !important;
+}
+
+.app-shell.night-mode .text-slate-950,
+.app-shell.night-mode .text-slate-900,
+.app-shell.night-mode .text-slate-800,
+.app-shell.night-mode .text-slate-700 {
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode .text-slate-600,
+.app-shell.night-mode .text-slate-500 {
+  color: #aab8cb !important;
+}
+
+.app-shell.night-mode .shadow-sm,
+.app-shell.night-mode .shadow-xl,
+.app-shell.night-mode .shadow-2xl {
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.26) !important;
+}
+
+.app-shell.night-mode thead tr {
+  background: rgba(15, 23, 42, 0.62) !important;
+}
+
+.app-shell.night-mode .bg-white.border-slate-200.rounded-xl:has(table) {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.88), rgba(15, 23, 42, 0.88)) !important;
+}
+
+.app-shell.night-mode .table-tools {
+  border-color: rgba(71, 85, 105, 0.86);
+}
+
+.app-shell.night-mode .table-filter-input {
+  background-color: rgba(15, 23, 42, 0.9) !important;
+  border-color: rgba(71, 85, 105, 0.95) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .table-filter-input::placeholder,
+.app-shell.night-mode .table-count {
+  color: #aab8cb !important;
+}
+
+.app-shell.night-mode input[type="date"],
+.app-shell.night-mode input[type="time"],
+body.night-mode .fixed.inset-0 input[type="date"],
+body.night-mode .fixed.inset-0 input[type="time"] {
+  color-scheme: dark;
+}
+
+.app-shell.night-mode select option,
+body.night-mode .fixed.inset-0 select option {
+  background: #0f172a !important;
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode input[type="file"]::file-selector-button,
+body.night-mode .fixed.inset-0 input[type="file"]::file-selector-button {
+  background: rgba(30, 41, 59, 0.96) !important;
+  border-color: rgba(100, 116, 139, 0.86) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .app-empty-state,
+body.night-mode .fixed.inset-0 .app-empty-state {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.74), rgba(15, 23, 42, 0.68)) !important;
+  border-color: rgba(100, 116, 139, 0.72) !important;
+  color: #aab8cb !important;
+}
+
+.app-shell.night-mode .app-empty-title,
+body.night-mode .fixed.inset-0 .app-empty-title {
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .app-empty-copy,
+body.night-mode .fixed.inset-0 .app-empty-copy {
+  color: #aab8cb !important;
+}
+
+/* Dark-mode striping. Same alternating pattern, tuned so the lighter band is
+   still clearly below the header and card surfaces. */
+.app-shell.night-mode tbody tr,
+body.night-mode .fixed.inset-0 tbody tr {
+  background: rgba(15, 23, 42, 0.28);
+  border-bottom: 1px solid rgba(71, 85, 105, 0.55) !important;
+}
+
+.app-shell.night-mode tbody tr:nth-child(even),
+body.night-mode .fixed.inset-0 tbody tr:nth-child(even) {
+  background: rgba(38, 51, 71, 0.42);
+}
+
+.app-shell.night-mode tbody tr:hover,
+body.night-mode .fixed.inset-0 tbody tr:hover {
+  background: rgba(51, 65, 85, 0.62) !important;
+}
+
+body.night-mode .striped-list > *:nth-child(even) {
+  background: rgba(38, 51, 71, 0.34);
+}
+
+.app-shell.night-mode .employees-table-card {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.88), rgba(15, 23, 42, 0.88)) !important;
+}
+
+.app-shell.night-mode .employees-table tbody tr {
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.app-shell.night-mode .employees-table tbody tr:nth-child(even) {
+  background: rgba(38, 51, 71, 0.42);
+}
+
+.app-shell.night-mode .employees-table tbody tr:hover {
+  background: rgba(51, 65, 85, 0.62) !important;
+}
+
+.app-shell.night-mode .employees-table .bg-slate-950 {
+  background-color: #f8fafc !important;
+  color: #020617 !important;
+}
+
+.app-shell.night-mode table {
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode th {
+  color: #d7e0ee !important;
+}
+
+.app-shell.night-mode td,
+.app-shell.night-mode td .text-slate-900,
+.app-shell.night-mode td .text-slate-800,
+.app-shell.night-mode td .text-slate-700,
+.app-shell.night-mode td .text-slate-600,
+.app-shell.night-mode td .text-slate-500 {
+  color: #eaf1fb !important;
+  opacity: 1;
+  text-shadow: none !important;
+}
+
+.app-shell.night-mode table .bg-slate-100,
+.app-shell.night-mode table .bg-slate-50 {
+  background-color: rgba(51, 65, 85, 0.88) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode table .border-slate-200 {
+  border-color: rgba(100, 116, 139, 0.8) !important;
+}
+
+.app-shell.night-mode table .bg-emerald-100 {
+  background-color: rgba(16, 185, 129, 0.16) !important;
+  color: #bbf7d0 !important;
+}
+
+.app-shell.night-mode table .bg-amber-100 {
+  background-color: rgba(251, 191, 36, 0.2) !important;
+  color: #fde68a !important;
+}
+
+.app-shell.night-mode .bg-emerald-50,
+.app-shell.night-mode .bg-emerald-100,
+.app-shell.night-mode .bg-blue-50,
+.app-shell.night-mode .bg-amber-bg,
+.app-shell.night-mode .bg-teal-bg,
+.app-shell.night-mode .bg-coral-bg {
+  background-color: rgba(51, 65, 85, 0.78) !important;
+}
+
+.app-shell.night-mode input,
+.app-shell.night-mode select,
+.app-shell.night-mode textarea {
+  background-color: rgba(15, 23, 42, 0.88) !important;
+  border-color: rgba(71, 85, 105, 0.95) !important;
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode .bg-gradient-to-br,
+.app-shell.night-mode .bg-gradient-to-r {
+  background-image: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9)) !important;
+  background-color: rgba(15, 23, 42, 0.9) !important;
+}
+
+.app-shell.night-mode .from-slate-50,
+.app-shell.night-mode .from-slate-100,
+.app-shell.night-mode .from-emerald-50,
+.app-shell.night-mode .from-blue-50,
+.app-shell.night-mode .from-orange-50,
+.app-shell.night-mode .to-slate-100,
+.app-shell.night-mode .to-teal-50,
+.app-shell.night-mode .to-indigo-50,
+.app-shell.night-mode .to-red-50 {
+  --tw-gradient-from: rgba(30, 41, 59, 0.9) !important;
+  --tw-gradient-to: rgba(15, 23, 42, 0.9) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+.app-shell.night-mode .border-blue-200,
+.app-shell.night-mode .border-orange-200,
+.app-shell.night-mode .border-amber-200 {
+  border-color: rgba(71, 85, 105, 0.86) !important;
+}
+
+.app-shell.night-mode .text-blue-600,
+.app-shell.night-mode .text-orange-600,
+.app-shell.night-mode .text-rose-600 {
+  color: #93c5fd !important;
+}
+
+.app-shell.night-mode .topbar-meta-label {
+  color: #d7e0ee !important;
+  opacity: 1;
+}
+
+.app-shell.night-mode .topbar-meta-value {
+  color: #ffffff !important;
+  opacity: 1;
+  text-shadow: none !important;
+}
+
+.app-shell.night-mode .topbar-dashboard-title .text-slate-950,
+.app-shell.night-mode .topbar-dashboard-date .text-slate-950 {
+  color: #ffffff !important;
+}
+
+.app-shell.night-mode .topbar-dashboard-title .text-slate-500 {
+  color: #dbe4ef !important;
+}
+
+/* Brand green lightens on dark backgrounds for contrast. The active nav row is
+   re-forced to white further below, since it sits on a teal fill. */
+.app-shell.night-mode .text-emerald-600,
+.app-shell.night-mode .text-emerald-700,
+.app-shell.night-mode .text-emerald-800 {
+  color: #bbf7d0 !important;
+}
+
+.app-shell.night-mode .nav-item-active,
+.app-shell.night-mode .nav-item-active span,
+.app-shell.night-mode .nav-item-active svg {
+  color: #ffffff !important;
+}
+
+/* Sidebar hover in dark mode. Matches both the old bg-white/80 chips and the
+   current hover:bg-white nav rows. */
+.app-shell.night-mode aside button.hover\:bg-white\/80:hover,
+.app-shell.night-mode aside button.hover\:bg-white\/80:hover svg,
+.app-shell.night-mode aside button.hover\:bg-white:not(.nav-item-active):hover,
+.app-shell.night-mode aside button.hover\:bg-white:not(.nav-item-active):hover svg {
+  background-color: rgba(30, 41, 59, 0.9) !important;
+  color: #ffffff !important;
+}
+
+.app-shell.night-mode aside button.hover\:text-slate-950:hover {
+  color: #ffffff !important;
+}
+
+.app-shell.night-mode button.bg-emerald-600,
+.app-shell.night-mode .bg-emerald-600 {
+  background-color: #f8fafc !important;
+  color: #020617 !important;
+}
+
+.app-shell.night-mode button.hover\:bg-emerald-700:hover {
+  background-color: #dbe4ef !important;
+  color: #020617 !important;
+}
+
+.app-shell.night-mode button:not(.theme-toggle):not(.bg-emerald-600) {
+  border-color: rgba(71, 85, 105, 0.9) !important;
+}
+
+.app-shell.night-mode button.border:not(.theme-toggle):not(.bg-emerald-600),
+.app-shell.night-mode button.hover\:bg-slate-50:not(.theme-toggle):not(.bg-emerald-600),
+.app-shell.night-mode .inline-flex.border {
+  background-color: rgba(15, 23, 42, 0.72) !important;
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode button.hover\:bg-slate-50:hover,
+.app-shell.night-mode button.hover\:bg-emerald-100:hover,
+.app-shell.night-mode button.hover\:bg-rose-200:hover {
+  background-color: rgba(51, 65, 85, 0.9) !important;
+  color: #ffffff !important;
+}
+
+body.night-mode .fixed.inset-0 button.hover\:bg-slate-50:hover,
+body.night-mode .fixed.inset-0 button.hover\:bg-emerald-100:hover,
+body.night-mode .fixed.inset-0 button.hover\:bg-rose-200:hover {
+  background-color: rgba(51, 65, 85, 0.95) !important;
+  color: #ffffff !important;
+}
+
+.app-shell.night-mode button.bg-rose-100 {
+  background-color: rgba(127, 29, 29, 0.42) !important;
+  color: #fecaca !important;
+}
+
+.app-shell.night-mode .settings-chip {
+  background-color: rgba(30, 41, 59, 0.95) !important;
+  border: 1px solid rgba(96, 165, 250, 0.28) !important;
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode .settings-chip button {
+  color: #a9b8cc !important;
+}
+
+.app-shell.night-mode .settings-chip button:hover {
+  color: #fda4af !important;
+}
+
+.company-hub-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 800;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.company-hub-badge-neutral {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.company-hub-badge-success {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.company-hub-badge-info {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.company-hub-badge-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.company-hub-badge-muted {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.app-shell.night-mode .company-hub-badge-neutral,
+body.night-mode .fixed.inset-0 .company-hub-badge-neutral {
+  background: rgba(71, 85, 105, 0.88) !important;
+  border-color: rgba(148, 163, 184, 0.34) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .company-hub-badge-success,
+body.night-mode .fixed.inset-0 .company-hub-badge-success {
+  background: rgba(6, 78, 59, 0.95) !important;
+  border-color: rgba(52, 211, 153, 0.38) !important;
+  color: #d1fae5 !important;
+}
+
+.app-shell.night-mode .company-hub-badge-info,
+body.night-mode .fixed.inset-0 .company-hub-badge-info {
+  background: rgba(30, 64, 175, 0.72) !important;
+  border-color: rgba(147, 197, 253, 0.36) !important;
+  color: #dbeafe !important;
+}
+
+.app-shell.night-mode .company-hub-badge-warning,
+body.night-mode .fixed.inset-0 .company-hub-badge-warning {
+  background: rgba(146, 64, 14, 0.75) !important;
+  border-color: rgba(251, 191, 36, 0.42) !important;
+  color: #fef3c7 !important;
+}
+
+.app-shell.night-mode .company-hub-badge-muted,
+body.night-mode .fixed.inset-0 .company-hub-badge-muted {
+  background: rgba(30, 41, 59, 0.95) !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  color: #cbd5e1 !important;
+}
+
+.app-shell.night-mode .disabled\:bg-slate-300:disabled {
+  background-color: rgba(71, 85, 105, 0.58) !important;
+  color: #94a3b8 !important;
+}
+
+.invite-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 36px 24px;
+  background-color: #f8fafc;
+  background-image: radial-gradient(#d9dee8 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.invite-page > .invite-card {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.invite-heading {
+  width: min(100%, 1060px);
+  margin: 0 auto 18px;
+  text-align: center;
+}
+
+.invite-title {
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.invite-subtitle {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.invite-subtitle span {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.invite-card {
+  width: min(100%, 1060px);
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
+}
+
+.stepper-wrap {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 24px;
+  padding: 36px 58px 28px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.step-line {
+  position: absolute;
+  top: 50px;
+  left: calc(58px + 12.5%);
+  right: calc(58px + 12.5%);
+  height: 5px;
+  border-radius: 999px;
+  background: #eef2f7;
+  overflow: hidden;
+}
+
+.step-line-active {
+  height: 100%;
+  border-radius: 999px;
+  background: #2563eb;
+  transition: width 180ms ease;
+}
+
+.step-item {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  border: 5px solid #f1f5f9;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.step-dot.active {
+  background: #2563eb;
+  border-color: #dbeafe;
+  color: #ffffff;
+}
+
+.step-title {
+  margin-top: 14px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.step-title.active {
+  color: #2563eb;
+}
+
+.step-subtitle {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.form-body {
+  padding: 34px 34px 26px;
+  min-height: 370px;
+}
+
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 20px;
+}
+
+.form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.field,
+.choice-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field span,
+.field-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.field small {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 12px 14px;
+  outline: none;
+}
+
+.field textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.field .multi-select {
+  min-height: 148px;
+  padding: 8px;
+}
+
+.field .multi-select option {
+  border-radius: 4px;
+  padding: 7px 8px;
+}
+
+.select2-field {
+  position: relative;
+  min-height: 48px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 7px 38px 7px 10px;
+  cursor: pointer;
+}
+
+.select2-field:focus-within {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.select2-placeholder {
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.select2-arrow {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #64748b;
+  font-size: 18px;
+  pointer-events: none;
+}
+
+.select2-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.select2-tag {
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.select2-tag span {
+  margin-left: 5px;
+  color: #2563eb;
+}
+
+.select2-menu {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 12px 25px rgba(15, 23, 42, 0.12);
+  padding: 6px;
+}
+
+.select2-option {
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 10px;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.select2-option:hover,
+.select2-option.selected {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.profile-role-badge {
+  display: inline-flex;
+  margin-top: 0.5rem;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 1rem;
+}
+
+.app-shell.night-mode .profile-role-badge {
+  background: rgba(30, 41, 59, 0.95) !important;
+  border: 1px solid rgba(148, 163, 184, 0.32) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .select2-field {
+  background: rgba(15, 23, 42, 0.72) !important;
+  border-color: rgba(96, 165, 250, 0.42) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .select2-placeholder {
+  color: #cbd5e1 !important;
+}
+
+.app-shell.night-mode .select2-arrow {
+  color: #dbeafe !important;
+}
+
+.app-shell.night-mode .select2-menu {
+  background: #0f172a !important;
+  border-color: rgba(96, 165, 250, 0.42) !important;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45) !important;
+}
+
+.app-shell.night-mode .select2-option {
+  background: transparent !important;
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode .select2-option:hover,
+.app-shell.night-mode .select2-option.selected {
+  background: rgba(59, 130, 246, 0.2) !important;
+  color: #ffffff !important;
+}
+
+.app-shell.night-mode .select2-tag {
+  background: rgba(30, 64, 175, 0.72) !important;
+  border-color: rgba(147, 197, 253, 0.34) !important;
+  color: #dbeafe !important;
+}
+
+.app-shell.night-mode .select2-tag span {
+  color: #bfdbfe !important;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.field input:disabled {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.choice-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.choice-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.choice-grid.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.choice.selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.choice input {
+  width: 16px;
+  height: 16px;
+  accent-color: #2563eb;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 0 34px 34px;
+}
+
+.primary-btn,
+.secondary-btn {
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 14px 22px;
+  cursor: pointer;
+}
+
+.primary-btn {
+  width: min(100%, 460px);
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.secondary-btn {
+  min-width: 140px;
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+
+.error-text {
+  color: #dc2626;
+  font-size: 13px;
+}
+
+.success-card {
+  padding: 36px;
+  text-align: center;
+}
+
+.success-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 14px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-weight: 800;
+}
+
+.success-title {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.success-copy {
+  color: #64748b;
+  font-size: 14px;
+  margin-top: 6px;
+}
+
+.link-btn {
+  margin-top: 18px;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dashboard-inline-attendance > .space-y-6 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 16px;
+}
+
+.dashboard-inline-attendance > .space-y-6 > :first-child {
+  grid-column: 1;
+  margin-bottom: 0 !important;
+}
+
+.dashboard-inline-attendance > .space-y-6 > :nth-child(2) {
+  grid-column: 2;
+  width: 260px;
+  margin-top: 0 !important;
+  min-height: 44px;
+  padding: 8px 10px !important;
+  border-radius: 14px !important;
+  align-self: start;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px;
+}
+
+.dashboard-inline-attendance > .space-y-6 > :nth-child(2) > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.dashboard-inline-attendance > .space-y-6 > :nth-child(2) .text-sm {
+  font-size: 12px !important;
+  margin-bottom: 0 !important;
+}
+
+.dashboard-inline-attendance > .space-y-6 > :nth-child(2) .text-xs {
+  display: none !important;
+}
+
+.dashboard-inline-attendance > .space-y-6 > :nth-child(2) button {
+  border-radius: 12px;
+  background: #020617 !important;
+  color: #ffffff !important;
+  white-space: nowrap;
+  padding: 7px 12px !important;
+  font-size: 12px !important;
+}
+
+/* Everything after the header/attendance pair spans the full width and starts
+   on the SECOND row. Without the explicit row, these were auto-placed into row
+   1 alongside the floating attendance panel, so the stat tiles ran underneath
+   it and appeared overlapped. */
+.dashboard-inline-attendance > .space-y-6 > :nth-child(n + 3) {
+  grid-column: 1 / -1;
+  grid-row: auto;
+  margin-top: 0 !important;
+}
+
+.dashboard-inline-attendance > .space-y-6 > :nth-child(3) {
+  grid-row: 2;
+}
+
+.app-shell.night-mode .dashboard-inline-attendance > .space-y-6 > :nth-child(2) {
+  background: #111827 !important;
+  border-color: rgba(148, 163, 184, 0.32) !important;
+}
+
+@media (max-width: 900px) {
+  .dashboard-inline-attendance > .space-y-6 {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-inline-attendance > .space-y-6 > :first-child,
+  .dashboard-inline-attendance > .space-y-6 > :nth-child(2),
+  .dashboard-inline-attendance > .space-y-6 > :nth-child(n + 3) {
+    grid-column: 1;
+  }
+
+  .dashboard-inline-attendance > .space-y-6 > :nth-child(2) {
+    width: 100%;
+  }
+}
+
+@media (max-width: 820px) {
+  .stepper-wrap {
+    padding-left: 22px;
+    padding-right: 22px;
+    column-gap: 8px;
+  }
+
+  .step-line {
+    left: calc(22px + 12.5%);
+    right: calc(22px + 12.5%);
+  }
+
+  .step-title {
+    font-size: 12px;
+  }
+
+  .step-subtitle {
+    display: none;
+  }
+
+  .form-grid.two,
+  .form-grid.three,
+  .choice-grid.three,
+  .choice-grid.four {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .primary-btn,
+  .secondary-btn {
+    width: 100%;
+  }
+}
+
+.app-shell.night-mode table,
+.app-shell.night-mode table * {
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+.app-shell.night-mode table td,
+.app-shell.night-mode table td * {
+  color: #f1f5f9 !important;
+}
+
+.app-shell.night-mode table th {
+  color: #dbeafe !important;
+}
+
+.app-shell.night-mode .employee-department-pill {
+  background-color: rgba(51, 65, 85, 0.95) !important;
+  border: 1px solid rgba(100, 116, 139, 0.72) !important;
+  color: #f8fafc !important;
+  font-weight: 700 !important;
+}
+
+.app-shell.night-mode .project-time-badge {
+  background-color: rgba(15, 23, 42, 0.72) !important;
+  border-color: rgba(100, 116, 139, 0.78) !important;
+}
+
+.app-shell.night-mode .project-time-label {
+  color: #dbeafe !important;
+  opacity: 1;
+}
+
+.app-shell.night-mode .project-time-value {
+  color: #ffffff !important;
+  opacity: 1;
+}
+
+.app-shell.night-mode table .bg-emerald-100,
+.app-shell.night-mode table .bg-emerald-100 * {
+  background-color: rgba(16, 185, 129, 0.18) !important;
+  color: #bbf7d0 !important;
+}
+
+.app-shell.night-mode table .bg-amber-100,
+.app-shell.night-mode table .bg-amber-100 * {
+  background-color: rgba(251, 191, 36, 0.22) !important;
+  color: #fde68a !important;
+}
+
+.app-shell.night-mode .punch-ledger-search {
+  background-color: rgba(15, 23, 42, 0.9) !important;
+  border-color: rgba(71, 85, 105, 0.95) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .punch-ledger-search::placeholder,
+.app-shell.night-mode .punch-ledger-count,
+.app-shell.night-mode .punch-ledger-more,
+.app-shell.night-mode .punch-ledger-empty {
+  color: #aab8cb !important;
+}
+
+.app-shell.night-mode .punch-ledger-filter {
+  background: rgba(15, 23, 42, 0.72) !important;
+  border-color: rgba(71, 85, 105, 0.92) !important;
+  color: #dbe4ef !important;
+}
+
+.app-shell.night-mode .punch-ledger-filter.active {
+  background: #f8fafc !important;
+  border-color: #f8fafc !important;
+  color: #020617 !important;
+}
+
+.app-shell.night-mode .punch-ledger-row {
+  background: rgba(15, 23, 42, 0.56) !important;
+  border-color: rgba(71, 85, 105, 0.82) !important;
+}
+
+.app-shell.night-mode .punch-ledger-header,
+.app-shell.night-mode .punch-ledger-department {
+  color: #aab8cb !important;
+}
+
+.app-shell.night-mode .punch-ledger-name,
+.app-shell.night-mode .punch-ledger-time,
+.app-shell.night-mode .punch-ledger-hours {
+  color: #dbe4ef !important;
+}
+
+.app-shell.night-mode .punch-ledger-missing {
+  color: #fda4af !important;
+}
+
+.app-shell.night-mode .punch-ledger-status-present {
+  background: rgba(45, 212, 191, 0.16) !important;
+  color: #99f6e4 !important;
+}
+
+.app-shell.night-mode .punch-ledger-status-late {
+  background: rgba(251, 113, 133, 0.16) !important;
+  color: #fecdd3 !important;
+}
+
+.app-shell.night-mode .punch-ledger-status-active {
+  background: rgba(251, 191, 36, 0.18) !important;
+  color: #fde68a !important;
+}
+
+.app-shell.night-mode .punch-ledger-track {
+  background: rgba(148, 163, 184, 0.28) !important;
+}
+
+.app-shell.night-mode .timesheet-chart-card {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.62), rgba(15, 23, 42, 0.42)) !important;
+  border-color: rgba(100, 116, 139, 0.82) !important;
+}
+
+.app-shell.night-mode .timesheet-day-divider {
+  stroke: rgba(100, 116, 139, 0.28);
+}
+
+.app-shell.night-mode .timesheet-grid line {
+  stroke: rgba(148, 163, 184, 0.42);
+}
+
+.app-shell.night-mode .timesheet-grid text,
+.app-shell.night-mode .timesheet-date-label,
+.app-shell.night-mode .timesheet-legend text {
+  fill: #cbd5e1;
+}
+
+.app-shell.night-mode .timesheet-day-label {
+  fill: #f8fafc;
+}
+
+.app-shell.night-mode .timesheet-value {
+  stroke: rgba(15, 23, 42, 0.96);
+  stroke-width: 4px;
+}
+
+.app-shell.night-mode .attendance-value {
+  fill: #86efac;
+}
+
+.app-shell.night-mode .logged-value {
+  fill: #bfdbfe;
+}
+
+.app-shell.night-mode .project-detail-page,
+.app-shell.night-mode .project-detail-page * {
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+.app-shell.night-mode .project-detail-page .bg-slate-50 {
+  background-color: rgba(15, 23, 42, 0.38) !important;
+}
+
+.app-shell.night-mode .project-detail-page .bg-white {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.82), rgba(15, 23, 42, 0.82)) !important;
+  background-color: rgba(15, 23, 42, 0.86) !important;
+}
+
+.app-shell.night-mode .project-detail-page .text-slate-950,
+.app-shell.night-mode .project-detail-page .text-slate-900,
+.app-shell.night-mode .project-detail-page .text-slate-800,
+.app-shell.night-mode .project-detail-page .text-slate-700 {
+  color: #f8fafc !important;
+  opacity: 1;
+}
+
+.app-shell.night-mode .project-detail-page .text-slate-600,
+.app-shell.night-mode .project-detail-page .text-slate-500 {
+  color: #dbe4ef !important;
+  opacity: 1;
+}
+
+.app-shell.night-mode .project-detail-page .ticket-status-pill {
+  border: 1px solid rgba(100, 116, 139, 0.72) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .project-detail-page .ticket-status-pill.bg-slate-100 {
+  background-color: rgba(51, 65, 85, 0.95) !important;
+  color: #f8fafc !important;
+}
+
+.app-shell.night-mode .project-detail-page .ticket-status-pill.bg-amber-bg,
+.app-shell.night-mode .project-detail-page .ticket-status-pill.bg-teal-bg,
+.app-shell.night-mode .project-detail-page .ticket-status-pill.bg-coral-bg {
+  background-color: rgba(51, 65, 85, 0.88) !important;
+  color: #f8fafc !important;
+}
+
+.project-module-card-idle {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 168px;
+  gap: 12px;
+  border-color: rgba(178, 195, 214, 0.88);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(239, 247, 253, 0.78));
+  box-shadow: 0 12px 30px rgba(30, 41, 59, 0.07);
+}
+
+.project-module-card > * {
+  width: 100%;
+}
+
+.project-module-card .grid {
+  gap: 8px !important;
+}
+
+.project-module-card-idle:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 249, 253, 0.92));
+  border-color: rgba(148, 163, 184, 0.9);
+  box-shadow: 0 18px 38px rgba(30, 41, 59, 0.1);
+}
+
+.project-module-card-active {
+  border-color: rgba(16, 185, 129, 0.78);
+  background: rgba(236, 253, 245, 0.92);
+}
+
+.project-module-card .module-stat-box {
+  min-height: 64px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: rgba(248, 251, 254, 0.78) !important;
+  border-color: rgba(178, 195, 214, 0.82) !important;
+}
+
+.project-module-card .module-stat-box .text-lg {
+  font-size: clamp(1rem, 1.2vw, 1.125rem) !important;
+  line-height: 1.18 !important;
+  overflow-wrap: anywhere;
+}
+
+.app-shell.night-mode .project-detail-page .project-module-card-idle {
+  border-color: rgba(71, 85, 105, 0.9) !important;
+  background: rgba(15, 23, 42, 0.58) !important;
+}
+
+.app-shell.night-mode .project-detail-page .project-module-card-idle:hover {
+  background: rgba(30, 41, 59, 0.88) !important;
+}
+
+.app-shell.night-mode .project-detail-page .project-module-card-active {
+  border-color: rgba(52, 211, 153, 0.78) !important;
+  background: rgba(6, 78, 59, 0.36) !important;
+}
+
+.app-shell.night-mode .project-detail-page .project-module-card .module-stat-box {
+  background: rgba(15, 23, 42, 0.72) !important;
+  border-color: rgba(100, 116, 139, 0.78) !important;
+}
+
+.app-shell.night-mode .project-detail-page .project-module-card .module-stat-box .text-slate-500 {
+  color: #cbd5e1 !important;
+}
+
+.app-shell.night-mode .project-detail-page .project-module-card .module-stat-box .text-slate-900 {
+  color: #ffffff !important;
+}
+
+.overdue-ticket-card {
+  background: #fff1f2;
+  border-color: #fda4af;
+  box-shadow: 0 10px 24px rgba(225, 29, 72, 0.12);
+}
+
+.overdue-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: #ffe4e6;
+  color: #be123c;
+  border: 1px solid #fecdd3;
+  padding: 0.25rem 0.625rem;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.overdue-banner {
+  background: #fff1f2;
+  border: 1px solid #fda4af;
+  color: #be123c;
+}
+
+.overdue-date-text {
+  color: #be123c;
+}
+
+.project-status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.25rem 0.625rem;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  border: 1px solid transparent;
+}
+
+.project-status-badge-active {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+
+.project-status-badge-delivered {
+  background: #dcfce7;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+
+.app-shell.night-mode .overdue-ticket-card {
+  background:
+    linear-gradient(180deg, rgba(127, 29, 29, 0.52), rgba(88, 28, 28, 0.42)) !important;
+  border-color: rgba(251, 113, 133, 0.7) !important;
+  box-shadow: 0 12px 28px rgba(127, 29, 29, 0.32) !important;
+}
+
+.app-shell.night-mode .project-detail-page .overdue-ticket-card .text-slate-900,
+.app-shell.night-mode .project-detail-page .overdue-ticket-card .text-slate-700,
+.app-shell.night-mode .project-detail-page .overdue-ticket-card .text-slate-600,
+.app-shell.night-mode .project-detail-page .overdue-ticket-card .text-slate-500 {
+  color: #fff7f7 !important;
+}
+
+.app-shell.night-mode .overdue-badge {
+  background: rgba(159, 18, 57, 0.72) !important;
+  border-color: rgba(253, 164, 175, 0.72) !important;
+  color: #ffe4e6 !important;
+}
+
+.app-shell.night-mode .overdue-banner {
+  background: rgba(127, 29, 29, 0.38) !important;
+  border-color: rgba(253, 164, 175, 0.7) !important;
+  color: #ffe4e6 !important;
+}
+
+.app-shell.night-mode .overdue-date-text {
+  color: #fecdd3 !important;
+}
+
+.app-shell.night-mode .project-status-badge-active {
+  background: rgba(51, 65, 85, 0.9) !important;
+  border-color: rgba(148, 163, 184, 0.42) !important;
+  color: #eaf1fb !important;
+}
+
+.app-shell.night-mode .project-status-badge-delivered {
+  background: rgba(6, 78, 59, 0.82) !important;
+  border-color: rgba(52, 211, 153, 0.44) !important;
+  color: #d1fae5 !important;
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  .payslip-document,
+  .payslip-document * {
+    visibility: visible !important;
+  }
+
+  .payslip-document {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 28px !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  .payslip-document .bg-slate-950 {
+    background: #0f172a !important;
+    color: #ffffff !important;
+  }
+}
