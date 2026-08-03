@@ -7,7 +7,7 @@ import { ApiError } from '../services/apiClient.js'
 
 const router = useRouter()
 const route = useRoute()
-const { setCurrentUser } = useStore()
+const { setCurrentUser, setRolePermissions } = useStore()
 
 const email = ref('')
 const password = ref('')
@@ -38,6 +38,17 @@ async function login() {
   try {
     const { user } = await authService.login(email.value.trim(), password.value)
     setCurrentUser(user.id, user.name, user.role, user.email)
+
+    // Load the authoritative grid before navigating: the destination route's
+    // guard calls can(), and doing this after the redirect would evaluate it
+    // against the seeded fallback for one frame.
+    try {
+      setRolePermissions(await authService.permissions())
+    } catch {
+      // Non-fatal. The seeded grid stays in place, which may be narrower or
+      // wider than the server's — but the API enforces the real rules on every
+      // request regardless, so this cannot grant access, only misrender a menu.
+    }
 
     // Return them to whatever they were trying to reach before the guard
     // intercepted. Only relative paths, so a crafted ?redirect=https://evil

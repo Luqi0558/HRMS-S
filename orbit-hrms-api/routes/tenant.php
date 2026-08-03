@@ -3,7 +3,9 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\EmployeeInvitationController;
 use App\Http\Controllers\Api\OnboardingController;
+use App\Http\Controllers\Api\PermissionController;
 use Illuminate\Support\Facades\Route;
 use Stancl\Tenancy\Middleware\InitializeTenancyByRequestData;
 
@@ -59,5 +61,23 @@ Route::middleware([
         Route::post('/logout', [AuthController::class, 'logout'])->name('api.logout');
         Route::post('/logout-all', [AuthController::class, 'logoutAll'])
             ->name('api.logout.all');
+
+        // The signed-in user's effective permission grid. Fetched once after
+        // login so the UI stops relying on its own hardcoded copy.
+        Route::get('/me/permissions', [PermissionController::class, 'mine'])
+            ->name('api.me.permissions');
+
+        /*
+         * Inviting staff. Gated on the same grid the UI reads, so a hidden
+         * button and a refused request agree — the browser-side router guard
+         * is UX only and cannot be trusted.
+         */
+        Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
+            ->middleware('can.module:Employees,create')
+            ->name('api.employees.invite');
+
+        Route::post('/employees/{employee}/resend-invite', [EmployeeInvitationController::class, 'resend'])
+            ->middleware('can.module:Employees,create')
+            ->name('api.employees.resend-invite');
     });
 });

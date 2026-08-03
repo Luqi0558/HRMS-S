@@ -27,6 +27,16 @@ export const authService = {
     return data.user
   },
 
+  /**
+   * The effective permission grid for the signed-in user, already scoped to
+   * their role and with the super-admin fallthrough resolved server-side.
+   */
+  async permissions() {
+    const data = await apiClient.get('/me/permissions')
+
+    return data.permissions || []
+  },
+
   async logout() {
     try {
       await apiClient.post('/logout')

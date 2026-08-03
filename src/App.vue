@@ -1,10 +1,27 @@
 <script setup>
-import { onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Sidebar from './components/Sidebar.vue'
 import Topbar from './components/Topbar.vue'
+import { useStore } from './store/index.js'
+import { authService } from './services/authService.js'
 
 const route = useRoute()
+const { isAuthenticated, setRolePermissions } = useStore()
+
+// Login fetches the permission grid, but a page refresh restores the session
+// from localStorage without going through it. Without this the app would fall
+// back to the seeded rows for the whole session after any reload.
+onMounted(async () => {
+  if (!isAuthenticated() || !authService.isAuthenticated()) return
+
+  try {
+    setRolePermissions(await authService.permissions())
+  } catch {
+    // A 401 here is already handled by the client, which clears the session
+    // and redirects. Anything else leaves the seeded grid in place.
+  }
+})
 const themeStorageKey = 'orbit-night-mode'
 // The inline script in index.html already read this and set the pre-paint
 // class; reading it again here just seeds Vue's own reactive copy.

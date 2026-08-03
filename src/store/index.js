@@ -222,6 +222,12 @@ const state = reactive({
   //   'owned' - only records the user owns (project.managerId === user.id)
   //   'team'  - only records the user is a team member of
   //   'self'  - only the user's own record (own payslip, own profile)
+  //
+  // These rows are the SEED VALUES ONLY. After sign-in, setRolePermissions()
+  // replaces them with the grid the API returns for the current user, which is
+  // the authoritative copy (role_permissions in the tenant database). They are
+  // kept so the app still renders if that fetch fails, and so the shape of a
+  // row stays documented in one obvious place.
   rolePermissions: [
     // Employee
     { role: 'employee', module: 'Dashboard', view: true, create: false, approve: false, finance: false, scope: 'self' },
@@ -460,10 +466,16 @@ const SUPER_ADMIN_ROW = { view: true, create: true, approve: true, finance: true
 const SUPER_ADMIN_EXCLUDED = ['Leave Request', 'Medical Request', 'Tickets']
 
 function permissionRow(module, user = state.currentUser) {
+  // Direct match first. Once the API grid is loaded it already contains a
+  // resolved row per module for super_admin, so the fallthrough below is only
+  // reached with the seeded rows (API unreachable, or before sign-in).
+  const row = state.rolePermissions.find(r => r.role === user.role && r.module === module)
+  if (row) return row
+
   if (user.role === 'super_admin' && !SUPER_ADMIN_EXCLUDED.includes(module)) {
     return SUPER_ADMIN_ROW
   }
-  return state.rolePermissions.find(row => row.role === user.role && row.module === module) || null
+  return null
 }
 
 // Does the user own / belong to this record? Kept in one place so the
@@ -949,6 +961,27 @@ function setCurrentUser(id, name, role, email = '') {
   persistCurrentUser(state.currentUser)
 }
 
+/**
+ * Replaces the seeded grid with the one the API returned for the signed-in
+ * user. The API scopes rows to their role and has already resolved the
+ * super-admin fallthrough, so each row arrives without a `role` key — it is
+ * stamped back on here because permissionRow() looks rows up by role.
+ */
+function setRolePermissions(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return
+
+  const role = state.currentUser.role
+  state.rolePermissions = rows.map(row => ({
+    role,
+    module: row.module,
+    view: Boolean(row.view),
+    create: Boolean(row.create),
+    approve: Boolean(row.approve),
+    finance: Boolean(row.finance),
+    scope: row.scope
+  }))
+}
+
 function clearCurrentUser() {
   state.currentUser = { ...guestUser }
   try {
@@ -1021,6 +1054,7 @@ export function useStore() {
     setCurrentUser,
     clearCurrentUser,
     isAuthenticated,
+    setRolePermissions,
     startTicketTimer,
     stopTicketTimer,
     totalHoursToday
