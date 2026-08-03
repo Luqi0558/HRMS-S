@@ -96,9 +96,6 @@ class EmployeeRepository implements EmployeeRepositoryInterface
 
     public function loadFullProfile(Employee $employee): Employee
     {
-        // technicalProfile.stacks/skills are keyed on employee_id, so loading
-        // them through the technical profile keeps the resource able to read
-        // them without reaching back to the parent employee.
         return $employee->load([
             'user',
             'profile',

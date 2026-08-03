@@ -7,6 +7,8 @@ use App\Http\Controllers\Api\EmployeeController;
 use App\Http\Controllers\Api\EmployeeInvitationController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PermissionController;
+use App\Http\Controllers\Api\ProjectController;
+use App\Http\Controllers\Api\TicketController;
 use Illuminate\Support\Facades\Route;
 use Stancl\Tenancy\Middleware\InitializeTenancyByRequestData;
 
@@ -94,6 +96,70 @@ Route::middleware([
             ->whereNumber('employee')
             ->middleware('can.module:Employees,create')
             ->name('api.employees.update');
+
+        /*
+         * Projects. Resolved by slug because that is what the frontend routes
+         * on (/projects/internal). ProjectService applies the scope: a manager
+         * sees projects they manage, an employee those they are a member of.
+         */
+        Route::get('/projects', [ProjectController::class, 'index'])
+            ->middleware('can.module:Projects,view')
+            ->name('api.projects.index');
+
+        Route::post('/projects', [ProjectController::class, 'store'])
+            ->middleware('can.module:Projects,create')
+            ->name('api.projects.store');
+
+        Route::get('/projects/{project}', [ProjectController::class, 'show'])
+            ->middleware('can.module:Projects,view')
+            ->name('api.projects.show');
+
+        Route::patch('/projects/{project}', [ProjectController::class, 'update'])
+            ->middleware('can.module:Projects,create')
+            ->name('api.projects.update');
+
+        Route::put('/projects/{project}/members', [ProjectController::class, 'syncMembers'])
+            ->middleware('can.module:Projects,create')
+            ->name('api.projects.members');
+
+        /*
+         * Tickets. `update` is deliberately gated only on view: an assignee may
+         * move their own ticket through the board without holding create,
+         * which TicketService enforces per record.
+         */
+        Route::get('/tickets', [TicketController::class, 'index'])
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.index');
+
+        Route::post('/tickets', [TicketController::class, 'store'])
+            ->middleware('can.module:Tickets,create')
+            ->name('api.tickets.store');
+
+        // Fixed segments before the wildcard, or /tickets/stop-timer would be
+        // parsed as a ticket id.
+        Route::post('/tickets/stop-timer', [TicketController::class, 'stopTimer'])
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.stop-timer');
+
+        Route::get('/tickets/{ticket}', [TicketController::class, 'show'])
+            ->whereNumber('ticket')
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.show');
+
+        Route::patch('/tickets/{ticket}', [TicketController::class, 'update'])
+            ->whereNumber('ticket')
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.update');
+
+        Route::post('/tickets/{ticket}/comments', [TicketController::class, 'comment'])
+            ->whereNumber('ticket')
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.comment');
+
+        Route::post('/tickets/{ticket}/start-timer', [TicketController::class, 'startTimer'])
+            ->whereNumber('ticket')
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.start-timer');
 
         Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
             ->middleware('can.module:Employees,create')
