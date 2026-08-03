@@ -49,8 +49,20 @@ return new class extends Migration
 
             // Points at the medialibrary row holding the actual file. Nullable
             // so HR can mark a document as required/pending before it arrives.
+            //
+            // Currently unused: medialibrary is installed but not configured on
+            // the Employee model, so uploads go straight to a storage disk and
+            // are tracked by the columns below. Kept so migrating to
+            // medialibrary later does not need a schema change.
             $table->foreignId('media_id')->nullable()
                 ->constrained('media')->nullOnDelete();
+
+            // Where the file actually lives, relative to the configured disk.
+            $table->string('disk')->nullable();
+            $table->string('path')->nullable();
+            $table->string('original_name')->nullable();
+            $table->unsignedBigInteger('size_bytes')->nullable();
+            $table->string('mime_type')->nullable();
 
             $table->enum('status', ['pending', 'submitted', 'verified', 'rejected'])
                 ->default('pending');

@@ -1,15 +1,26 @@
 <script setup>
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { useStore } from '../store/index.js'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { onboardingService } from '../services/onboardingService.js'
+import { ApiError } from '../services/apiClient.js'
 
 const router = useRouter()
-const { state } = useStore()
-const step = ref('form')
+const route = useRoute()
+
+// 'loading' while the token is resolved, 'invalid' if it is not usable,
+// 'form' for the wizard, 'success' once submitted.
+const step = ref('loading')
 const currentStep = ref(0)
 const password = ref('')
 const confirm = ref('')
 const openDropdown = ref(null)
+
+const inviteToken = ref('')
+const invitedEmployee = ref(null)
+const inviteError = ref('')
+const submitError = ref('')
+const fieldErrors = ref({})
+const isSubmitting = ref(false)
 
 const profile = ref({
   phone: '',
@@ -76,9 +87,42 @@ const skillOptions = [
 
 const isLastStep = computed(() => currentStep.value === steps.length - 1)
 const progressWidth = computed(() => `${(currentStep.value / (steps.length - 1)) * 100}%`)
-const invitedEmployee = computed(() =>
-  state.employees.find(employee => employee.status === 'invited') || state.employees.find(employee => employee.email === 'hina.malik@company.com')
-)
+
+/**
+ * Resolves the token in the URL to the person actually invited.
+ *
+ * This previously scanned the mock store for any employee with status
+ * 'invited', which picked an arbitrary one once two invitations were
+ * outstanding — and let anyone who opened the page complete a stranger's
+ * onboarding. The token is now the credential.
+ */
+onMounted(async () => {
+  const token = typeof route.query.token === 'string' ? route.query.token : ''
+
+  if (!token) {
+    inviteError.value = 'This link is missing its invitation code. Please use the link from your invitation email.'
+    step.value = 'invalid'
+    return
+  }
+
+  inviteToken.value = token
+
+  try {
+    const data = await onboardingService.resolve(token)
+    // The email lives on the invitation (pinned at send time), not the
+    // employee — merged here so the template has one object to read.
+    invitedEmployee.value = { ...data.employee, email: data.invitation.email }
+    // Prefill what HR already recorded, so the invitee confirms rather than
+    // retypes it.
+    profile.value.designation = data.employee.designation || ''
+    step.value = 'form'
+  } catch (error) {
+    inviteError.value = error instanceof ApiError
+      ? error.message
+      : 'We could not check this invitation. Please try again in a moment.'
+    step.value = 'invalid'
+  }
+})
 
 function toggleDropdown(name) {
   openDropdown.value = openDropdown.value === name ? null : name
@@ -107,14 +151,35 @@ function previousStep() {
 
 const MIN_PASSWORD_LENGTH = 8
 
-function submitRegistration() {
-  if (!password.value || password.value.length < MIN_PASSWORD_LENGTH) return
-  if (password.value !== confirm.value) return
-  const employee = invitedEmployee.value
-  if (employee) {
-    employee.status = 'active'
-    employee.onboarding = {
-      submittedAt: new Date().toISOString(),
+const passwordProblem = computed(() => {
+  if (!password.value) return 'Please choose a password.'
+  if (password.value.length < MIN_PASSWORD_LENGTH) {
+    return `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+  }
+  if (password.value !== confirm.value) return 'The two passwords do not match.'
+  return ''
+})
+
+async function submitRegistration() {
+  if (isSubmitting.value) return
+
+  submitError.value = ''
+  fieldErrors.value = {}
+
+  // Client-side first so the obvious mistakes do not cost a round trip. The
+  // server re-checks all of it — this is convenience, not the real rule.
+  if (passwordProblem.value) {
+    submitError.value = passwordProblem.value
+    return
+  }
+
+  isSubmitting.value = true
+
+  try {
+    await onboardingService.complete({
+      token: inviteToken.value,
+      password: password.value,
+      passwordConfirmation: confirm.value,
       personal: {
         phone: profile.value.phone,
         cnic: profile.value.cnic,
@@ -125,12 +190,12 @@ function submitRegistration() {
       },
       technical: {
         designation: profile.value.designation,
-        stacks: [...profile.value.stacks],
         experienceYears: profile.value.experienceYears,
-        skills: [...profile.value.skills],
         githubUrl: profile.value.githubUrl,
         portfolioUrl: profile.value.portfolioUrl,
-        linkedinUrl: profile.value.linkedinUrl
+        linkedinUrl: profile.value.linkedinUrl,
+        stacks: [...profile.value.stacks],
+        skills: [...profile.value.skills]
       },
       documents: {
         photo: profile.value.photo,
@@ -140,9 +205,36 @@ function submitRegistration() {
         education: profile.value.education,
         experience: profile.value.experience
       }
+    })
+
+    step.value = 'success'
+  } catch (error) {
+    if (error instanceof ApiError) {
+      fieldErrors.value = error.errors || {}
+
+      // A dead token cannot be recovered from by resubmitting, so send the
+      // user back to the invalid screen rather than leaving them retrying.
+      if (error.code === 'invalid_invitation') {
+        inviteError.value = error.message
+        step.value = 'invalid'
+        return
+      }
+
+      submitError.value = error.status === 422
+        ? firstValidationMessage(error) || error.message
+        : error.message
+    } else {
+      submitError.value = 'Cannot reach the server. Please check your connection and try again.'
     }
+  } finally {
+    isSubmitting.value = false
   }
-  step.value = 'success'
+}
+
+/** Surfaces the first field error, since the wizard's last step has no room for a list. */
+function firstValidationMessage(error) {
+  const first = Object.values(error.errors || {})[0]
+  return Array.isArray(first) ? first[0] : null
 }
 </script>
 
@@ -150,12 +242,27 @@ function submitRegistration() {
   <div class="invite-page">
     <div class="invite-heading">
       <div class="invite-title">Welcome to Orbit HRMS</div>
-      <div class="invite-subtitle">
-        <span>{{ invitedEmployee?.name || 'Employee' }}</span> has been invited to join <span>Company Inc.</span>
+      <div v-if="invitedEmployee" class="invite-subtitle">
+        <span>{{ invitedEmployee.name }}</span> has been invited to join <span>Company Inc.</span>
       </div>
     </div>
 
-    <section v-if="step === 'form'" class="invite-card">
+    <!-- Resolving the token. Brief, but without it the wizard would flash on
+         screen before we know the invitation is even valid. -->
+    <section v-if="step === 'loading'" class="invite-card invite-state-card">
+      <div class="invite-state-title">Checking your invitation…</div>
+    </section>
+
+    <!-- Missing, expired, or already-used link. There is no way forward from
+         here, so no form is shown — only the reason and a way to sign in. -->
+    <section v-else-if="step === 'invalid'" class="invite-card invite-state-card">
+      <div class="invite-state-icon" aria-hidden="true">!</div>
+      <div class="invite-state-title">This invitation cannot be used</div>
+      <p class="invite-state-message">{{ inviteError }}</p>
+      <button type="button" class="link-btn" @click="router.push({ name: 'login' })">Go to sign in</button>
+    </section>
+
+    <section v-else-if="step === 'form'" class="invite-card">
       <div class="stepper-wrap">
         <div class="step-line">
           <div class="step-line-active" :style="{ width: progressWidth }"></div>
@@ -341,10 +448,16 @@ function submitRegistration() {
         </div>
       </div>
 
+      <!-- Server-side failures: validation the client did not catch, or a
+           rejected file. Field errors are keyed like "personal.phone". -->
+      <div v-if="submitError" role="alert" class="submit-error">{{ submitError }}</div>
+
       <div class="actions">
-        <button v-if="currentStep > 0" type="button" class="secondary-btn" @click="previousStep">Back</button>
+        <button v-if="currentStep > 0" type="button" class="secondary-btn" :disabled="isSubmitting" @click="previousStep">Back</button>
         <button v-if="!isLastStep" type="button" class="primary-btn" @click="nextStep">Next</button>
-        <button v-else type="button" class="primary-btn" @click="submitRegistration">Submit registration</button>
+        <button v-else type="button" class="primary-btn" :disabled="isSubmitting" @click="submitRegistration">
+          {{ isSubmitting ? 'Submitting…' : 'Submit registration' }}
+        </button>
       </div>
     </section>
 
@@ -736,6 +849,59 @@ function submitRegistration() {
 .error-text {
   color: #dc2626;
   font-size: 13px;
+}
+
+/* Shown for the loading and invalid-invitation states, which replace the
+   wizard entirely rather than appearing inside it. */
+.invite-state-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  padding: 48px 32px;
+}
+
+.invite-state-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: #FDF1EE;
+  color: #B93636;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.invite-state-title {
+  font-size: 17px;
+  font-weight: 800;
+  color: #12161C;
+}
+
+.invite-state-message {
+  max-width: 420px;
+  color: #6B7280;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.submit-error {
+  margin-top: 16px;
+  border: 1px solid #F3C0B4;
+  border-radius: 8px;
+  background: #FDF1EE;
+  padding: 12px 14px;
+  color: #982C2C;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.primary-btn:disabled,
+.secondary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .success-card {

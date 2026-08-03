@@ -55,11 +55,14 @@ class CompleteOnboardingRequest extends FormRequest
             'technical.portfolioUrl' => ['nullable', 'url', 'max:255'],
             'technical.linkedinUrl' => ['nullable', 'url', 'max:255'],
 
+            // `nullable` on the elements so a stray empty entry from a form
+            // serialiser is ignored rather than failing the whole submission —
+            // the repository already filters blanks before inserting.
             'technical.stacks' => ['sometimes', 'array', 'max:50'],
-            'technical.stacks.*' => ['string', 'max:255'],
+            'technical.stacks.*' => ['nullable', 'string', 'max:255'],
 
             'technical.skills' => ['sometimes', 'array', 'max:100'],
-            'technical.skills.*' => ['string', 'max:255'],
+            'technical.skills.*' => ['nullable', 'string', 'max:255'],
 
             // skill => level. Levels are optional: the wizard collects skills
             // without them, and the column is nullable to match.
@@ -69,7 +72,7 @@ class CompleteOnboardingRequest extends FormRequest
             ],
 
             'technical.currentlyLearning' => ['sometimes', 'array', 'max:50'],
-            'technical.currentlyLearning.*' => ['string', 'max:255'],
+            'technical.currentlyLearning.*' => ['nullable', 'string', 'max:255'],
 
             // Files are optional at this stage — HR chases missing paperwork
             // afterwards via employee_documents.status.

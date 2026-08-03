@@ -27,4 +27,12 @@ interface OnboardingRepositoryInterface
 
     /** Upserts one document slot; re-uploading replaces the file on the same row. */
     public function attachDocument(Employee $employee, string $type, ?int $mediaId, string $status = 'submitted'): void;
+
+    /**
+     * Stores uploaded files against their slots.
+     *
+     * @param array<string, \Illuminate\Http\UploadedFile> $files keyed by the
+     *        frontend's camelCase upload name (cv, cnicFront, ...)
+     */
+    public function saveDocuments(Employee $employee, array $files): void;
 }

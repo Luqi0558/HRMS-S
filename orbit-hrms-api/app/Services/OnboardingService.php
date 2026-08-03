@@ -97,6 +97,12 @@ class OnboardingService
             }
             $this->employees->update($employee, $employeeUpdates);
 
+            // Inside the transaction so a later failure does not leave document
+            // rows pointing at an onboarding that was rolled back. The files
+            // themselves are already on disk at this point — orphaned blobs are
+            // harmless, orphaned rows are not.
+            $this->onboarding->saveDocuments($employee, $payload['documents'] ?? []);
+
             $this->attachLogin($employee, $payload['password']);
 
             $this->invitations->markAccepted($invitation);

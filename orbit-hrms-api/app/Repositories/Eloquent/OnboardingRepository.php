@@ -120,6 +120,40 @@ class OnboardingRepository implements OnboardingRepositoryInterface
         );
     }
 
+    public function saveDocuments(Employee $employee, array $files): void
+    {
+        foreach ($files as $key => $file) {
+            // Ignore unknown keys rather than trusting request input to name a
+            // column value — `type` is an enum and a bad value would throw.
+            $type = EmployeeDocument::TYPE_MAP[$key] ?? null;
+            if (! $type || ! $file) {
+                continue;
+            }
+
+            // Stored under the employee's id with a generated name: the
+            // original filename is attacker-controlled and is kept only as a
+            // display label.
+            $path = $file->store("employees/{$employee->id}/documents", 'local');
+
+            $employee->documents()->updateOrCreate(
+                ['employee_id' => $employee->id, 'type' => $type],
+                [
+                    'disk' => 'local',
+                    'path' => $path,
+                    'original_name' => $file->getClientOriginalName(),
+                    'size_bytes' => $file->getSize(),
+                    'mime_type' => $file->getClientMimeType(),
+                    'status' => 'submitted',
+                    // A replacement resets verification — HR has not seen this
+                    // file yet.
+                    'verified_by' => null,
+                    'verified_at' => null,
+                    'rejection_reason' => null,
+                ]
+            );
+        }
+    }
+
     /** @return array<string, string> Frontend upload key => document type. */
     public function documentTypeMap(): array
     {

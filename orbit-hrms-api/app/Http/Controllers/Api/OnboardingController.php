@@ -45,6 +45,8 @@ class OnboardingController extends Controller
      */
     public function complete(CompleteOnboardingRequest $request): JsonResponse
     {
+        // validated() returns the uploaded files as UploadedFile instances
+        // under `documents`, which is what saveDocuments expects.
         $employee = $this->onboarding->completeOnboarding(
             $request->string('token')->toString(),
             $request->validated(),
