@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\EmployeeController;
 use App\Http\Controllers\Api\EmployeeInvitationController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PermissionController;
@@ -72,6 +73,28 @@ Route::middleware([
          * button and a refused request agree — the browser-side router guard
          * is UX only and cannot be trusted.
          */
+        /*
+         * Employees. The middleware gates the module; EmployeeService applies
+         * the scope, so HR sees everyone and a manager only their own people
+         * from the same route.
+         *
+         * `show` is deliberately ungated: a user must be able to open their
+         * own record, and an ordinary employee holds no Employees permission
+         * at all. The service enforces the record-level rule instead.
+         */
+        Route::get('/employees', [EmployeeController::class, 'index'])
+            ->middleware('can.module:Employees,view')
+            ->name('api.employees.index');
+
+        Route::get('/employees/{employee}', [EmployeeController::class, 'show'])
+            ->whereNumber('employee')
+            ->name('api.employees.show');
+
+        Route::patch('/employees/{employee}', [EmployeeController::class, 'update'])
+            ->whereNumber('employee')
+            ->middleware('can.module:Employees,create')
+            ->name('api.employees.update');
+
         Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
             ->middleware('can.module:Employees,create')
             ->name('api.employees.invite');

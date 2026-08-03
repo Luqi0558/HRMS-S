@@ -24,4 +24,19 @@ interface EmployeeRepositoryInterface
 
     /** Eager-loads the onboarding relations so the profile endpoint is one query set. */
     public function loadFullProfile(Employee $employee): Employee;
+
+    /**
+     * Paginated list, optionally restricted to a set of ids.
+     *
+     * A null $visibleIds means no restriction ('all' scope). An empty array
+     * means "nobody" — the two must not be conflated, or a scope that resolves
+     * to nothing would silently return everyone.
+     *
+     * @param array<int, int>|null $visibleIds
+     */
+    public function paginateScoped(
+        ?array $visibleIds,
+        array $filters = [],
+        int $perPage = 25
+    ): \Illuminate\Contracts\Pagination\LengthAwarePaginator;
 }

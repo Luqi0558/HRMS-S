@@ -4,6 +4,7 @@ namespace App\Repositories\Eloquent;
 
 use App\Models\Employee;
 use App\Repositories\Contracts\EmployeeRepositoryInterface;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 
 class EmployeeRepository implements EmployeeRepositoryInterface
 {
@@ -62,6 +63,35 @@ class EmployeeRepository implements EmployeeRepositoryInterface
         }
 
         return sprintf('ORB-%04d', $next);
+    }
+
+    public function paginateScoped(
+        ?array $visibleIds,
+        array $filters = [],
+        int $perPage = 25
+    ): LengthAwarePaginator {
+        $query = $this->model->newQuery()->with('user:id,role,status');
+        if ($visibleIds !== null) {
+            $query->whereIn('id', $visibleIds);
+        }
+
+        if (filled($filters['search'] ?? null)) {
+            $term = '%'.$filters['search'].'%';
+            $query->where(function ($q) use ($term) {
+                $q->where('name', 'like', $term)
+                    ->orWhere('email', 'like', $term)
+                    ->orWhere('employee_code', 'like', $term)
+                    ->orWhere('designation', 'like', $term);
+            });
+        }
+
+        foreach (['status', 'department', 'designation'] as $field) {
+            if (filled($filters[$field] ?? null)) {
+                $query->where($field, $filters[$field]);
+            }
+        }
+
+        return $query->orderBy('name')->paginate($perPage);
     }
 
     public function loadFullProfile(Employee $employee): Employee

@@ -20,6 +20,9 @@ orbit-hrms-api/storage/framework/cache/*
 orbit-hrms-api/storage/framework/sessions/*
 orbit-hrms-api/storage/framework/views/*
 orbit-hrms-api/storage/logs/*
+# stancl/tenancy creates a storage directory per tenant. Test runs generate
+# one per test, so without this every run leaves untracked clutter behind.
+orbit-hrms-api/storage/tenant*/
 orbit-hrms-api/bootstrap/cache/*
 orbit-hrms-api/.phpunit.cache
 orbit-hrms-api/.phpunit.result.cache

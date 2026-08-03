@@ -25,6 +25,8 @@ class DatabaseSeeder extends Seeder
         // environment rather than left to a deployer to remember to skip.
         if (app()->environment(['local', 'testing'])) {
             $this->call(DemoUserSeeder::class);
+            // After the users, since it resolves employees by email.
+            $this->call(DemoProjectSeeder::class);
         } else {
             $this->command?->warn('Skipping DemoUserSeeder outside local/testing.');
         }

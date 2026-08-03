@@ -5,6 +5,8 @@ namespace App\Exceptions;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Stancl\Tenancy\Exceptions\TenantCouldNotBeIdentifiedException;
 use Throwable;
 
@@ -53,6 +55,30 @@ class Handler extends ExceptionHandler
          * via stancl's $onFail hook — they are thrown inside the middleware
          * stack, where renderable() does not reliably catch them.
          */
+        /*
+         * Domain-ish HTTP exceptions thrown from services. Without these the
+         * API returns a full stack trace with debug on, and a bare
+         * {"message":"Server Error"} with it off — neither of which a client
+         * can act on.
+         */
+        $this->renderable(function (NotFoundHttpException $e, Request $request) {
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => $e->getMessage() ?: 'Not found.',
+                    'error' => 'not_found',
+                ], 404);
+            }
+        });
+
+        $this->renderable(function (AccessDeniedHttpException $e, Request $request) {
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => $e->getMessage() ?: 'You do not have permission to do that.',
+                    'error' => 'forbidden',
+                ], 403);
+            }
+        });
+
         $this->renderable(function (AuthenticationException $e, Request $request) {
             if ($request->expectsJson()) {
                 return response()->json([
