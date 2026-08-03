@@ -44,8 +44,6 @@ class DemoUserSeeder extends Seeder
             $user->name = $name;
             $user->role = $role;
             $user->status = $status;
-            // Invited accounts have no password — that is the state the
-            // accept-invite flow expects, and User::canSignIn() refuses them.
             $user->password = $status === 'invited' ? null : self::PASSWORD;
             $user->save();
 

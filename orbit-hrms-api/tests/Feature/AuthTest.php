@@ -140,10 +140,10 @@ class AuthTest extends TenantTestCase
             ->assertJsonPath('error', 'unauthenticated');
     }
 
-    public function test_the_me_endpoint_returns_the_signed_in_user_with_their_employee_record(): void
+    public function test_the_me_endpoint_returns_the_signed_in_user_and_their_employee_id(): void
     {
         $user = $this->makeUser();
-        Employee::create([
+        $employee = Employee::create([
             'user_id' => $user->id,
             'employee_code' => 'ORB-0001',
             'name' => $user->name,
@@ -161,7 +161,45 @@ class AuthTest extends TenantTestCase
         ]))
             ->assertOk()
             ->assertJsonPath('user.email', 'ayesha@test.com')
-            ->assertJsonPath('user.employee.employeeCode', 'ORB-0001');
+            // A reference, not the whole record — the employment details are
+            // fetched separately by the screens that need them.
+            ->assertJsonPath('user.employeeId', $employee->id);
+    }
+
+    /**
+     * Login is the one unauthenticated endpoint, so its response is disclosed
+     * on any successful guess. It must not carry HR data.
+     */
+    public function test_login_does_not_disclose_the_employment_record(): void
+    {
+        $user = $this->makeUser();
+        Employee::create([
+            'user_id' => $user->id,
+            'employee_code' => 'ORB-0001',
+            'name' => $user->name,
+            'email' => $user->email,
+            'designation' => 'Software Engineer',
+            'department' => 'Engineering',
+            'birthday' => '1998-07-22',
+            'status' => 'active',
+        ]);
+
+        $response = $this->postJson('/api/login', [
+            'email' => 'ayesha@test.com',
+            'password' => 'password123',
+        ], $this->tenantHeaders());
+
+        $response->assertOk()
+            ->assertJsonMissingPath('user.employee')
+            ->assertJsonMissingPath('user.designation')
+            ->assertJsonMissingPath('user.department')
+            ->assertJsonMissingPath('user.birthday');
+
+        // The identity fields appear exactly once.
+        $this->assertSame(
+            ['id', 'name', 'email', 'role', 'status', 'lastLoginAt', 'employeeId'],
+            array_keys($response->json('user'))
+        );
     }
 
     public function test_logging_out_revokes_only_the_current_token(): void

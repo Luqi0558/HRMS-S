@@ -5,6 +5,17 @@ namespace App\Http\Resources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * The employment record.
+ *
+ * `name` and `email` also exist on `users`, and both are kept: this is the HR
+ * record, which is authoritative for payroll and correspondence, while the
+ * user's copy is what they sign in with. They can legitimately differ — a
+ * departed employee keeps their record after the login is revoked.
+ *
+ * This resource is therefore never nested inside a user payload, where the two
+ * copies would appear side by side with no indication of which one wins.
+ */
 class EmployeeResource extends JsonResource
 {
     public function toArray(Request $request): array
