@@ -1,16 +1,20 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
+import { authService } from '../services/authService.js'
+import { ApiError } from '../services/apiClient.js'
 
 const router = useRouter()
-const { state, availableRoles, roleLabel, setCurrentUserRole, setCurrentUser } = useStore()
-const selectedRole = ref('employee')
-const selectedUser = ref('1')
-const loginError = ref('')
-const typedHeadline = ref('')
+const route = useRoute()
+const { setCurrentUser } = useStore()
 
-const superAdminUser = { id: 99, name: 'Admin User', email: 'admin@company.com', status: 'active' }
+const email = ref('')
+const password = ref('')
+const loginError = ref('')
+const fieldErrors = ref({})
+const isSubmitting = ref(false)
+const typedHeadline = ref('')
 const bannerHeadlines = [
   'Run HR operations with clarity.',
   'Manage teams without the clutter.',
@@ -24,31 +28,41 @@ let charIndex = 0
 let isDeleting = false
 let reduceMotionQuery = null
 
-const currentUsers = computed(() => {
-  if (selectedRole.value === 'super_admin') return [superAdminUser]
-  return state.employees.filter(employee => employee.role === selectedRole.value)
-})
+async function login() {
+  if (isSubmitting.value) return
 
-const selectedUserRecord = computed(() =>
-  currentUsers.value.find(user => user.id.toString() === selectedUser.value)
-)
-
-function onRoleChange() {
   loginError.value = ''
-  selectedUser.value = currentUsers.value[0]?.id?.toString() || ''
-}
+  fieldErrors.value = {}
+  isSubmitting.value = true
 
-function login() {
-  loginError.value = ''
-  const user = currentUsers.value.find(u => u.id.toString() === selectedUser.value)
-  if (user) {
-    if (user.status === 'blocked') {
-      loginError.value = 'This account is blocked. Please contact HR or Super Admin.'
-      return
+  try {
+    const { user } = await authService.login(email.value.trim(), password.value)
+    setCurrentUser(user.id, user.name, user.role, user.email)
+
+    // Return them to whatever they were trying to reach before the guard
+    // intercepted. Only relative paths, so a crafted ?redirect=https://evil
+    // cannot turn the login form into an open redirect.
+    const redirect = route.query.redirect
+    if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      router.replace(redirect)
+    } else {
+      router.replace({ name: 'dashboard' })
     }
-    setCurrentUser(user.id, user.name, selectedRole.value, user.email)
-    setCurrentUserRole(selectedRole.value)
-    router.push({ name: 'dashboard' })
+  } catch (error) {
+    if (error instanceof ApiError) {
+      // 422 carries per-field messages; everything else (bad credentials,
+      // blocked account, unknown tenant) is a single message for the banner.
+      if (error.status === 422) {
+        fieldErrors.value = error.errors
+      }
+      loginError.value = error.message
+    } else {
+      // Network failure or the API being down — `error.message` here is a
+      // browser string like "Failed to fetch", which tells the user nothing.
+      loginError.value = 'Cannot reach the server. Please check your connection and try again.'
+    }
+  } finally {
+    isSubmitting.value = false
   }
 }
 
@@ -94,7 +108,15 @@ function startBannerAnimation() {
   stepTypewriter()
 }
 
-onMounted(startBannerAnimation)
+onMounted(() => {
+  startBannerAnimation()
+
+  // Set by the 401 handler when a token is rejected mid-session, so the user
+  // understands why they were returned here.
+  if (route.query.expired) {
+    loginError.value = 'Your session has ended. Please sign in again.'
+  }
+})
 
 onBeforeUnmount(() => {
   clearTypeTimer()
@@ -122,37 +144,49 @@ onBeforeUnmount(() => {
             <p>Welcome back</p>
           </div>
 
-          <div class="mt-7 space-y-4">
+          <form class="mt-7 space-y-4" @submit.prevent="login">
             <label class="block">
-              <span class="login-label">Role</span>
-              <select v-model="selectedRole" @change="onRoleChange" class="login-field">
-                <option v-for="role in availableRoles" :key="role" :value="role">{{ roleLabel(role) }}</option>
-              </select>
+              <span class="login-label">Email</span>
+              <input
+                v-model="email"
+                type="email"
+                autocomplete="username"
+                required
+                placeholder="you@company.com"
+                class="login-field"
+              />
+              <span v-if="fieldErrors.email" class="login-field-error">{{ fieldErrors.email[0] }}</span>
             </label>
 
             <label class="block">
-              <span class="login-label">Account</span>
-              <select v-model="selectedUser" class="login-field">
-                <option v-for="user in currentUsers" :key="user.id" :value="user.id.toString()">
-                  {{ user.name }}{{ user.status === 'blocked' ? ' (blocked)' : '' }}
-                </option>
-              </select>
+              <span class="login-label">Password</span>
+              <input
+                v-model="password"
+                type="password"
+                autocomplete="current-password"
+                required
+                placeholder="••••••••"
+                class="login-field"
+              />
+              <span v-if="fieldErrors.password" class="login-field-error">{{ fieldErrors.password[0] }}</span>
             </label>
-          </div>
 
-          <div v-if="loginError" class="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
-            {{ loginError }}
-          </div>
+            <div v-if="loginError" role="alert" class="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
+              {{ loginError }}
+            </div>
 
-          <button @click="login" class="login-submit w-full">
-            <span>Continue to dashboard</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 12h14m-6-6 6 6-6 6" />
-            </svg>
-          </button>
+            <!-- Inside the form so Enter submits, and type=submit rather than a
+                 click handler for the same reason. -->
+            <button type="submit" :disabled="isSubmitting" class="login-submit w-full">
+              <span>{{ isSubmitting ? 'Signing in…' : 'Sign in' }}</span>
+              <svg v-if="!isSubmitting" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h14m-6-6 6 6-6 6" />
+              </svg>
+            </button>
+          </form>
 
           <div class="login-card-footer">
-            Demo sign-in for frontend preview.
+            Trouble signing in? Contact your HR administrator.
           </div>
         </section>
       </main>
@@ -337,12 +371,20 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 4px rgba(15, 139, 118, 0.14);
 }
 
+.login-field-error {
+  display: block;
+  margin-top: 0.4rem;
+  color: #b93636;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
 .login-submit {
   /* Spacing lives here, not on an `mt-8` utility in the markup: Tailwind's
      Preflight resets `button { margin: 0 }` at the same specificity as a margin
-     utility, and won the cascade — the button sat flush against the Account
-     field. A scoped class rule is outside that tie. */
-  margin-top: 2rem;
+     utility, and won the cascade. Smaller than before because the button now
+     sits inside a space-y-4 form that already provides a gap. */
+  margin-top: 0.75rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -378,6 +420,12 @@ onBeforeUnmount(() => {
 .login-submit:focus-visible {
   outline: 3px solid rgba(15, 139, 118, 0.35);
   outline-offset: 2px;
+}
+
+.login-submit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .login-card-footer {

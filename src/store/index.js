@@ -2,15 +2,19 @@ import { reactive, computed } from 'vue'
 import { employees, attendance, projects, tickets, medicalClaims, leaveRequests, salarySlipRequests } from '../data/mock.js'
 
 const currentUserStorageKey = 'orbit-current-user'
-const defaultCurrentUser = { id: 3, name: 'Zara Nadeem', role: 'manager', email: 'zara.nadeem@company.com' }
+
+// A signed-out session. Previously this defaulted to a hardcoded manager
+// ("Zara Nadeem"), which meant anyone opening the app was silently logged in —
+// the router guard checked permissions but never authentication.
+const guestUser = { id: null, name: '', role: 'guest', email: '' }
 
 function loadStoredCurrentUser() {
-  if (typeof window === 'undefined') return defaultCurrentUser
+  if (typeof window === 'undefined') return { ...guestUser }
   try {
     const stored = window.localStorage.getItem(currentUserStorageKey)
-    if (!stored) return defaultCurrentUser
+    if (!stored) return { ...guestUser }
     const parsed = JSON.parse(stored)
-    if (!parsed?.id || !parsed?.name || !parsed?.role) return defaultCurrentUser
+    if (!parsed?.id || !parsed?.name || !parsed?.role) return { ...guestUser }
     return {
       id: parsed.id,
       name: parsed.name,
@@ -18,7 +22,7 @@ function loadStoredCurrentUser() {
       email: parsed.email || ''
     }
   } catch {
-    return defaultCurrentUser
+    return { ...guestUser }
   }
 }
 
@@ -945,6 +949,19 @@ function setCurrentUser(id, name, role, email = '') {
   persistCurrentUser(state.currentUser)
 }
 
+function clearCurrentUser() {
+  state.currentUser = { ...guestUser }
+  try {
+    window.localStorage.removeItem(currentUserStorageKey)
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function isAuthenticated() {
+  return Boolean(state.currentUser.id)
+}
+
 export function useStore() {
   return {
     state,
@@ -1002,6 +1019,8 @@ export function useStore() {
     permissionRow,
     setCurrentUserRole,
     setCurrentUser,
+    clearCurrentUser,
+    isAuthenticated,
     startTicketTimer,
     stopTicketTimer,
     totalHoursToday

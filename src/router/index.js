@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { projects } from '../data/mock.js'
 import { useStore } from '../store/index.js'
+import { authService } from '../services/authService.js'
+import { setUnauthenticatedHandler } from '../services/apiClient.js'
 
 function projectById(id) {
   return projects.find(project => project.id === Number(id))
@@ -63,15 +65,34 @@ const router = createRouter({
   routes
 })
 
-// Global permission guard. Reads the same rolePermissions table as the pages
-// and the sidebar, so a typed URL cannot bypass a hidden nav link.
+// Global auth + permission guard.
 //
 // NOTE: this is UX only — it runs in the browser and can be bypassed by anyone
-// editing localStorage. The Laravel API must enforce the same rules.
+// editing localStorage. The Laravel API enforces the same rules server-side;
+// this exists so the UI does not show a page the API would refuse.
 router.beforeEach(to => {
-  if (to.meta.blank) return true
+  const { can, isAuthenticated } = useStore()
 
-  const { can } = useStore()
+  // Blank routes (login, accept-invite) are the way IN, so they must stay
+  // reachable while signed out — but a signed-in user landing on /login has no
+  // reason to see it again.
+  if (to.meta.blank) {
+    if (to.name === 'login' && isAuthenticated() && authService.isAuthenticated()) {
+      return { name: 'dashboard' }
+    }
+    return true
+  }
+
+  // Authentication before permissions. This check did not exist: the store
+  // defaulted to a hardcoded manager, so typing /dashboard in a fresh browser
+  // signed you in as someone else entirely.
+  //
+  // Both halves must agree — a stored user without a token cannot call the API,
+  // and a token without a stored user leaves the UI with no name or role.
+  if (!isAuthenticated() || !authService.isAuthenticated()) {
+    return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } }
+  }
+
   const module = to.meta.module
   if (!module) return true
 
@@ -80,6 +101,22 @@ router.beforeEach(to => {
     return can('Dashboard', 'view') ? { name: 'dashboard' } : { name: 'profile' }
   }
   return true
+})
+
+// When the API rejects our token mid-session (expired, or revoked from another
+// device), drop the local session and return to login rather than leaving the
+// user on a page whose data will never load. Registered here rather than in the
+// client to keep apiClient free of a router import.
+setUnauthenticatedHandler(() => {
+  const { clearCurrentUser } = useStore()
+  clearCurrentUser()
+
+  if (router.currentRoute.value.name !== 'login') {
+    router.push({
+      name: 'login',
+      query: { redirect: router.currentRoute.value.fullPath, expired: '1' }
+    })
+  }
 })
 
 export default router

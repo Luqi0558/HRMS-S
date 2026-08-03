@@ -2582,3 +2582,23 @@ body.night-mode .fixed.inset-0 .company-hub-badge-muted {
     color: #ffffff !important;
   }
 }
+
+/* Sidebar sign-out. Muted until hovered, so it never competes with the nav
+   items above it — this is a destructive-ish action, not a destination. */
+.sidebar-signout {
+  color: #64748b;
+}
+
+.sidebar-signout:hover {
+  background-color: #FDF1EE;
+  color: #B93636;
+}
+
+.app-shell.night-mode .sidebar-signout {
+  color: #94a3b8;
+}
+
+.app-shell.night-mode .sidebar-signout:hover {
+  background-color: rgba(185, 54, 54, 0.16) !important;
+  color: #F3C0B4;
+}

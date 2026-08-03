@@ -2,10 +2,32 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
+import { authService } from '../services/authService.js'
 
 const route = useRoute()
 const router = useRouter()
-const { state, can, roleLabel } = useStore()
+const { state, can, roleLabel, clearCurrentUser } = useStore()
+
+// Guarded: the guest user has an empty name, and split(' ')[0] on '' yields
+// undefined, which rendered "undefined" in the avatar.
+const userInitials = computed(() => {
+  const name = state.currentUser.name || ''
+  const initials = name
+    .split(' ')
+    .filter(Boolean)
+    .map(part => part[0])
+    .join('')
+  return initials.toUpperCase() || '?'
+})
+
+async function signOut() {
+  // Revokes this device's token server-side, then clears local state. The
+  // service swallows a failed call — an already-expired token is the likely
+  // cause and the user must still end up signed out locally.
+  await authService.logout()
+  clearCurrentUser()
+  router.push({ name: 'login' })
+}
 const collapseStorageKey = 'orbit-sidebar-collapsed'
 const isCollapsed = ref(false)
 
@@ -205,7 +227,7 @@ function isActive(name) {
         :class="isCollapsed ? 'justify-center p-0' : 'p-2'"
       >
         <div class="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-emerald-700 font-display font-bold text-sm flex-shrink-0 shadow-sm">
-          {{ state.currentUser.name.split(' ').map(n => n[0]).join('').toUpperCase() }}
+          {{ userInitials }}
         </div>
         <div v-if="!isCollapsed" class="min-w-0 flex-1 text-left transition-all duration-300">
           <div class="text-sm font-semibold text-slate-900 truncate">{{ state.currentUser.name }}</div>
@@ -213,6 +235,18 @@ function isActive(name) {
             {{ roleLabel(state.currentUser.role) }}
           </div>
         </div>
+      </button>
+
+      <button
+        @click="signOut"
+        :title="isCollapsed ? 'Sign out' : ''"
+        class="sidebar-signout mt-2 w-full flex items-center gap-3 rounded-xl transition-all duration-200"
+        :class="isCollapsed ? 'justify-center p-2' : 'p-2'"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 flex-shrink-0">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
+        </svg>
+        <span v-if="!isCollapsed" class="text-sm font-semibold">Sign out</span>
       </button>
     </div>
   </aside>
