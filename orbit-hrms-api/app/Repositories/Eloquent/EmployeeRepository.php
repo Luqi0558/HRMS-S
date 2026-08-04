@@ -41,17 +41,9 @@ class EmployeeRepository implements EmployeeRepositoryInterface
         return $employee->refresh();
     }
 
-    /**
-     * Read-then-increment, so two invitations created in the same instant can
-     * compute the same code. The unique index on employee_code is what makes
-     * that safe: the loser gets a QueryException rather than a duplicate, and
-     * InvitationService retries. Callers must therefore run this inside the
-     * same transaction as the insert.
-     */
     public function nextEmployeeCode(): string
     {
-        // withTrashed(): a soft-deleted employee still owns its code, so
-        // ignoring them would hand the same code to two people.
+
         $last = $this->model->newQuery()
             ->withTrashed()
             ->orderByDesc('id')

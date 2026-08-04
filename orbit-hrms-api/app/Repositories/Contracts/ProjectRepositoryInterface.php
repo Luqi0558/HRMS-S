@@ -25,4 +25,8 @@ interface ProjectRepositoryInterface
 
     /** Eager-loads modules, members and ticket counts for the detail screen. */
     public function loadDetail(Project $project): Project;
+
+    public function findModule(int $moduleId): ?\App\Models\ProjectModule;
+
+    public function updateModule(\App\Models\ProjectModule $module, array $attributes): \App\Models\ProjectModule;
 }

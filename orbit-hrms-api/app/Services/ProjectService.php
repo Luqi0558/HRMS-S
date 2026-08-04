@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Project;
+use App\Models\ProjectModule;
 use App\Models\User;
 use App\Repositories\Contracts\ProjectRepositoryInterface;
 use Illuminate\Support\Collection;
@@ -98,6 +99,42 @@ class ProjectService
         $this->projects->syncMembers($project, $employeeIds);
 
         return $this->projects->loadDetail($project->refresh());
+    }
+
+    /**
+     * Marks a module delivered, or reopens it.
+     *
+     * Gated on `approve` rather than `create`: signing off a deliverable is a
+     * sign-off, and it is what closes the module to new tickets. Mirrors
+     * can('Projects', 'approve', project) in the frontend.
+     */
+    public function setModuleDelivered(User $user, int $moduleId, bool $delivered): ProjectModule
+    {
+        $module = $this->projects->findModule($moduleId);
+
+        if (! $module) {
+            throw new NotFoundHttpException('Module not found.');
+        }
+
+        $row = collect($this->permissions->forUser($user))->firstWhere('module', 'Projects');
+
+        if (! $row || ! ($row['approve'] ?? false)) {
+            throw new AccessDeniedHttpException('You may not change delivery status.');
+        }
+
+        // Scope still applies: holding `approve` does not grant it over a
+        // project the user has no relationship to.
+        $visible = $this->scopes->visibleProjectIds($user, $row['scope']);
+        if ($visible !== null && ! in_array($module->project_id, $visible, true)) {
+            throw new AccessDeniedHttpException('You may not change this module.');
+        }
+
+        return $this->projects->updateModule($module, [
+            'status' => $delivered ? 'completed' : 'active',
+            // Cleared on reopen so a reopened module never reports a delivery
+            // date it no longer has.
+            'delivered_at' => $delivered ? now()->toDateString() : null,
+        ]);
     }
 
     private function canSee(User $user, Project $project): bool

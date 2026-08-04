@@ -30,10 +30,7 @@ class EnsureCan
             ], 401);
         }
 
-        $allowed = collect($this->permissions->forUser($user))
-            ->firstWhere('module', $module);
-
-        if (! $allowed || ! ($allowed[$action] ?? false)) {
+        if (! $this->permissions->can($user, $module, $action)) {
             return response()->json([
                 'message' => 'You do not have permission to do that.',
                 'error' => 'forbidden',

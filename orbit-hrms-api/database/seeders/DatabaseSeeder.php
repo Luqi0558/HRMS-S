@@ -19,6 +19,10 @@ class DatabaseSeeder extends Seeder
         $this->call([
             RolePermissionSeeder::class,
             SettingsListSeeder::class,
+            // Attendance, leave and claim policy. These decide who is marked
+            // late and how much may be claimed, so a company needs them from
+            // day one.
+            CompanySettingSeeder::class,
         ]);
 
         // Demo accounts share a known password, so they are gated on

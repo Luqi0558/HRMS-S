@@ -1,11 +1,41 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
+import { medicalClaimService } from '../services/medicalClaimService.js'
+import { settingsService } from '../services/settingsService.js'
+import { employeeService } from '../services/employeeService.js'
 
 const route = useRoute()
-const { state, can, formatCurrency, currencyCode, pushNotification, logActivity } = useStore()
+const {
+  state, can, formatCurrency, currencyCode, pushNotification, logActivity,
+  setMedicalClaims, upsertMedicalClaim, setServerSettings, setEmployees
+} = useStore()
+const loadError = ref('')
+const submitting = ref(false)
+const decidingId = ref(null)
+// Limit, used and remaining for the year, as the API counts them. This is the
+// same tally that refuses an over-limit claim.
+const usage = ref(null)
+
+async function loadClaimData() {
+  const [claims, allowance, settings, employees] = await Promise.allSettled([
+    medicalClaimService.list(),
+    medicalClaimService.usage(),
+    settingsService.all(),
+    employeeService.list()
+  ])
+
+  if (claims.status === 'fulfilled') setMedicalClaims(claims.value)
+  else loadError.value = claims.reason?.message || 'Unable to load claims.'
+
+  if (allowance.status === 'fulfilled') usage.value = allowance.value
+  if (settings.status === 'fulfilled') setServerSettings(settings.value)
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+}
+
+onMounted(loadClaimData)
 // Reviewers hold the approve right; applicants hold create on their own claims.
 const canAccess = computed(() => can('Medical Request', 'approve'))
 const canApply = computed(() => can('Medical Request', 'create'))
@@ -19,6 +49,7 @@ const form = ref({
   receipt: null
 })
 const reviewNotes = ref({})
+const claimError = ref('')
 const showApplyModal = ref(false)
 const claimContextFilter = ref('all')
 function matchesClaimContext(claim) {
@@ -56,13 +87,50 @@ function employeeName(id) {
   return state.employees.find(e => e.id === id)?.name ?? ''
 }
 
+async function openReceipt(claim) {
+  claimError.value = ''
+  try {
+    await medicalClaimService.downloadReceipt(claim.id)
+  } catch (error) {
+    claimError.value = error?.message || 'Unable to open that receipt.'
+  }
+}
+
 function nextStatus(currentStatus) {
   const index = statusFlow.indexOf(currentStatus)
   return statusFlow[Math.min(index + 1, statusFlow.length - 1)] || 'view'
 }
 
-function moveNext(claim) {
-  claim.status = nextStatus(claim.status)
+/**
+ * Advances a claim one step through the review flow.
+ *
+ * 'view' and 'processing' are review states this screen tracks locally — the
+ * API models only pending, approved, rejected and paid, because those are the
+ * ones that decide whether money moves. Reaching 'approved' is therefore the
+ * step that has to be recorded server-side; the two before it are not.
+ */
+async function moveNext(claim) {
+  const target = nextStatus(claim.status)
+
+  if (target === 'approved') {
+    claimError.value = ''
+    decidingId.value = claim.id
+    try {
+      upsertMedicalClaim(await medicalClaimService.decide(claim.id, 'approved', {
+        comment: reviewNotes.value[claim.id] || undefined
+      }))
+      // An approval consumes allowance, so the widget is now stale.
+      usage.value = await medicalClaimService.usage().catch(() => usage.value)
+    } catch (error) {
+      claimError.value = error?.message || 'Unable to approve that claim.'
+      return
+    } finally {
+      decidingId.value = null
+    }
+  } else {
+    claim.status = target
+  }
+
   if (!claim.timeline) claim.timeline = []
   claim.timeline.unshift({
     status: claim.status,
@@ -87,9 +155,20 @@ function moveNext(claim) {
   reviewNotes.value[claim.id] = ''
 }
 
-function rejectClaim(claim) {
+async function rejectClaim(claim) {
   const note = reviewNotes.value[claim.id] || 'No reason provided.'
-  claim.status = 'rejected'
+
+  claimError.value = ''
+  decidingId.value = claim.id
+  try {
+    upsertMedicalClaim(await medicalClaimService.decide(claim.id, 'rejected', { comment: note }))
+  } catch (error) {
+    claimError.value = error?.message || 'Unable to reject that claim.'
+    return
+  } finally {
+    decidingId.value = null
+  }
+
   if (!claim.timeline) claim.timeline = []
   claim.timeline.unshift({
     status: 'rejected',
@@ -120,9 +199,7 @@ const receiptThreshold = computed(() => Number(state.settings.claims.receiptRequ
 const receiptRequired = computed(() =>
   receiptThreshold.value > 0 && Number(form.value.amount || 0) > receiptThreshold.value
 )
-const claimError = ref('')
-
-function applyMedicalClaim() {
+async function applyMedicalClaim() {
   claimError.value = ''
   if (!form.value.type || !form.value.amount || !form.value.expenseDate || !form.value.description) {
     claimError.value = 'Please fill in type, amount, expense date, and description.'
@@ -132,33 +209,37 @@ function applyMedicalClaim() {
     claimError.value = 'Amount must be greater than zero.'
     return
   }
-  const limit = Number(state.settings.claims.annualMedicalLimit || 0)
-  if (limit > 0 && Number(form.value.amount) > limit) {
-    claimError.value = `Amount exceeds the annual medical limit of ${formatCurrency(limit)}.`
+  // Checked against what is left, not the headline limit — earlier approved
+  // claims have already consumed part of it. Falls back to the limit before
+  // the usage figure has loaded.
+  const remaining = usage.value ? Number(usage.value.remaining) : Number(state.settings.claims.annualMedicalLimit || 0)
+  if (remaining > 0 && Number(form.value.amount) > remaining) {
+    claimError.value = `Amount exceeds your remaining medical allowance of ${formatCurrency(remaining)}.`
     return
   }
   if (receiptRequired.value && !form.value.receipt) {
     claimError.value = `A receipt is required for claims above ${formatCurrency(receiptThreshold.value)}.`
     return
   }
-  state.medicalClaims.unshift({
-    id: Date.now(),
-    employeeId: state.currentUser.id,
-    type: form.value.type,
-    amount: Number(form.value.amount),
-    provider: form.value.provider,
-    expenseDate: form.value.expenseDate,
-    description: form.value.description,
-    receiptName: form.value.receipt?.name || '',
-    status: 'pending',
-    timeline: [{
-      status: 'pending',
-      note: 'Request submitted',
-      by: state.currentUser.name,
-      at: new Date().toISOString()
-    }],
-    submittedAt: new Date().toISOString().slice(0, 10)
-  })
+  // The API re-checks the receipt threshold and the remaining allowance. The
+  // checks above are the fast path; this is the one that decides.
+  submitting.value = true
+  try {
+    upsertMedicalClaim(await medicalClaimService.create({
+      type: form.value.type,
+      amount: Number(form.value.amount),
+      description: form.value.description,
+      incurredOn: form.value.expenseDate,
+      receipt: form.value.receipt || undefined
+    }))
+    usage.value = await medicalClaimService.usage().catch(() => usage.value)
+  } catch (error) {
+    claimError.value = error?.message || 'Unable to submit that claim.'
+    return
+  } finally {
+    submitting.value = false
+  }
+
   pushNotification({
     title: 'New medical claim submitted',
     message: `${state.currentUser.name} submitted a ${form.value.type} for ${formatCurrency(form.value.amount)}.`,
@@ -186,6 +267,25 @@ function applyMedicalClaim() {
       <button @click="showApplyModal = true" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors shadow-sm">
         Apply medical request
       </button>
+    </div>
+
+    <div v-if="loadError || (claimError && !showApplyModal)" class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      {{ loadError || claimError }}
+    </div>
+
+    <div v-if="usage" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Annual allowance</div>
+        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ formatCurrency(usage.limit) }}</div>
+      </div>
+      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Claimed this year</div>
+        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ formatCurrency(usage.used) }}</div>
+      </div>
+      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Remaining</div>
+        <div class="text-2xl font-extrabold text-teal mt-2">{{ formatCurrency(usage.remaining) }}</div>
+      </div>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
@@ -294,7 +394,7 @@ function applyMedicalClaim() {
 
           <div class="flex items-center justify-end gap-2 mt-5">
             <button @click="showApplyModal = false" class="text-sm border border-slate-200 rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
-            <button @click="applyMedicalClaim" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors">
+            <button @click="applyMedicalClaim" :disabled="submitting" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
               Apply
             </button>
           </div>
@@ -337,7 +437,16 @@ function applyMedicalClaim() {
         <tbody>
           <tr v-for="claim in allClaimsTable.visibleRows.value" :key="claim.id" class="border-b border-slate-200 last:border-0 hover:bg-slate-50/60 transition-colors">
             <td class="px-4 py-3 text-slate-900 font-medium">{{ employeeName(claim.employeeId) }}</td>
-            <td class="px-4 py-3 text-slate-700">{{ claim.type }}</td>
+            <td class="px-4 py-3 text-slate-700">
+              {{ claim.type }}
+              <button
+                v-if="claim.hasReceipt"
+                @click="openReceipt(claim)"
+                class="block mt-1 text-xs font-medium text-teal hover:underline"
+              >
+                View receipt
+              </button>
+            </td>
             <td class="px-4 py-3 text-slate-700">{{ claim.provider || '—' }}</td>
             <td class="px-4 py-3 text-slate-700 max-w-xs">{{ claim.description || '—' }}</td>
             <td class="px-4 py-3 text-slate-700">{{ formatCurrency(claim.amount) }}</td>
@@ -355,14 +464,14 @@ function applyMedicalClaim() {
               <div class="flex flex-wrap gap-2">
                 <button
                   @click="moveNext(claim)"
-                  :disabled="claim.status === 'approved' || claim.status === 'rejected'"
+                  :disabled="claim.status === 'approved' || claim.status === 'rejected' || decidingId === claim.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Move next
                 </button>
                 <button
                   @click="rejectClaim(claim)"
-                  :disabled="claim.status === 'approved' || claim.status === 'rejected'"
+                  :disabled="claim.status === 'approved' || claim.status === 'rejected' || decidingId === claim.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-rose-600 text-white hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Reject

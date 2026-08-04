@@ -3,6 +3,7 @@
 namespace App\Repositories\Eloquent;
 
 use App\Models\Project;
+use App\Models\ProjectModule;
 use App\Repositories\Contracts\ProjectRepositoryInterface;
 use Illuminate\Support\Collection;
 
@@ -15,7 +16,15 @@ class ProjectRepository implements ProjectRepositoryInterface
     public function listScoped(?array $visibleIds, array $filters = []): Collection
     {
         $query = $this->model->newQuery()
-            ->with(['manager:id,name', 'modules:id,project_id,name,slug,status,lead_id'])
+            ->with([
+                'manager:id,name',
+                'modules:id,project_id,name,slug,status,lead_id',
+                // Ids only — the list renders "assigned to me" and the
+                // add-member modal from these, neither of which needs the
+                // full employee record.
+                'modules.members:id,name,email,designation',
+                'members:id,name,email,designation',
+            ])
             // Counted in SQL rather than loaded and counted in PHP: the list
             // shows totals per project and the rows themselves are not needed.
             ->withCount([
@@ -68,6 +77,20 @@ class ProjectRepository implements ProjectRepositoryInterface
     public function syncMembers(Project $project, array $employeeIds): void
     {
         $project->members()->sync($employeeIds);
+    }
+
+    public function findModule(int $moduleId): ?ProjectModule
+    {
+        // The parent project comes along because every authorization check on
+        // a module resolves through its project's manager.
+        return ProjectModule::with('project')->find($moduleId);
+    }
+
+    public function updateModule(ProjectModule $module, array $attributes): ProjectModule
+    {
+        $module->fill($attributes)->save();
+
+        return $module->refresh();
     }
 
     public function loadDetail(Project $project): Project

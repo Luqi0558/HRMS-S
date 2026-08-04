@@ -1,9 +1,23 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useStore } from '../store/index.js'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { settingsService } from '../services/settingsService.js'
 
-const { state, can, logActivity, pushNotification } = useStore()
+const { state, can, logActivity, pushNotification, setServerSettings } = useStore()
+
+/**
+ * Which sections are stored server-side, keyed by the label the save buttons
+ * pass. The rest (Company, Petty cash) are still local and belong to later
+ * phases — saving those stays an in-memory change until their API exists.
+ */
+const SERVER_SECTIONS = {
+  Attendance: 'attendance',
+  'Leave policy': 'leave',
+  'Claims and finance': 'claims'
+}
+
+const saving = ref('')
 
 const canAccess = computed(() => can('Settings', 'view'))
 const newDesignation = ref('')
@@ -29,6 +43,16 @@ const stackPresets = ['MERN', 'MEAN', '.NET', 'Angular', 'React', 'Vue', 'Larave
 // those rules. Previously every save was accepted without any check.
 const settingsError = ref('')
 const settingsSaved = ref('')
+
+// The server holds attendance, leave and claims; the rest of state.settings is
+// still local, so this merges those three in rather than replacing the object.
+onMounted(async () => {
+  try {
+    setServerSettings(await settingsService.all())
+  } catch (error) {
+    settingsError.value = error?.message || 'Unable to load company settings.'
+  }
+})
 
 function nonNegative(value) {
   const number = Number(value)
@@ -78,10 +102,27 @@ function validateSection(section) {
   return ''
 }
 
-function saveSettings(section) {
+async function saveSettings(section) {
   settingsSaved.value = ''
   settingsError.value = validateSection(section)
   if (settingsError.value) return
+
+  // Attendance, leave and claims are policy the API enforces — grace minutes
+  // decide who is marked late, the allowance decides which claims are
+  // refused — so those must reach the server. Company and petty cash have no
+  // endpoint yet and stay in memory.
+  const group = SERVER_SECTIONS[section]
+  if (group) {
+    saving.value = section
+    try {
+      setServerSettings({ [group]: await settingsService.putGroup(group, state.settings[group]) })
+    } catch (error) {
+      settingsError.value = error?.message || `Unable to save ${section.toLowerCase()} settings.`
+      return
+    } finally {
+      saving.value = ''
+    }
+  }
 
   logActivity({
     module: 'settings',
@@ -233,7 +274,7 @@ function addPresetStack(value) {
           <input v-model="state.settings.attendance.cameraCheckinRequired" type="checkbox" class="rounded border-slate-300" />
           Camera check-in required
         </label>
-        <button @click="saveSettings('Attendance')" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Save attendance</button>
+        <button @click="saveSettings('Attendance')" :disabled="saving === 'Attendance'" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ saving === 'Attendance' ? 'Saving...' : 'Save attendance' }}</button>
       </div>
 
       <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
@@ -266,7 +307,7 @@ function addPresetStack(value) {
             Two-step approval required
           </label>
         </div>
-        <button @click="saveSettings('Leave policy')" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Save leave policy</button>
+        <button @click="saveSettings('Leave policy')" :disabled="saving === 'Leave policy'" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ saving === 'Leave policy' ? 'Saving...' : 'Save leave policy' }}</button>
       </div>
 
       <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
@@ -305,7 +346,7 @@ function addPresetStack(value) {
           Super Admin approval required for commission
           <span class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">Backend required</span>
         </label>
-        <button @click="saveSettings('Claims and finance')" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Save claims & finance</button>
+        <button @click="saveSettings('Claims and finance')" :disabled="saving === 'Claims and finance'" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ saving === 'Claims and finance' ? 'Saving...' : 'Save claims & finance' }}</button>
       </div>
 
       <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">

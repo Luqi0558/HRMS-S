@@ -1,9 +1,12 @@
 ﻿<script setup>
 // Role router for the dashboard: picks the component for the current role and
 // hosts the two modals that more than one role opens.
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
+import { projectService } from '../services/projectService.js'
+import { ticketService } from '../services/ticketService.js'
+import { employeeService } from '../services/employeeService.js'
 import TicketDetailModal from '../components/TicketDetailModal.vue'
 import CameraCheckInModal from '../components/CameraCheckInModal.vue'
 import TeamLeadDashboard from '../components/TeamLeadDashboard.vue'
@@ -13,7 +16,32 @@ import HrDashboard from '../components/HrDashboard.vue'
 import SuperAdminDashboard from '../components/SuperAdminDashboard.vue'
 
 const router = useRouter()
-const { state, can } = useStore()
+const { state, can, setProjects, setTickets, setEmployees } = useStore()
+
+/**
+ * The dashboard is a common entry point — reached by redirect after login and
+ * by direct URL — so it cannot assume any other view has populated the store.
+ *
+ * Each fetch is independent and non-fatal: the five role dashboards read
+ * different slices, and a role that lacks one permission (an employee has no
+ * Employees row; HR has no Projects row) must still see the rest of its page
+ * rather than an error.
+ */
+async function loadDashboardData() {
+  const results = await Promise.allSettled([
+    projectService.list(),
+    ticketService.list(),
+    employeeService.list()
+  ])
+
+  const [projects, tickets, employees] = results
+
+  if (projects.status === 'fulfilled') setProjects(projects.value)
+  if (tickets.status === 'fulfilled') setTickets(tickets.value.data)
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+}
+
+onMounted(loadDashboardData)
 
 // Modules a non-standard role can reach, driven by the permission table.
 const fallbackLinks = computed(() => [

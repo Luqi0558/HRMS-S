@@ -2,12 +2,17 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\EmployeeController;
 use App\Http\Controllers\Api\EmployeeInvitationController;
+use App\Http\Controllers\Api\LeaveRequestController;
+use App\Http\Controllers\Api\MedicalClaimController;
 use App\Http\Controllers\Api\OnboardingController;
+use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\ProjectController;
+use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\TicketController;
 use Illuminate\Support\Facades\Route;
 use Stancl\Tenancy\Middleware\InitializeTenancyByRequestData;
@@ -38,17 +43,10 @@ Route::middleware([
     InitializeTenancyByRequestData::class,
 ])->prefix('api')->group(function () {
 
-    /*
-     * Public. Rate limited hard: these are the only endpoints reachable
-     * without a token, so they are where credential stuffing and token
-     * guessing arrive. Throttled per IP.
-     */
     Route::middleware('throttle:6,1')->group(function () {
         Route::post('/login', [AuthController::class, 'login'])
             ->name('api.login');
 
-        // Resolving an invitation is a read, but it is also an oracle for
-        // guessing tokens, so it gets the same budget as login.
         Route::post('/onboarding/resolve', [OnboardingController::class, 'resolve'])
             ->name('api.onboarding.resolve');
 
@@ -65,25 +63,8 @@ Route::middleware([
         Route::post('/logout-all', [AuthController::class, 'logoutAll'])
             ->name('api.logout.all');
 
-        // The signed-in user's effective permission grid. Fetched once after
-        // login so the UI stops relying on its own hardcoded copy.
         Route::get('/me/permissions', [PermissionController::class, 'mine'])
             ->name('api.me.permissions');
-
-        /*
-         * Inviting staff. Gated on the same grid the UI reads, so a hidden
-         * button and a refused request agree — the browser-side router guard
-         * is UX only and cannot be trusted.
-         */
-        /*
-         * Employees. The middleware gates the module; EmployeeService applies
-         * the scope, so HR sees everyone and a manager only their own people
-         * from the same route.
-         *
-         * `show` is deliberately ungated: a user must be able to open their
-         * own record, and an ordinary employee holds no Employees permission
-         * at all. The service enforces the record-level rule instead.
-         */
         Route::get('/employees', [EmployeeController::class, 'index'])
             ->middleware('can.module:Employees,view')
             ->name('api.employees.index');
@@ -97,11 +78,7 @@ Route::middleware([
             ->middleware('can.module:Employees,create')
             ->name('api.employees.update');
 
-        /*
-         * Projects. Resolved by slug because that is what the frontend routes
-         * on (/projects/internal). ProjectService applies the scope: a manager
-         * sees projects they manage, an employee those they are a member of.
-         */
+
         Route::get('/projects', [ProjectController::class, 'index'])
             ->middleware('can.module:Projects,view')
             ->name('api.projects.index');
@@ -122,6 +99,12 @@ Route::middleware([
             ->middleware('can.module:Projects,create')
             ->name('api.projects.members');
 
+
+        Route::patch('/modules/{module}/delivery', [ProjectController::class, 'setModuleDelivered'])
+            ->whereNumber('module')
+            ->middleware('can.module:Projects,approve')
+            ->name('api.modules.delivery');
+
         /*
          * Tickets. `update` is deliberately gated only on view: an assignee may
          * move their own ticket through the board without holding create,
@@ -134,9 +117,7 @@ Route::middleware([
         Route::post('/tickets', [TicketController::class, 'store'])
             ->middleware('can.module:Tickets,create')
             ->name('api.tickets.store');
-
-        // Fixed segments before the wildcard, or /tickets/stop-timer would be
-        // parsed as a ticket id.
+            
         Route::post('/tickets/stop-timer', [TicketController::class, 'stopTimer'])
             ->middleware('can.module:Tickets,view')
             ->name('api.tickets.stop-timer');
@@ -160,6 +141,120 @@ Route::middleware([
             ->whereNumber('ticket')
             ->middleware('can.module:Tickets,view')
             ->name('api.tickets.start-timer');
+
+        /*
+         * Company policy. Readable by anyone signed in — the client needs the
+         * working day and leave allowances to render correctly — but only
+         * writable with Settings.create.
+         */
+        Route::get('/settings', [SettingsController::class, 'index'])
+            ->name('api.settings.index');
+        Route::put('/settings/{group}', [SettingsController::class, 'update'])
+            ->middleware('can.module:Settings,create')
+            ->name('api.settings.update');
+
+        /*
+         * Attendance. `index` is ungated: an employee holds no Attendance row
+         * but must see their own punch history, which the service enforces.
+         */
+        Route::get('/attendance', [AttendanceController::class, 'index'])
+            ->name('api.attendance.index');
+        Route::get('/attendance/today', [AttendanceController::class, 'today'])
+            ->name('api.attendance.today');
+        Route::post('/attendance/check-in', [AttendanceController::class, 'checkIn'])
+            ->name('api.attendance.check-in');
+        Route::post('/attendance/check-out', [AttendanceController::class, 'checkOut'])
+            ->name('api.attendance.check-out');
+
+        /*
+         * Leave. Fixed segments precede the wildcard so /leave-requests/balance
+         * is not parsed as an id.
+         */
+        Route::get('/leave-requests', [LeaveRequestController::class, 'index'])
+            ->middleware('can.module:Leave Request,view')
+            ->name('api.leave.index');
+        Route::get('/leave-requests/balance', [LeaveRequestController::class, 'balance'])
+            ->name('api.leave.balance');
+        Route::post('/leave-requests', [LeaveRequestController::class, 'store'])
+            ->middleware('can.module:Leave Request,create')
+            ->name('api.leave.store');
+        // Ungated at the route: approval is held on either 'Leave Request'
+        // (HR stage) or 'Team Leaves' (lead stage), and middleware can only
+        // test one module. LeaveService checks both and picks the stage.
+        Route::post('/leave-requests/{leaveRequest}/decision', [LeaveRequestController::class, 'decide'])
+            ->whereNumber('leaveRequest')
+            ->name('api.leave.decide');
+        Route::post('/leave-requests/{leaveRequest}/cancel', [LeaveRequestController::class, 'cancel'])
+            ->whereNumber('leaveRequest')
+            ->name('api.leave.cancel');
+
+        /*
+         * Medical claims.
+         */
+        Route::get('/medical-claims', [MedicalClaimController::class, 'index'])
+            ->middleware('can.module:Medical Request,view')
+            ->name('api.claims.index');
+        Route::get('/medical-claims/usage', [MedicalClaimController::class, 'usage'])
+            ->name('api.claims.usage');
+        Route::post('/medical-claims', [MedicalClaimController::class, 'store'])
+            ->middleware('can.module:Medical Request,create')
+            ->name('api.claims.store');
+
+        // Ungated at the route: an employee may always read their own receipt
+        // even though their scope is 'self'. The service decides.
+        Route::get('/medical-claims/{claim}/receipt', [MedicalClaimController::class, 'receipt'])
+            ->whereNumber('claim')
+            ->name('api.claims.receipt');
+        Route::post('/medical-claims/{claim}/decision', [MedicalClaimController::class, 'decide'])
+            ->whereNumber('claim')
+            ->middleware('can.module:Medical Request,approve')
+            ->name('api.claims.decide');
+
+        /*
+         * Payroll. Every route is ungated at the middleware: Payroll scope is
+         * 'self' for all roles but HR, so an employee holds the row but must
+         * only ever reach their own pay. PayrollService applies that scope per
+         * record, and answers 404 rather than 403 outside it — confirming a
+         * salary exists is itself a disclosure.
+         *
+         * Fixed segments precede the wildcards so /salary-slips/cost is not
+         * parsed as an id.
+         */
+        Route::get('/salary-slip-requests', [PayrollController::class, 'requests'])
+            ->name('api.payroll.requests');
+        Route::post('/salary-slip-requests', [PayrollController::class, 'storeRequest'])
+            ->name('api.payroll.requests.store');
+        Route::post('/salary-slip-requests/{slipRequest}/decision', [PayrollController::class, 'decideRequest'])
+            ->whereNumber('slipRequest')
+            ->name('api.payroll.requests.decide');
+
+        Route::get('/salary-slips/cost', [PayrollController::class, 'cost'])
+            ->name('api.payroll.cost');
+        Route::get('/salary-slips', [PayrollController::class, 'slips'])
+            ->name('api.payroll.slips');
+        Route::get('/salary-slips/{slip}', [PayrollController::class, 'showSlip'])
+            ->whereNumber('slip')
+            ->name('api.payroll.slips.show');
+
+        // Releasing needs 'Payroll Approval'; recording payment needs
+        // Payroll.create. Two different rights, so neither is gated here —
+        // PayrollService checks the one that applies.
+        Route::post('/salary-slips/{slip}/approve', [PayrollController::class, 'approveSlip'])
+            ->whereNumber('slip')
+            ->name('api.payroll.slips.approve');
+        Route::post('/salary-slips/{slip}/payment', [PayrollController::class, 'markPaid'])
+            ->whereNumber('slip')
+            ->name('api.payroll.slips.payment');
+        Route::post('/salary-slips/{slip}/reopen', [PayrollController::class, 'reopenSlip'])
+            ->whereNumber('slip')
+            ->name('api.payroll.slips.reopen');
+
+        Route::get('/employees/{employee}/salaries', [PayrollController::class, 'salaryHistory'])
+            ->whereNumber('employee')
+            ->name('api.payroll.salaries');
+        Route::post('/employees/{employee}/salaries', [PayrollController::class, 'setSalary'])
+            ->whereNumber('employee')
+            ->name('api.payroll.salaries.store');
 
         Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
             ->middleware('can.module:Employees,create')

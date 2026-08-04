@@ -1,7 +1,11 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
+import { projectService } from '../services/projectService.js'
+import { ticketService } from '../services/ticketService.js'
+import { employeeService } from '../services/employeeService.js'
+import { ApiError } from '../services/apiClient.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -12,8 +16,55 @@ const {
   can,
   scopedList,
   logActivity,
-  roleLabel
+  roleLabel,
+  setProjects,
+  setTickets,
+  setEmployees,
+  upsertProject
 } = useStore()
+
+const isLoading = ref(true)
+const loadError = ref('')
+
+/**
+ * Projects, their tickets, and the employee pool for the add-member modal.
+ *
+ * Loaded together because the cards show per-project ticket counts, and the
+ * modal needs the roster the moment it opens — fetching on open would show an
+ * empty list for the first frame.
+ */
+async function loadData() {
+  isLoading.value = true
+  loadError.value = ''
+
+  try {
+    const [projects, tickets] = await Promise.all([
+      projectService.list(),
+      ticketService.list()
+    ])
+
+    setProjects(projects)
+    setTickets(tickets.data)
+
+    // Separate and non-fatal: an employee has no Employees permission, so this
+    // 403s for them. They cannot add members anyway, and the rest of the page
+    // must still render.
+    try {
+      const employees = await employeeService.list()
+      setEmployees(employees.data)
+    } catch {
+      /* modal will simply have no one to offer */
+    }
+  } catch (error) {
+    loadError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not load projects. Please check your connection and try again.'
+  } finally {
+    isLoading.value = false
+  }
+}
+
+onMounted(loadData)
 
 const showAddProject = ref(false)
 const projectError = ref('')
@@ -228,7 +279,11 @@ function openAddDeveloper(projectId) {
   showAddDev.value = true
 }
 
-function addDeveloperToProject() {
+const isSavingMembers = ref(false)
+
+async function addDeveloperToProject() {
+  if (isSavingMembers.value) return
+
   developerError.value = ''
   if (!selectedProjectId.value) {
     developerError.value = 'Please choose a project section.'
@@ -238,26 +293,40 @@ function addDeveloperToProject() {
     developerError.value = 'Please choose at least one employee to add.'
     return
   }
+
   const project = state.projects.find(p => p.id === selectedProjectId.value)
   if (!project) {
     developerError.value = 'That project section no longer exists.'
     return
   }
-  if (!project.teamMembers) project.teamMembers = []
 
-  // Skip anyone added to the section since this modal opened rather than
-  // failing the whole batch. A silent no-op used to look like a successful add.
-  const toAdd = selectedDevelopers.value.filter(id => !project.teamMembers.includes(id))
-  if (!toAdd.length) {
+  // The endpoint syncs rather than appends, so send the existing members plus
+  // the new ones. Sending only the additions would remove everyone else.
+  const existing = project.teamMembers || []
+  const next = Array.from(new Set([...existing, ...selectedDevelopers.value]))
+
+  if (next.length === existing.length) {
     developerError.value = 'Everyone selected is already on this section.'
     return
   }
-  project.teamMembers.push(...toAdd)
 
-  showAddDev.value = false
-  selectedProjectId.value = null
-  selectedDevelopers.value = []
-  developerSearch.value = ''
+  isSavingMembers.value = true
+
+  try {
+    const updated = await projectService.syncMembers(project.slug, next)
+    upsertProject(updated)
+
+    showAddDev.value = false
+    selectedProjectId.value = null
+    selectedDevelopers.value = []
+    developerSearch.value = ''
+  } catch (error) {
+    developerError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not update the team. Please try again.'
+  } finally {
+    isSavingMembers.value = false
+  }
 }
 
 
@@ -285,30 +354,44 @@ function validateProject() {
   return ''
 }
 
-function addProject() {
-  if (!canCreateProject.value) return
+const isSavingProject = ref(false)
+
+async function addProject() {
+  if (!canCreateProject.value || isSavingProject.value) return
+
   projectError.value = validateProject()
   if (projectError.value) return
-  const project = {
-    id: Date.now(),
-    name: newProjectForm.value.name.trim(),
-    slug: uniqueProjectSlug(newProjectForm.value.name.trim()),
-    description: newProjectForm.value.description.trim(),
-    managerId: newProjectForm.value.managerId,
-    teamMembers: [],
-    status: 'active',
-    deliveredAt: '',
-    modules: []
+
+  isSavingProject.value = true
+
+  try {
+    // The slug is generated server-side, where uniqueness can actually be
+    // guaranteed — uniqueProjectSlug() here only ever saw the projects this
+    // user can see, so it could collide with one they cannot.
+    const project = await projectService.create({
+      name: newProjectForm.value.name.trim(),
+      description: newProjectForm.value.description.trim(),
+      managerId: newProjectForm.value.managerId
+    })
+
+    upsertProject(project)
+
+    logActivity({
+      module: 'project',
+      action: 'project created',
+      details: `${state.currentUser.name} created ${project.name}.`,
+      targetId: project.id,
+      targetType: 'project'
+    })
+
+    showAddProject.value = false
+  } catch (error) {
+    projectError.value = error instanceof ApiError
+      ? (error.fieldError('name') || error.message)
+      : 'Could not create the section. Please try again.'
+  } finally {
+    isSavingProject.value = false
   }
-  state.projects.push(project)
-  logActivity({
-    module: 'project',
-    action: 'project created',
-    details: `${state.currentUser.name} created ${project.name}.`,
-    targetId: project.id,
-    targetType: 'project'
-  })
-  showAddProject.value = false
 }
 
 </script>
@@ -330,12 +413,23 @@ function addProject() {
       </button>
     </div>
 
-    <div v-if="!isModuleResultsView && visibleProjects.length === 0" class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+    <!-- The API is the source of truth now, so the page has three states it
+         did not have with mock data: loading, failed, and loaded. -->
+    <div v-if="isLoading" class="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+      Loading projects…
+    </div>
+
+    <div v-else-if="loadError" class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+      <strong class="block mb-1">{{ loadError }}</strong>
+      <button type="button" class="font-semibold underline" @click="loadData">Try again</button>
+    </div>
+
+    <div v-else-if="!isModuleResultsView && visibleProjects.length === 0" class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
       <strong>{{ baseVisibleProjects.length ? 'No project sections match this filter.' : 'No project sections assigned yet.' }}</strong>
       {{ baseVisibleProjects.length ? 'Change the filter to view other project categories.' : 'Contact your super admin to get started.' }}
     </div>
 
-    <div v-if="isModuleResultsView && visibleModuleResults.length === 0" class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+    <div v-if="!isLoading && !loadError && isModuleResultsView && visibleModuleResults.length === 0" class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
       <strong>No modules match this filter.</strong>
       Change the filter or open project categories to view all modules.
     </div>
@@ -343,8 +437,11 @@ function addProject() {
     <!-- Bare filter row rather than the bordered .table-tools card the
          table-based views use. Those pages sit directly above a table, where the
          bar reads as its header; here it floated above a card grid, attached to
-         nothing, and cost a full-width panel of vertical space. -->
-    <div class="flex flex-wrap items-center justify-between gap-3">
+         nothing, and cost a full-width panel of vertical space.
+
+         Hidden while loading: a "0 project categories" count is misleading when
+         the answer simply has not arrived. -->
+    <div v-if="!isLoading && !loadError" class="flex flex-wrap items-center justify-between gap-3">
       <select v-model="projectContextFilter" class="table-filter-input max-w-[220px]">
         <option value="all">All project categories</option>
         <option value="assigned">Assigned to me</option>
@@ -489,10 +586,10 @@ function addProject() {
           </button>
           <button
             @click="addProject"
-            :disabled="!newProjectForm.name.trim() || !newProjectForm.managerId"
+            :disabled="isSavingProject || !newProjectForm.name.trim() || !newProjectForm.managerId"
             class="flex-1 text-sm bg-emerald-600 text-white rounded-lg py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors font-medium"
           >
-            Create category
+            {{ isSavingProject ? 'Creating…' : 'Create category' }}
           </button>
         </div>
       </div>
@@ -562,10 +659,11 @@ function addProject() {
           </button>
           <button
             @click="addDeveloperToProject"
-            :disabled="!selectedDevelopers.length"
+            :disabled="isSavingMembers || !selectedDevelopers.length"
             class="flex-1 text-sm bg-emerald-600 text-white rounded-lg py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors font-medium"
           >
-            Add to team<span v-if="selectedDevelopers.length"> ({{ selectedDevelopers.length }})</span>
+            <template v-if="isSavingMembers">Adding…</template>
+            <template v-else>Add to team<span v-if="selectedDevelopers.length"> ({{ selectedDevelopers.length }})</span></template>
           </button>
         </div>
       </div>

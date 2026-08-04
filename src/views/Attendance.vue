@@ -1,11 +1,41 @@
 ﻿<script setup>
-import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
+import { attendanceService } from '../services/attendanceService.js'
+import { settingsService } from '../services/settingsService.js'
+import { employeeService } from '../services/employeeService.js'
 
 const route = useRoute()
-const { state, can, todayKey, formatDate, formatTime, clockValue, attendanceStatusFor } = useStore()
+const {
+  state, can, todayKey, formatDate, formatTime,
+  setAttendance, upsertAttendance, setServerSettings, setEmployees
+} = useStore()
+const loadError = ref('')
+const punchError = ref('')
+const punching = ref(false)
+
+/**
+ * The ledger names employees, so it needs both. Each fetch is independent and
+ * non-fatal: an employee holds no Employees permission but must still see
+ * their own punch history.
+ */
+async function loadAttendance() {
+  const [records, settings, employees] = await Promise.allSettled([
+    attendanceService.list(),
+    settingsService.all(),
+    employeeService.list()
+  ])
+
+  if (records.status === 'fulfilled') setAttendance(records.value)
+  else loadError.value = records.reason?.message || 'Unable to load attendance.'
+
+  if (settings.status === 'fulfilled') setServerSettings(settings.value)
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+}
+
+onMounted(loadAttendance)
 const videoRef = ref(null)
 const showCameraModal = ref(false)
 const cameraError = ref('')
@@ -99,41 +129,38 @@ async function checkInWithPhoto() {
     }
   }
 
-  // Stored as 24h "HH:MM" so it stays comparable regardless of display locale.
-  const checkIn = clockValue()
-  const existing = state.attendance.find(a => a.employeeId === state.currentUser.id && a.date === todayKey())
-  const status = attendanceStatusFor(checkIn)
-
-  if (existing) {
-    Object.assign(existing, {
-      checkIn,
-      checkOut: null,
-      device: 'camera',
-      status,
-      checkInPhoto: photo,
-      wfh: false
+  // The server stamps the time and decides present vs late from the company's
+  // start time and grace period — the browser clock is not authoritative and
+  // would let anyone punch in on time by changing it.
+  punchError.value = ''
+  punching.value = true
+  try {
+    const record = await attendanceService.checkIn({
+      device: cameraRequired.value ? 'camera' : 'laptop'
     })
-  } else {
-    state.attendance.unshift({
-      id: Date.now(),
-      employeeId: state.currentUser.id,
-      date: todayKey(),
-      checkIn,
-      checkOut: null,
-      device: 'camera',
-      status,
-      checkInPhoto: photo,
-      wfh: false
-    })
+    // The photo stays client-side for this session: the API records that a
+    // check-in happened, not the image itself.
+    upsertAttendance({ ...record, checkInPhoto: photo || null })
+    closeCamera()
+  } catch (error) {
+    punchError.value = error?.message || 'Unable to check in.'
+  } finally {
+    punching.value = false
   }
-
-  closeCamera()
 }
 
-function checkOut() {
+async function checkOut() {
   if (!todayAttendance.value) return
-  todayAttendance.value.checkOut = clockValue()
-  todayAttendance.value.device = todayAttendance.value.device || 'camera'
+
+  punchError.value = ''
+  punching.value = true
+  try {
+    upsertAttendance(await attendanceService.checkOut())
+  } catch (error) {
+    punchError.value = error?.message || 'Unable to check out.'
+  } finally {
+    punching.value = false
+  }
 }
 
 const ledgerRows = computed(() =>
@@ -242,6 +269,10 @@ function exportAttendanceReport() {
       </button>
     </div>
 
+    <div v-if="loadError" class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      {{ loadError }}
+    </div>
+
     <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
       <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Records</div>
@@ -266,11 +297,13 @@ function exportAttendanceReport() {
         <div class="text-sm font-medium text-slate-900 mb-1">Your check-in</div>
         <div class="text-xs text-slate-600" v-if="!checkedIn">Camera capture is required before check-in</div>
         <div class="text-xs text-slate-600" v-else>Checked in at <span class="font-mono text-teal">{{ checkInTime }}</span></div>
+        <div v-if="punchError" class="text-xs text-rose-600 mt-1">{{ punchError }}</div>
       </div>
       <button
         v-if="checkedIn"
         @click="checkOut"
-        class="flex items-center gap-2 text-sm font-medium rounded-lg px-4 py-2 transition-colors bg-rose-100 text-rose-700 hover:bg-rose-200"
+        :disabled="punching"
+        class="flex items-center gap-2 text-sm font-medium rounded-lg px-4 py-2 transition-colors bg-rose-100 text-rose-700 hover:bg-rose-200 disabled:opacity-60 disabled:cursor-not-allowed"
       >
         <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2ZM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6Z"/></svg>
         Check out
@@ -278,7 +311,8 @@ function exportAttendanceReport() {
       <button
         v-else
         @click="cameraRequired ? openCamera() : checkInWithPhoto()"
-        class="flex items-center gap-2 text-sm font-medium rounded-lg px-4 py-2 transition-colors bg-emerald-600 text-white hover:bg-emerald-700"
+        :disabled="punching"
+        class="flex items-center gap-2 text-sm font-medium rounded-lg px-4 py-2 transition-colors bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed"
       >
         <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2ZM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6Z"/></svg>
         Check in
@@ -391,10 +425,10 @@ function exportAttendanceReport() {
               <video ref="videoRef" autoplay playsinline class="w-full h-full object-cover"></video>
               <div v-if="cameraLoading" class="absolute text-sm text-slate-600">Starting camera...</div>
             </div>
-            <div v-if="cameraError" class="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{{ cameraError }}</div>
+            <div v-if="cameraError || punchError" class="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{{ cameraError || punchError }}</div>
             <div class="flex items-center justify-end gap-2">
               <button @click="closeCamera" class="text-sm border border-slate-200 rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
-              <button @click="checkInWithPhoto" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Capture & check in</button>
+              <button @click="checkInWithPhoto" :disabled="punching" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ punching ? 'Checking in...' : 'Capture &amp; check in' }}</button>
             </div>
           </div>
         </div>

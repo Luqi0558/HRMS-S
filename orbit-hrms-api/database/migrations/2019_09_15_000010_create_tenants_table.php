@@ -17,13 +17,8 @@ class CreateTenantsTable extends Migration
     {
         Schema::create('tenants', function (Blueprint $table) {
             $table->string('id')->primary();
-
-            // Mirrored in Tenant::getCustomColumns(). Anything not listed there
-            // is stored in the `data` JSON blob instead of a real column.
             $table->string('name');
             $table->string('slug')->unique();
-            // suspended keeps the row (and its database) but blocks sign-in, so
-            // a non-paying company can be restored without a data restore.
             $table->enum('status', ['active', 'suspended'])->default('active');
 
             $table->timestamps();

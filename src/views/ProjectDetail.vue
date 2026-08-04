@@ -1,9 +1,14 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
+// A static display map (labels and colour classes), not data — this stays.
 import { statusMeta } from '../data/mock.js'
 import TicketTimer from '../components/TicketTimer.vue'
+import { projectService } from '../services/projectService.js'
+import { ticketService } from '../services/ticketService.js'
+import { employeeService } from '../services/employeeService.js'
+import { ApiError } from '../services/apiClient.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,10 +23,66 @@ const {
   projectSecondsToday,
   can,
   pushNotification,
-  logActivity
+  logActivity,
+  setProjects,
+  setTickets,
+  setEmployees,
+  upsertProject,
+  upsertTicket
 } = useStore()
 
+const isLoading = ref(true)
+const loadError = ref('')
+const isSavingDelivery = ref(false)
+
 const projectSlug = computed(() => String(route.params.projectSlug || ''))
+
+/**
+ * The project (with its modules and members) plus every ticket in it.
+ *
+ * Tickets are fetched for the whole project rather than per module: the kanban
+ * board switches modules without a route change, and refetching on each switch
+ * would flash an empty board between clicks.
+ */
+async function loadData() {
+  if (!projectSlug.value) return
+
+  isLoading.value = true
+  loadError.value = ''
+
+  try {
+    const projectRecord = await projectService.find(projectSlug.value)
+    // Replaces the whole collection: this view is reachable directly by URL,
+    // so it cannot assume Projects.vue has already populated the store.
+    setProjects([projectRecord])
+
+    const tickets = await ticketService.list({ project_id: projectRecord.id })
+    setTickets(tickets.data)
+
+    // Non-fatal: an employee holds no Employees permission, and the board
+    // still renders without the roster — only assignee pickers are affected.
+    try {
+      const employees = await employeeService.list()
+      setEmployees(employees.data)
+    } catch {
+      /* assignee dropdowns fall back to module members */
+    }
+  } catch (error) {
+    loadError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not load this project. Please check your connection and try again.'
+  } finally {
+    isLoading.value = false
+  }
+}
+
+onMounted(loadData)
+
+// The slug changes when navigating between project categories without
+// unmounting the view, so the data has to follow it.
+watch(projectSlug, (next, previous) => {
+  if (next && next !== previous) loadData()
+})
 const routeModuleSlug = computed(() => route.params.moduleSlug ? String(route.params.moduleSlug) : '')
 const project = computed(() => state.projects.find(p => p.slug === projectSlug.value))
 const projectId = computed(() => project.value?.id ?? null)
@@ -269,26 +330,46 @@ function isTicketOverdue(ticket) {
 const overdueTickets = computed(() => state.tickets.filter(ticket => ticket.projectId === projectId.value && isTicketOverdue(ticket)))
 const activeModuleOverdueTickets = computed(() => activeModule.value ? moduleOverdueTickets(activeModule.value.id) : 0)
 
-function canMarkModuleDelivered() {
-  if (!project.value || !activeModule.value) return false
-  return can('Projects', 'approve', project.value)
-}
-
-function setModuleDelivered(delivered) {
-  if (!canMarkModuleDelivered() || !activeModule.value) return
-  applyModuleDelivered(activeModule.value, delivered)
-}
-
 function canManageModuleDelivery(module = activeModule.value) {
   if (!project.value || !module) return false
   return can('Projects', 'approve', project.value)
 }
 
-function applyModuleDelivered(module, delivered) {
-  if (!canManageModuleDelivery(module)) return
+async function applyModuleDelivered(module, delivered) {
+  if (!canManageModuleDelivery(module) || isSavingDelivery.value) return
+
+  isSavingDelivery.value = true
+
+  // Optimistic: the button sits on a card that also shows the delivered badge
+  // and hides the add-ticket form, so a round-trip delay reads as a dead click.
+  const previousStatus = module.status
+  const previousDeliveredAt = module.deliveredAt
   module.status = delivered ? 'completed' : 'active'
   module.deliveredAt = delivered ? todayKey() : ''
   if (delivered) showAdd.value = false
+
+  try {
+    const updated = await projectService.setModuleDelivered(module.id, delivered)
+    // Take the server's values rather than keeping the guess — delivered_at is
+    // stamped there, and its timezone is the company's, not the browser's.
+    module.status = updated.status
+    module.deliveredAt = updated.deliveredAt || ''
+  } catch (error) {
+    module.status = previousStatus
+    module.deliveredAt = previousDeliveredAt
+    pushNotification({
+      title: 'Could not update delivery',
+      message: error instanceof ApiError ? error.message : 'The change was not saved.',
+      type: 'project',
+      userIds: [state.currentUser.id],
+      route: activeModuleRoute()
+    })
+    isSavingDelivery.value = false
+    return
+  }
+
+  isSavingDelivery.value = false
+
   logActivity({
     module: 'project',
     action: delivered ? 'module delivered' : 'module reopened',
@@ -302,7 +383,7 @@ function assignee(id) {
   return state.employees.find(e => e.id === id)?.name ?? '—'
 }
 
-function openTicket(ticket) {
+async function openTicket(ticket) {
   selectedTicket.value = ticket
   ticketDraft.value = {
     title: ticket.title,
@@ -314,6 +395,21 @@ function openTicket(ticket) {
     deadline: ticket.deadline || ''
   }
   newComment.value = ''
+  ticketError.value = ''
+
+  // The list endpoint omits comments and time logs — they are detail-only, and
+  // shipping every thread with every board load would be wasteful. Fetched
+  // here so the modal shows them; the modal is already open by now, so a slow
+  // response fills in rather than blocking.
+  try {
+    const full = await ticketService.find(ticket.id)
+    upsertTicket(full)
+    // Re-point at the store's copy: upsertTicket replaced the object, so the
+    // original reference would no longer receive updates.
+    selectedTicket.value = state.tickets.find(t => t.id === ticket.id) || selectedTicket.value
+  } catch {
+    /* comments simply stay empty; the rest of the modal is already usable */
+  }
 }
 
 function closeTicket() {
@@ -421,15 +517,20 @@ function addTicketAttachment() {
   newAttachmentName.value = ''
 }
 
-function addComment() {
+async function addComment() {
   if (!selectedTicket.value || !newComment.value.trim()) return
-  if (!selectedTicket.value.comments) selectedTicket.value.comments = []
-  selectedTicket.value.comments.unshift({
-    id: Date.now(),
-    authorId: state.currentUser.id,
-    text: newComment.value.trim(),
-    createdAt: new Date().toISOString()
-  })
+
+  try {
+    // Returns the ticket with its full comment thread, so the author name and
+    // server timestamp are the real ones rather than optimistic guesses.
+    upsertTicket(await ticketService.comment(selectedTicket.value.id, newComment.value.trim()))
+  } catch (error) {
+    ticketError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not post the comment. Please try again.'
+    return
+  }
+
   const recipients = [selectedTicket.value.assigneeId, selectedTicket.value.assignedById, project.value?.managerId]
     .filter(id => id && id !== state.currentUser.id)
   pushNotification({
@@ -454,21 +555,32 @@ function updateSelectedTicketStatus(status) {
   ticketDraft.value.status = status
 }
 
-function saveTicketChanges() {
+async function saveTicketChanges() {
   if (!canEditTicketFields.value || !selectedTicket.value || !ticketDraft.value) return
   if (!moduleAssignedEmployees.value.some(employee => employee.id === ticketDraft.value.assigneeId)) return
+
   const changes = {
     title: ticketDraft.value.title.trim() || selectedTicket.value.title,
     description: ticketDraft.value.description.trim(),
     priority: ticketDraft.value.priority,
     assigneeId: ticketDraft.value.assigneeId,
-    assignedById: ticketDraft.value.assignedById,
     deadline: ticketDraft.value.deadline || null
   }
   if (canUpdateTicketStatus.value) {
     changes.status = ticketDraft.value.status
   }
-  Object.assign(selectedTicket.value, changes)
+
+  try {
+    // The API silently drops assigneeId for anyone without supervisory scope,
+    // so the saved record — not the draft — is what the store must reflect.
+    upsertTicket(await ticketService.update(selectedTicket.value.id, changes))
+  } catch (error) {
+    ticketError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not save the ticket. Please try again.'
+    return
+  }
+
   pushNotification({
     title: 'Ticket updated',
     message: `${state.currentUser.name} updated "${selectedTicket.value.title}".`,
@@ -501,11 +613,30 @@ function highlightColumn(column) {
   activeDropColumn.value = column
 }
 
-function moveTicket(ticketId, status) {
+async function moveTicket(ticketId, status) {
   if (!canUpdateTicketStatus.value) return
   const ticket = state.tickets.find(t => t.id === ticketId)
   if (!ticket) return
+
+  // Optimistic: a drag that waits for the round trip snaps back under the
+  // cursor, which reads as a failed drop. Reverted below if the save fails.
+  const previousStatus = ticket.status
   ticket.status = status
+
+  try {
+    upsertTicket(await ticketService.update(ticketId, { status }))
+  } catch (error) {
+    ticket.status = previousStatus
+    pushNotification({
+      title: 'Could not move ticket',
+      message: error instanceof ApiError ? error.message : 'The change was not saved.',
+      type: 'ticket',
+      userIds: [state.currentUser.id],
+      route: activeModuleRoute()
+    })
+    return
+  }
+
   pushNotification({
     title: 'Ticket status changed',
     message: `"${ticket.title}" moved to ${statusMeta[status].label}.`,
@@ -754,7 +885,7 @@ function openAddTicket() {
   showAdd.value = true
 }
 
-function addTicket() {
+async function addTicket() {
   ticketError.value = ''
   if (!canCreateTickets.value) return
   if (!activeModule.value) {
@@ -774,21 +905,28 @@ function addTicket() {
     ticketError.value = 'That person is not assigned to this module.'
     return
   }
-  const ticket = {
-    id: Date.now(),
-    projectId: projectId.value,
-    moduleId: activeModule.value.id,
-    title: newTicketForm.value.title.trim(),
-    description: newTicketForm.value.description.trim(),
-    status: 'todo',
-    priority: newTicketForm.value.priority,
-    assigneeId: newTicketForm.value.assigneeId,
-    assignedById: isEmployee.value ? newTicketForm.value.assignedById : state.currentUser.id,
-    deadline: newTicketForm.value.deadline || null,
-    comments: [],
-    timeLogs: []
+  let ticket
+  try {
+    // The id and projectId come from the server: projectId is derived from the
+    // chosen module there, so it cannot be pointed at another project, and
+    // Date.now() ids collided whenever two tickets were created in the same
+    // millisecond.
+    ticket = await ticketService.create({
+      moduleId: activeModule.value.id,
+      title: newTicketForm.value.title.trim(),
+      description: newTicketForm.value.description.trim(),
+      priority: newTicketForm.value.priority,
+      assigneeId: newTicketForm.value.assigneeId,
+      deadline: newTicketForm.value.deadline || null
+    })
+    upsertTicket(ticket)
+  } catch (error) {
+    ticketError.value = error instanceof ApiError
+      ? (error.fieldError('title') || error.message)
+      : 'Could not create the ticket. Please try again.'
+    return
   }
-  state.tickets.push(ticket)
+
   pushNotification({
     title: 'New ticket assigned',
     message: `"${ticket.title}" was created in ${activeModule.value.name}.`,
@@ -926,8 +1064,9 @@ function addTicket() {
             </button>
             <button
               v-if="canManageModuleDelivery(module)"
+              :disabled="isSavingDelivery"
               @click.stop="applyModuleDelivered(module, module.status !== 'completed')"
-              class="text-xs font-semibold rounded-lg px-3 py-1.5 transition-colors"
+              class="text-xs font-semibold rounded-lg px-3 py-1.5 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
               :class="module.status === 'completed' ? 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-950 text-white hover:bg-black'"
             >
               {{ module.status === 'completed' ? 'Reopen' : 'Mark delivered' }}
@@ -1429,5 +1568,31 @@ function addTicket() {
   <div v-else-if="isHR" class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
     <div class="text-lg font-semibold text-slate-900">Tickets are not available for HR</div>
     <div class="text-sm text-slate-600 mt-1">Use the HR dashboard for attendance, claims, leaves, and payroll requests.</div>
+  </div>
+
+  <!-- States that did not exist with mock data, where `project` was always
+       present synchronously. -->
+  <div v-else-if="isLoading" class="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+    Loading project…
+  </div>
+
+  <div v-else-if="loadError" class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+    <strong class="block mb-1">{{ loadError }}</strong>
+    <button type="button" class="font-semibold underline" @click="loadData">Try again</button>
+  </div>
+
+  <!-- The API returns 404 both for a project that does not exist and one the
+       user may not see, so this wording must cover both without implying the
+       project is real. -->
+  <div v-else class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div class="text-lg font-semibold text-slate-900">Project not found</div>
+    <div class="text-sm text-slate-600 mt-1">It may have been removed, or you may not have access to it.</div>
+    <button
+      type="button"
+      class="mt-4 text-sm font-semibold text-emerald-700 hover:text-emerald-800"
+      @click="router.push({ name: 'projects' })"
+    >
+      Back to project categories
+    </button>
   </div>
 </template>

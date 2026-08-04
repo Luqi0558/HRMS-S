@@ -104,6 +104,10 @@ class DemoProjectSeeder extends Seeder
                 'status' => $status,
                 'priority' => $priority,
                 'assignee_id' => $assigneeId,
+                // Whoever raised the ticket. The frontend reads this as
+                // assignedById for notification routing, so leaving it null
+                // means those notifications silently reach nobody.
+                'created_by' => $module->lead_id ?? $module->project->manager_id,
                 'deadline' => $deadline,
                 'completed_at' => $status === 'done' ? now() : null,
             ]

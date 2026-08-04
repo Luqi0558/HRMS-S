@@ -38,6 +38,25 @@ class PermissionService
      *
      * @return array<int, array{module: string, view: bool, create: bool, approve: bool, finance: bool, scope: string}>
      */
+    public function can(User $user, string $module, string $action = 'view'): bool
+    {
+        $row = collect($this->forUser($user))->firstWhere('module', $module);
+
+        // Super admin's blanket grant covers modules no role names explicitly.
+        // withSuperAdminGrant() can only expand over modules already in the
+        // grid, so a module gated by route middleware but absent from the
+        // seed — Settings is one — would otherwise 403 for everyone. The
+        // frontend's permissionRow() falls through the same way; the two must
+        // agree or the UI offers actions the API refuses.
+        if (! $row
+            && $user->role === 'super_admin'
+            && ! in_array($module, self::SUPER_ADMIN_EXCLUDED, true)) {
+            return (bool) (self::SUPER_ADMIN_GRANT[$action] ?? false);
+        }
+
+        return (bool) ($row[$action] ?? false);
+    }
+
     public function forUser(User $user): array
     {
         $rows = $this->permissions->forRole($user->role)

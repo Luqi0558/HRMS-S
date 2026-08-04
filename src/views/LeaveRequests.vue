@@ -1,11 +1,46 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
+import { leaveService } from '../services/leaveService.js'
+import { settingsService } from '../services/settingsService.js'
+import { employeeService } from '../services/employeeService.js'
 
 const route = useRoute()
-const { state, can, squadMemberIds, pushNotification, logActivity } = useStore()
+const {
+  state, can, squadMemberIds, pushNotification, logActivity,
+  setLeaveRequests, upsertLeaveRequest, setServerSettings, setEmployees
+} = useStore()
+const loadError = ref('')
+const submitting = ref(false)
+const decidingId = ref(null)
+// Server-computed balance. Authoritative — the API counts approved days
+// against the policy allowance and is the same figure that refuses an
+// over-limit request.
+const serverBalance = ref(null)
+
+/**
+ * Each fetch is independent and non-fatal: an employee sees only their own
+ * requests and holds no Employees permission, but must still see the page.
+ */
+async function loadLeaveData() {
+  const [requests, balance, settings, employees] = await Promise.allSettled([
+    leaveService.list(),
+    leaveService.balance(),
+    settingsService.all(),
+    employeeService.list()
+  ])
+
+  if (requests.status === 'fulfilled') setLeaveRequests(requests.value)
+  else loadError.value = requests.reason?.message || 'Unable to load leave requests.'
+
+  if (balance.status === 'fulfilled') serverBalance.value = balance.value
+  if (settings.status === 'fulfilled') setServerSettings(settings.value)
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+}
+
+onMounted(loadLeaveData)
 // HR-stage approval right on Leave Request (HR + super_admin hold it).
 const canReviewHR = computed(() => can('Leave Request', 'approve'))
 // Stage one is the Team Lead's. Roles that also hold the HR-stage right
@@ -81,6 +116,21 @@ watch(
 )
 
 const leaveBalances = computed(() => {
+  // The API's figure wins once loaded: it counts the same rows the server uses
+  // to refuse an over-limit request, so a local tally that disagreed would
+  // promise days the API would then reject.
+  if (serverBalance.value) {
+    return Object.entries(serverBalance.value)
+      // Unpaid leave reports allowed: null — no ceiling, so no card.
+      .filter(([, figures]) => figures.allowed !== null)
+      .map(([type, figures]) => ({
+        type,
+        allowed: figures.allowed,
+        used: figures.taken,
+        remaining: figures.remaining
+      }))
+  }
+
   const policies = {
     'Annual leave': state.settings.leave.annualDays,
     'Sick leave': state.settings.leave.sickDays,
@@ -149,7 +199,14 @@ function addLeaveTimeline(request, status, note = '') {
 }
 
 function leaveStatus(request) {
+  // The API resolves the final status — it owns the two-stage rule and is the
+  // only side that can see every recorded approval. The derivation below runs
+  // only for the labels it does not model: which stage a pending request is
+  // waiting on.
   if (request.status === 'rejected') return 'rejected'
+  if (request.status === 'approved') return 'approved'
+  if (request.status === 'cancelled') return 'cancelled'
+
   const role = employeeRole(request.employeeId)
   if (role === 'hr') {
     return approvalStatus(request, 'superAdminApproval') === 'approved' ? 'approved' : 'pending super admin'
@@ -174,18 +231,19 @@ function leaveStatus(request) {
 
 // Stage-one approval, owned by the Team Lead. The record field is still called
 // managerApproval so existing timelines and payload shapes stay intact.
-function approveByManager(request) {
+async function approveByManager(request) {
   if (isOwnLeave(request)) return
   if (employeeRole(request.employeeId) !== 'employee') return
   if (!canApproveAsLead(request)) return
-  request.managerApproval = {
-    status: 'approved',
-    byId: state.currentUser.id,
-    byName: state.currentUser.name,
-    at: new Date().toISOString()
-  }
-  request.status = leaveStatus(request)
-  addLeaveTimeline(request, 'team lead approved', reviewNotes.value[request.id] || '')
+
+  const note = reviewNotes.value[request.id] || ''
+  // The API records the stage from the permission held — 'Team Leaves' for
+  // this one — and decides whether the request is now approved or still
+  // waiting on HR. It rejects the call outright if this lead does not manage
+  // the requester, so the client-side guards above are UX, not enforcement.
+  if (!await submitDecision(request, 'approved', note)) return
+
+  addLeaveTimeline(request, 'team lead approved', note)
   logActivity({
     module: 'leave',
     action: 'team lead approved leave',
@@ -210,18 +268,15 @@ function approveByManager(request) {
   reviewNotes.value[request.id] = ''
 }
 
-function approveByHR(request) {
+async function approveByHR(request) {
   if (isOwnLeave(request)) return
   if (employeeRole(request.employeeId) === 'hr') return
   if (employeeRole(request.employeeId) === 'employee' && approvalStatus(request, 'managerApproval') !== 'approved') return
-  request.hrApproval = {
-    status: 'approved',
-    byId: state.currentUser.id,
-    byName: state.currentUser.name,
-    at: new Date().toISOString()
-  }
-  request.status = leaveStatus(request)
-  addLeaveTimeline(request, 'hr approved', reviewNotes.value[request.id] || '')
+
+  const note = reviewNotes.value[request.id] || ''
+  if (!await submitDecision(request, 'approved', note)) return
+
+  addLeaveTimeline(request, 'hr approved', note)
   logActivity({
     module: 'leave',
     action: 'hr approved leave',
@@ -239,16 +294,16 @@ function approveByHR(request) {
   reviewNotes.value[request.id] = ''
 }
 
-function approveBySuperAdmin(request) {
+async function approveBySuperAdmin(request) {
   if (!can('Leave Escalation', 'approve')) return
-  request.superAdminApproval = {
-    status: 'approved',
-    byId: state.currentUser.id,
-    byName: state.currentUser.name,
-    at: new Date().toISOString()
-  }
-  request.status = leaveStatus(request)
-  addLeaveTimeline(request, 'super admin approved', reviewNotes.value[request.id] || '')
+
+  const note = reviewNotes.value[request.id] || ''
+  // Recorded at the 'escalation' stage, which settles the request on its own.
+  // It is the only stage that can clear HR's own leave — nobody leads them, so
+  // the lead stage would never arrive.
+  if (!await submitDecision(request, 'approved', note)) return
+
+  addLeaveTimeline(request, 'super admin approved', note)
   logActivity({
     module: 'leave',
     action: 'super admin approved leave',
@@ -266,10 +321,35 @@ function approveBySuperAdmin(request) {
   reviewNotes.value[request.id] = ''
 }
 
-function rejectLeave(request) {
+/**
+ * Sends one decision and folds the API's version of the request back into the
+ * store.
+ *
+ * Both approval stages go through here: the API picks the stage from the
+ * permission the caller holds, so there is nothing to pass. Returns false when
+ * the call failed, letting the caller skip its notifications.
+ */
+async function submitDecision(request, decision, comment) {
+  leaveError.value = ''
+  decidingId.value = request.id
+  try {
+    upsertLeaveRequest(await leaveService.decide(request.id, decision, comment))
+    reviewNotes.value[request.id] = ''
+    return true
+  } catch (error) {
+    leaveError.value = error?.message || 'Unable to record that decision.'
+    return false
+  } finally {
+    decidingId.value = null
+  }
+}
+
+async function rejectLeave(request) {
   if (isOwnLeave(request)) return
   const note = reviewNotes.value[request.id] || 'No reason provided.'
-  request.status = 'rejected'
+
+  if (!await submitDecision(request, 'rejected', note)) return
+
   addLeaveTimeline(request, 'rejected', note)
   logActivity({
     module: 'leave',
@@ -288,7 +368,7 @@ function rejectLeave(request) {
   reviewNotes.value[request.id] = ''
 }
 
-function applyLeaveRequest() {
+async function applyLeaveRequest() {
   leaveError.value = ''
   if (!form.value.type || !form.value.from || !form.value.to || !form.value.reason) {
     leaveError.value = 'Please fill in leave type, both dates, and a reason.'
@@ -303,28 +383,30 @@ function applyLeaveRequest() {
     return
   }
   const currentRole = state.currentUser.role
-  state.leaveRequests.unshift({
-    id: Date.now(),
-    employeeId: state.currentUser.id,
-    type: form.value.type,
-    duration: form.value.duration,
-    from: form.value.from,
-    to: form.value.to,
-    contact: form.value.contact,
-    reason: form.value.reason,
-    attachmentName: form.value.attachment?.name || '',
-    managerApproval: { status: 'pending', byId: null, byName: '', at: null },
-    hrApproval: { status: 'pending', byId: null, byName: '', at: null },
-    superAdminApproval: { status: 'pending', byId: null, byName: '', at: null },
-    timeline: [{
-      status: 'submitted',
-      note: form.value.reason,
-      by: state.currentUser.name,
-      role: state.currentUser.role,
-      at: new Date().toISOString()
-    }],
-    status: currentRole === 'hr' ? 'pending super admin' : currentRole === 'manager' ? 'pending HR' : 'pending team lead'
-  })
+
+  // The API is the one that can refuse this: it checks the request against the
+  // remaining allowance, rejects overlapping dates, and enforces whether half
+  // days are enabled at all.
+  submitting.value = true
+  try {
+    upsertLeaveRequest(await leaveService.create({
+      type: form.value.type,
+      fromDate: form.value.from,
+      toDate: form.value.to,
+      days: form.value.duration === 'half' ? 0.5 : leaveDays(form.value),
+      reason: form.value.reason
+    }))
+    // Re-read the balance: the days just requested are not deducted until
+    // approved, but the allowance check that gates the next request is the
+    // server's, so keep the widget honest about what it will accept.
+    serverBalance.value = await leaveService.balance().catch(() => serverBalance.value)
+  } catch (error) {
+    leaveError.value = error?.message || 'Unable to submit that request.'
+    return
+  } finally {
+    submitting.value = false
+  }
+
   logActivity({
     module: 'leave',
     action: 'leave requested',
@@ -352,6 +434,10 @@ function applyLeaveRequest() {
       <button @click="showApplyModal = true" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors shadow-sm">
         Apply leave
       </button>
+    </div>
+
+    <div v-if="loadError || leaveError" class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      {{ loadError || leaveError }}
     </div>
 
     <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -435,7 +521,7 @@ function applyLeaveRequest() {
                 <button
                   v-if="isManager"
                   @click="approveByManager(request)"
-                  :disabled="isOwnLeave(request) || request.status === 'rejected' || employeeRole(request.employeeId) !== 'employee' || approvalStatus(request, 'managerApproval') === 'approved' || !canApproveAsLead(request)"
+                  :disabled="isOwnLeave(request) || request.status === 'rejected' || employeeRole(request.employeeId) !== 'employee' || approvalStatus(request, 'managerApproval') === 'approved' || !canApproveAsLead(request) || decidingId === request.id"
                   :title="!canApproveAsLead(request) ? 'Only this employee\'s team lead can approve' : ''"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
@@ -444,7 +530,7 @@ function applyLeaveRequest() {
                 <button
                   v-if="canReviewHR && employeeRole(request.employeeId) !== 'hr'"
                   @click="approveByHR(request)"
-                  :disabled="isOwnLeave(request) || request.status === 'rejected' || (employeeRole(request.employeeId) === 'employee' && approvalStatus(request, 'managerApproval') !== 'approved') || approvalStatus(request, 'hrApproval') === 'approved'"
+                  :disabled="isOwnLeave(request) || request.status === 'rejected' || (employeeRole(request.employeeId) === 'employee' && approvalStatus(request, 'managerApproval') !== 'approved') || approvalStatus(request, 'hrApproval') === 'approved' || decidingId === request.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Approve
@@ -452,14 +538,14 @@ function applyLeaveRequest() {
                 <button
                   v-if="can('Leave Escalation', 'approve') && employeeRole(request.employeeId) === 'hr'"
                   @click="approveBySuperAdmin(request)"
-                  :disabled="request.status === 'rejected' || approvalStatus(request, 'superAdminApproval') === 'approved'"
+                  :disabled="isOwnLeave(request) || request.status === 'rejected' || request.status === 'approved' || approvalStatus(request, 'superAdminApproval') === 'approved' || decidingId === request.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Approve
                 </button>
                 <button
                   @click="rejectLeave(request)"
-                  :disabled="isOwnLeave(request) || request.status === 'approved' || request.status === 'rejected'"
+                  :disabled="isOwnLeave(request) || request.status === 'approved' || request.status === 'rejected' || decidingId === request.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-rose-600 text-white hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Reject
@@ -549,8 +635,8 @@ function applyLeaveRequest() {
 
           <div class="flex items-center justify-end gap-2 mt-5">
             <button @click="showApplyModal = false" class="text-sm border border-slate-200 rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
-            <button @click="applyLeaveRequest" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors">
-              Apply
+            <button @click="applyLeaveRequest" :disabled="submitting" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+              {{ submitting ? 'Applying...' : 'Apply' }}
             </button>
           </div>
         </div>
@@ -631,7 +717,7 @@ function applyLeaveRequest() {
                 <button
                   v-if="employeeRole(request.employeeId) !== 'hr'"
                   @click="approveByHR(request)"
-                  :disabled="isOwnLeave(request) || request.status === 'rejected' || (employeeRole(request.employeeId) === 'employee' && approvalStatus(request, 'managerApproval') !== 'approved') || approvalStatus(request, 'hrApproval') === 'approved'"
+                  :disabled="isOwnLeave(request) || request.status === 'rejected' || (employeeRole(request.employeeId) === 'employee' && approvalStatus(request, 'managerApproval') !== 'approved') || approvalStatus(request, 'hrApproval') === 'approved' || decidingId === request.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Approve
@@ -639,14 +725,14 @@ function applyLeaveRequest() {
                 <button
                   v-if="can('Leave Escalation', 'approve') && employeeRole(request.employeeId) === 'hr'"
                   @click="approveBySuperAdmin(request)"
-                  :disabled="request.status === 'rejected' || approvalStatus(request, 'superAdminApproval') === 'approved'"
+                  :disabled="isOwnLeave(request) || request.status === 'rejected' || request.status === 'approved' || approvalStatus(request, 'superAdminApproval') === 'approved' || decidingId === request.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Approve
                 </button>
                 <button
                   @click="rejectLeave(request)"
-                  :disabled="isOwnLeave(request) || request.status === 'approved' || request.status === 'rejected'"
+                  :disabled="isOwnLeave(request) || request.status === 'approved' || request.status === 'rejected' || decidingId === request.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-rose-600 text-white hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Reject

@@ -18,6 +18,9 @@ class TicketResource extends JsonResource
             'status' => $this->status,
             'priority' => $this->priority,
             'assigneeId' => $this->assignee_id,
+            // The frontend calls this assignedById: the person who raised the
+            // ticket, used for notification routing ("your ticket moved").
+            'assignedById' => $this->created_by,
             'deadline' => $this->deadline?->toDateString(),
             'completedAt' => $this->completed_at?->toIso8601String(),
 

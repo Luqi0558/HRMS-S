@@ -129,8 +129,50 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true }
   return payload
 }
 
+/**
+ * Fetches a binary response — a stored receipt or document.
+ *
+ * Separate from request() because that one reads the body as text and parses
+ * it as JSON, which would corrupt a PDF or image. Auth, tenant scoping and the
+ * 401 handling are the same; only the body handling differs. An error response
+ * is still JSON, so it is parsed as such to keep the message.
+ */
+async function requestBlob(path, { headers = {} } = {}) {
+  const token = getToken()
+
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: {
+      'X-Tenant': getTenant(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...headers
+    }
+  })
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      setToken(null)
+      if (onUnauthenticated) onUnauthenticated()
+    }
+
+    let payload = null
+    try {
+      payload = await response.json()
+    } catch {
+      /* a non-JSON error body leaves the status to speak for itself */
+    }
+
+    throw new ApiError(
+      payload?.message || `Request failed (${response.status})`,
+      { status: response.status, code: payload?.error, body: payload }
+    )
+  }
+
+  return response.blob()
+}
+
 export const apiClient = {
   get: (path, options) => request(path, { ...options, method: 'GET' }),
+  blob: (path, options) => requestBlob(path, options),
   post: (path, body, options) => request(path, { ...options, method: 'POST', body }),
   put: (path, body, options) => request(path, { ...options, method: 'PUT', body }),
   patch: (path, body, options) => request(path, { ...options, method: 'PATCH', body }),

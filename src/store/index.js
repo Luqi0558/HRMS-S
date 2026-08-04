@@ -740,7 +740,14 @@ function setCurrentUserRole(role) {
   }
 }
 
-function startTicketTimer(ticketId) {
+/**
+ * Timers are persisted server-side, where "one running timer per person" is
+ * enforced in a transaction. The local update below is optimistic so the
+ * counter starts ticking immediately; a failure is reverted by the caller
+ * reloading, since a timer that appears to run but was never recorded is worse
+ * than one that visibly failed to start.
+ */
+async function startTicketTimer(ticketId) {
   if (state.currentUser.role !== 'employee') return
   // Stop any timer currently running for this user before starting a new one.
   if (state.activeTimer) {
@@ -748,18 +755,36 @@ function startTicketTimer(ticketId) {
   }
   const ticket = state.tickets.find(t => t.id === ticketId)
   if (!ticket) return
+  if (!ticket.timeLogs) ticket.timeLogs = []
   ticket.timeLogs.push({ start: new Date().toISOString(), end: null })
   if (ticket.status === 'todo') ticket.status = 'in_progress'
   state.activeTimer = { ticketId }
+
+  try {
+    const { ticketService } = await import('../services/ticketService.js')
+    upsertTicket(await ticketService.startTimer(ticketId))
+  } catch {
+    // Roll back the optimistic log so the UI does not show time that is not
+    // being recorded.
+    ticket.timeLogs = (ticket.timeLogs || []).filter(log => log.end !== null)
+    state.activeTimer = null
+  }
 }
 
-function stopTicketTimer(ticketId) {
+async function stopTicketTimer(ticketId) {
   const ticket = state.tickets.find(t => t.id === ticketId)
   if (!ticket) return
-  const openLog = ticket.timeLogs.find(l => l.end === null)
+  const openLog = (ticket.timeLogs || []).find(l => l.end === null)
   if (openLog) openLog.end = new Date().toISOString()
   if (state.activeTimer && state.activeTimer.ticketId === ticketId) {
     state.activeTimer = null
+  }
+
+  try {
+    const { ticketService } = await import('../services/ticketService.js')
+    await ticketService.stopTimer()
+  } catch {
+    /* the log is closed locally; a reload will reconcile from the server */
   }
 }
 
@@ -982,6 +1007,228 @@ function setRolePermissions(rows) {
   }))
 }
 
+// ---------------------------------------------------------------------------
+// API-backed collections
+//
+// These replace the mock arrays once loaded. The API already scopes each
+// response to what the signed-in user may see, so the client-side scopedList()
+// calls become a second, narrower filter rather than the security boundary —
+// which is correct: the browser copy was never enforceable anyway.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps an API project onto the shape the views expect. The API nests modules
+ * and returns member ids under `teamMembers`; both already match, so this is
+ * mostly a pass-through that guarantees the arrays exist.
+ */
+function mapProject(project) {
+  return {
+    ...project,
+    teamMembers: project.teamMembers || [],
+    modules: (project.modules || []).map(module => ({
+      ...module,
+      teamMembers: module.teamMembers || []
+    }))
+  }
+}
+
+function setProjects(rows) {
+  state.projects = (rows || []).map(mapProject)
+}
+
+function setTickets(rows) {
+  state.tickets = (rows || []).map(ticket => ({
+    ...ticket,
+    // The views read `comments` and `timeLogs` unconditionally; the list
+    // endpoint omits them (they are detail-only), so default them here rather
+    // than guarding every `.length` in the templates.
+    comments: ticket.comments || [],
+    timeLogs: ticket.timeLogs || []
+  }))
+}
+
+function setEmployees(rows) {
+  state.employees = (rows || []).map(employee => ({
+    ...employee,
+    // Views filter on `role`, which lives on the user rather than the
+    // employment record. The list endpoint eager-loads it.
+    role: employee.role || employee.user?.role || 'employee'
+  }))
+}
+
+function setAttendance(rows) {
+  state.attendance = (rows || []).map(row => ({
+    ...row,
+    // The ledger renders a photo thumbnail when one exists. The API stores a
+    // path rather than the image, and only returns whether there is one, so
+    // rows loaded from the server have no inline photo — only a punch made in
+    // this session does.
+    checkInPhoto: row.checkInPhoto || null,
+    wfh: Boolean(row.wfh)
+  }))
+}
+
+/** Replaces today's punch after a check in or out, leaving history intact. */
+function upsertAttendance(row) {
+  if (!row) return
+  const index = state.attendance.findIndex(a => a.id === row.id)
+  if (index === -1) state.attendance.unshift({ ...row, checkInPhoto: row.checkInPhoto || null })
+  // Merge rather than replace: a check-out response carries no photo, and
+  // overwriting would drop the one captured at check-in.
+  else state.attendance[index] = { ...state.attendance[index], ...row }
+}
+
+/**
+ * Maps an API leave request onto the shape the view expects.
+ *
+ * The API returns approvals as a flat `[{stage, decision, approverName}]`
+ * array; the view reads `managerApproval` / `hrApproval` objects and has done
+ * since before the API existed. Projecting here keeps that whole screen —
+ * status labels, timelines, review columns — working unchanged.
+ *
+ * 'lead' maps to managerApproval: the field name predates the rename of that
+ * stage to Team Lead. 'escalation' is super admin's stage, used for requests
+ * no one else can settle — HR's own leave has no lead above it.
+ */
+function mapLeaveRequest(request) {
+  const approvals = request.approvals || []
+  const stage = name => {
+    const row = approvals.find(a => a.stage === name)
+    if (!row) return { status: 'pending' }
+    return { status: row.decision, byName: row.approverName, at: row.decidedAt, note: row.comment }
+  }
+
+  return {
+    ...request,
+    approvals,
+    managerApproval: stage('lead'),
+    hrApproval: stage('hr'),
+    superAdminApproval: stage('escalation'),
+    // The list renders 'half' vs 'full' from a duration field the API does not
+    // store — it keeps `days`, which is the figure the balance is drawn from.
+    duration: request.days % 1 !== 0 ? 'half' : 'full'
+  }
+}
+
+function setLeaveRequests(rows) {
+  state.leaveRequests = (rows || []).map(mapLeaveRequest)
+}
+
+function upsertLeaveRequest(request) {
+  if (!request) return
+  const mapped = mapLeaveRequest(request)
+  const index = state.leaveRequests.findIndex(r => r.id === mapped.id)
+  if (index === -1) state.leaveRequests.unshift(mapped)
+  else state.leaveRequests[index] = { ...state.leaveRequests[index], ...mapped }
+}
+
+function setMedicalClaims(rows) {
+  state.medicalClaims = (rows || []).map(claim => ({
+    ...claim,
+    // Amounts arrive as strings to protect precision in transit. The views
+    // format and total them, so they are numbers from here on.
+    amount: Number(claim.amount),
+    approvedAmount: claim.approvedAmount === null ? null : Number(claim.approvedAmount)
+  }))
+}
+
+function upsertMedicalClaim(claim) {
+  if (!claim) return
+  const mapped = {
+    ...claim,
+    amount: Number(claim.amount),
+    approvedAmount: claim.approvedAmount === null ? null : Number(claim.approvedAmount)
+  }
+  const index = state.medicalClaims.findIndex(c => c.id === mapped.id)
+  if (index === -1) state.medicalClaims.unshift(mapped)
+  else state.medicalClaims[index] = { ...state.medicalClaims[index], ...mapped }
+}
+
+/**
+ * Merges the server-held policy groups into settings.
+ *
+ * Only attendance, leave and claims are stored server-side. The remaining
+ * groups (company, finance, pettyCash, designations, stacks) are still local
+ * and belong to later phases, so this merges per group instead of replacing
+ * `state.settings` wholesale — a replace would erase them.
+ */
+function setServerSettings(groups) {
+  Object.entries(groups || {}).forEach(([group, values]) => {
+    if (!values || typeof values !== 'object') return
+    state.settings[group] = { ...state.settings[group], ...values }
+  })
+}
+
+/**
+ * Maps an API slip request onto what SalarySlips.vue reads.
+ *
+ * The view keys rows by a "June 2026" month label and reads the slip's
+ * figures off the request, so the issued slip is flattened onto it. Money
+ * arrives as strings — pay is encrypted and JSON numbers are doubles — and is
+ * converted here, since every consumer does arithmetic on it.
+ */
+function mapSlipRequest(request) {
+  const slip = request.slip || null
+
+  return {
+    ...request,
+    month: request.month,
+    slipNo: slip ? `SLP-${String(slip.id).padStart(5, '0')}` : '',
+    generatedAt: slip?.issuedAt || '',
+    approvedAt: slip?.approvedAt || '',
+    paidAt: slip?.paidAt || '',
+    payment: slip?.payment || null,
+    // The slip's own state is the real one once issued; before that the
+    // request is merely pending or rejected.
+    status: slip?.status || request.status,
+    details: slip
+      ? {
+          baseSalary: Number(slip.baseSalary),
+          houseAllowance: Number(slip.houseAllowance),
+          medicalAllowance: Number(slip.medicalAllowance),
+          bonus: Number(slip.bonus),
+          taxDeduction: Number(slip.taxDeduction),
+          attendanceDeduction: Number(slip.attendanceDeduction),
+          advanceDeduction: Number(slip.advanceDeduction),
+          notes: slip.notes || ''
+        }
+      : null,
+    slipId: slip?.id || null,
+    history: request.history || []
+  }
+}
+
+function setSalarySlipRequests(rows) {
+  state.salarySlipRequests = (rows || []).map(mapSlipRequest)
+}
+
+function upsertSalarySlipRequest(request) {
+  if (!request) return
+  const mapped = mapSlipRequest(request)
+  const index = state.salarySlipRequests.findIndex(r => r.id === mapped.id)
+  if (index === -1) state.salarySlipRequests.unshift(mapped)
+  else state.salarySlipRequests[index] = { ...state.salarySlipRequests[index], ...mapped }
+}
+
+/** Replaces one project in place, e.g. after a member sync. */
+function upsertProject(project) {
+  const mapped = mapProject(project)
+  const index = state.projects.findIndex(p => p.id === mapped.id)
+  if (index === -1) state.projects.push(mapped)
+  else state.projects[index] = mapped
+}
+
+function upsertTicket(ticket) {
+  const index = state.tickets.findIndex(t => t.id === ticket.id)
+  const mapped = {
+    ...ticket,
+    comments: ticket.comments || [],
+    timeLogs: ticket.timeLogs || []
+  }
+  if (index === -1) state.tickets.push(mapped)
+  else state.tickets[index] = { ...state.tickets[index], ...mapped }
+}
+
 function clearCurrentUser() {
   state.currentUser = { ...guestUser }
   try {
@@ -1055,6 +1302,20 @@ export function useStore() {
     clearCurrentUser,
     isAuthenticated,
     setRolePermissions,
+    setProjects,
+    setTickets,
+    setEmployees,
+    setAttendance,
+    upsertAttendance,
+    setLeaveRequests,
+    upsertLeaveRequest,
+    setMedicalClaims,
+    upsertMedicalClaim,
+    setSalarySlipRequests,
+    upsertSalarySlipRequest,
+    setServerSettings,
+    upsertProject,
+    upsertTicket,
     startTicketTimer,
     stopTicketTimer,
     totalHoursToday

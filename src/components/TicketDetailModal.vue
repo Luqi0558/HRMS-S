@@ -2,7 +2,13 @@
 import { computed, ref, watch } from 'vue'
 import TicketTimer from './TicketTimer.vue'
 import { useStore } from '../store/index.js'
+// A static label/colour map, not data.
 import { statusMeta } from '../data/mock.js'
+import { ticketService } from '../services/ticketService.js'
+import { ApiError } from '../services/apiClient.js'
+
+const isSaving = ref(false)
+const saveError = ref('')
 
 // Ticket detail modal, shared by the Employee and Team Lead dashboards.
 // Owns its own draft state; the parent only passes the ticket to open.
@@ -20,10 +26,21 @@ const {
   formatDateTime,
   formatDate: formatCompanyDate,
   pushNotification,
-  logActivity
+  logActivity,
+  upsertTicket
 } = useStore()
 
-const dashboardTicket = computed(() => props.ticket)
+/**
+ * Resolved from the store by id rather than used directly.
+ *
+ * The parent passes a snapshot of the ticket object; upsertTicket() replaces
+ * the store's entry after a save, so holding the prop would leave the modal
+ * showing pre-save values (and an empty comment thread) until it was reopened.
+ */
+const dashboardTicket = computed(() => {
+  if (!props.ticket) return null
+  return state.tickets.find(t => t.id === props.ticket.id) || props.ticket
+})
 const dashboardTicketDraft = ref(null)
 const dashboardNewComment = ref('')
 const dashboardNewAttachmentName = ref('')
@@ -37,7 +54,7 @@ function employeeName(id) {
 // Rebuild the draft whenever a different ticket is opened.
 watch(
   () => props.ticket,
-  ticket => {
+  async ticket => {
     if (!ticket) {
       dashboardTicketDraft.value = null
       return
@@ -52,6 +69,16 @@ watch(
       deadline: ticket.deadline || ''
     }
     dashboardNewComment.value = ''
+    saveError.value = ''
+
+    // Comments and time logs are detail-only — the list endpoints omit them so
+    // a board load does not carry every thread. Fetched here; the modal is
+    // already open, so a slow response fills in rather than blocking.
+    try {
+      upsertTicket(await ticketService.find(ticket.id))
+    } catch {
+      /* the thread stays empty; the rest of the modal is usable */
+    }
     dashboardNewAttachmentName.value = ''
   },
   { immediate: true }
@@ -128,18 +155,34 @@ function dashboardTicketActivity(ticket) {
   return [...logs, ...timeLogs].sort((a, b) => new Date(b.at) - new Date(a.at))
 }
 
-function saveDashboardTicketChanges() {
+async function saveDashboardTicketChanges() {
   if (!dashboardCanEditTicketFields.value || !dashboardTicket.value || !dashboardTicketDraft.value) return
+  if (isSaving.value) return
+
   const changes = {
     title: dashboardTicketDraft.value.title.trim() || dashboardTicket.value.title,
     description: dashboardTicketDraft.value.description.trim(),
     priority: dashboardTicketDraft.value.priority,
     assigneeId: dashboardTicketDraft.value.assigneeId,
-    assignedById: dashboardTicketDraft.value.assignedById,
     deadline: dashboardTicketDraft.value.deadline || null
   }
   if (dashboardCanUpdateTicketStatus.value) changes.status = dashboardTicketDraft.value.status
-  Object.assign(dashboardTicket.value, changes)
+
+  isSaving.value = true
+  try {
+    // The saved record, not the draft — the API drops assigneeId for anyone
+    // without supervisory scope, so echoing the draft back would show a
+    // reassignment that never happened.
+    upsertTicket(await ticketService.update(dashboardTicket.value.id, changes))
+  } catch (error) {
+    saveError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not save the ticket. Please try again.'
+    isSaving.value = false
+    return
+  }
+  isSaving.value = false
+
   pushNotification({
     title: 'Ticket updated',
     message: `${state.currentUser.name} updated "${dashboardTicket.value.title}".`,
@@ -157,15 +200,23 @@ function saveDashboardTicketChanges() {
   closeDashboardTicket()
 }
 
-function addDashboardTicketComment() {
+async function addDashboardTicketComment() {
   if (!dashboardTicket.value || !dashboardNewComment.value.trim()) return
-  if (!dashboardTicket.value.comments) dashboardTicket.value.comments = []
-  dashboardTicket.value.comments.unshift({
-    id: Date.now(),
-    authorId: state.currentUser.id,
-    text: dashboardNewComment.value.trim(),
-    createdAt: new Date().toISOString()
-  })
+
+  try {
+    // Returns the full thread, so the author name and timestamp are the
+    // server's rather than optimistic guesses.
+    upsertTicket(await ticketService.comment(
+      dashboardTicket.value.id,
+      dashboardNewComment.value.trim()
+    ))
+  } catch (error) {
+    saveError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not post the comment. Please try again.'
+    return
+  }
+
   pushNotification({
     title: 'New ticket comment',
     message: `${state.currentUser.name} commented on "${dashboardTicket.value.title}".`,
@@ -374,9 +425,22 @@ function addDashboardTicketAttachment() {
               </div>
             </div>
 
+            <!-- Server-side failures: a save the API refused, or a lost
+                 connection. Without this the click looked like it worked. -->
+            <div v-if="saveError" role="alert" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+              {{ saveError }}
+            </div>
+
             <div class="flex items-center justify-end gap-2 mt-4 pt-4 border-t border-slate-200">
               <button @click="closeDashboardTicket" class="text-sm border border-slate-200 rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
-              <button v-if="dashboardCanEditTicketFields" @click="saveDashboardTicketChanges" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Save changes</button>
+              <button
+                v-if="dashboardCanEditTicketFields"
+                :disabled="isSaving"
+                @click="saveDashboardTicketChanges"
+                class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+              >
+                {{ isSaving ? 'Saving…' : 'Save changes' }}
+              </button>
             </div>
           </div>
         </div>

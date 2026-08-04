@@ -325,6 +325,74 @@ class ProjectTicketTest extends TenantTestCase
         ]);
     }
 
+    // --- module delivery -------------------------------------------------
+
+    /**
+     * Delivery is gated on `approve`. A manager holds it on Projects; an
+     * ordinary member does not, even though they can work the module.
+     */
+    public function test_a_member_cannot_mark_a_module_delivered(): void
+    {
+        $this->patchJson("/api/modules/{$this->module->id}/delivery", [
+            'delivered' => true,
+        ], $this->auth('member@test.com'))->assertStatus(403);
+
+        $this->assertSame('active', $this->module->fresh()->status);
+    }
+
+    public function test_a_manager_can_mark_a_module_delivered_and_reopen_it(): void
+    {
+        $auth = $this->auth('manager@test.com');
+
+        $this->patchJson("/api/modules/{$this->module->id}/delivery", [
+            'delivered' => true,
+        ], $auth)->assertOk()->assertJsonPath('module.status', 'completed');
+
+        $delivered = $this->module->fresh();
+        $this->assertSame('completed', $delivered->status);
+        $this->assertNotNull($delivered->delivered_at, 'delivery date should be stamped');
+
+        $this->patchJson("/api/modules/{$this->module->id}/delivery", [
+            'delivered' => false,
+        ], $auth)->assertOk()->assertJsonPath('module.status', 'active');
+
+        $reopened = $this->module->fresh();
+        $this->assertSame('active', $reopened->status);
+        // A reopened module must not keep reporting a delivery date it no
+        // longer has.
+        $this->assertNull($reopened->delivered_at);
+    }
+
+    /** Holding `approve` does not grant it over an unrelated project. */
+    public function test_a_manager_cannot_deliver_a_module_in_another_project(): void
+    {
+        $other = Project::create(['name' => 'Other', 'slug' => 'other']);
+        $otherModule = ProjectModule::create([
+            'project_id' => $other->id,
+            'name' => 'Elsewhere',
+            'slug' => 'elsewhere',
+        ]);
+
+        $this->patchJson("/api/modules/{$otherModule->id}/delivery", [
+            'delivered' => true,
+        ], $this->auth('manager@test.com'))->assertStatus(403);
+
+        $this->assertSame('active', $otherModule->fresh()->status);
+    }
+
+    /** Delivery closes the module to new work — the two rules must agree. */
+    public function test_delivering_a_module_then_blocks_new_tickets(): void
+    {
+        $this->patchJson("/api/modules/{$this->module->id}/delivery", [
+            'delivered' => true,
+        ], $this->auth('manager@test.com'))->assertOk();
+
+        $this->postJson('/api/tickets', [
+            'moduleId' => $this->module->id,
+            'title' => 'Too late',
+        ], $this->auth('member@test.com'))->assertStatus(403);
+    }
+
     public function test_overdue_filtering_excludes_delivered_work(): void
     {
         Ticket::create([
