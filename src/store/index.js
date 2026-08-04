@@ -135,6 +135,9 @@ const state = reactive({
       status: 'recorded', approvedById: null, approvedAt: null
     }
   ],
+  // The API's view of the tin — float, spend, balance and the low flag. Null
+  // until loaded, which is when the local helpers below are used instead.
+  pettyCashSummary: null,
   pettyCashReconciliations: [
     {
       id: 1,
@@ -608,19 +611,26 @@ function pettyCashCountedExpenses() {
   return state.pettyCashExpenses.filter(expense => expense.status !== 'rejected')
 }
 
+// Each of these prefers the API summary once it has loaded. The local sums
+// remain for the first paint, but the server owns the tin: recomputing a
+// balance the API already published is a second chance to disagree with it.
 function pettyCashTotalFloat() {
+  if (state.pettyCashSummary) return Number(state.pettyCashSummary.float || 0)
   return pettyCashApprovedTopUps().reduce((sum, topUp) => sum + Number(topUp.amount || 0), 0)
 }
 
 function pettyCashTotalSpent() {
+  if (state.pettyCashSummary) return Number(state.pettyCashSummary.spent || 0)
   return pettyCashCountedExpenses().reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
 }
 
 function pettyCashBalance() {
+  if (state.pettyCashSummary) return Number(state.pettyCashSummary.balance || 0)
   return pettyCashTotalFloat() - pettyCashTotalSpent()
 }
 
 function pettyCashIsLow() {
+  if (state.pettyCashSummary) return Boolean(state.pettyCashSummary.isLow)
   return pettyCashBalance() < Number(state.settings.pettyCash.lowBalanceThreshold || 0)
 }
 
@@ -1210,6 +1220,32 @@ function upsertSalarySlipRequest(request) {
   else state.salarySlipRequests[index] = { ...state.salarySlipRequests[index], ...mapped }
 }
 
+/**
+ * The petty cash ledgers and the tin's position.
+ *
+ * `pettyCashSummary` holds the API's figures. The local pettyCashBalance()
+ * helpers stay as a fallback for before the fetch lands, but once the summary
+ * is set it wins — a second calculation in the browser is a second chance to
+ * disagree with the ledger.
+ */
+function setPettyCash({ summary, topUps, expenses, reconciliations }) {
+  if (summary) state.pettyCashSummary = summary
+  if (topUps) state.pettyCashTopUps = topUps.map(mapPettyCashRow)
+  if (expenses) state.pettyCashExpenses = expenses.map(mapPettyCashRow)
+  if (reconciliations) state.pettyCashReconciliations = reconciliations.map(mapPettyCashRow)
+}
+
+/** Amounts arrive as strings to protect precision; the views total them. */
+function mapPettyCashRow(row) {
+  return {
+    ...row,
+    amount: row.amount === undefined ? undefined : Number(row.amount),
+    countedAmount: row.countedAmount === undefined ? undefined : Number(row.countedAmount),
+    bookBalance: row.bookBalance === undefined ? undefined : Number(row.bookBalance),
+    variance: row.variance === undefined ? undefined : Number(row.variance)
+  }
+}
+
 /** Replaces one project in place, e.g. after a member sync. */
 function upsertProject(project) {
   const mapped = mapProject(project)
@@ -1313,6 +1349,7 @@ export function useStore() {
     upsertMedicalClaim,
     setSalarySlipRequests,
     upsertSalarySlipRequest,
+    setPettyCash,
     setServerSettings,
     upsertProject,
     upsertTicket,

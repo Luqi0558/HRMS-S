@@ -1,11 +1,15 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
+import { pettyCashService } from '../services/pettyCashService.js'
+import { employeeService } from '../services/employeeService.js'
 
 const {
   state,
   can,
+  setPettyCash,
+  setEmployees,
   formatCurrency,
   currencyCode,
   formatDate,
@@ -27,6 +31,28 @@ const canAccess = computed(() => can('Petty Cash', 'view'))
 const canRecord = computed(() => can('Petty Cash', 'create'))
 const canApprove = computed(() => can('Petty Cash', 'approve'))
 
+const loadError = ref('')
+const busy = ref(false)
+
+/**
+ * One call returns the tin's position and all three ledgers — they are always
+ * rendered together, so separate fetches would mean four round trips to draw
+ * one screen.
+ */
+async function loadPettyCash() {
+  const [tin, employees] = await Promise.allSettled([
+    pettyCashService.load(),
+    employeeService.list()
+  ])
+
+  if (tin.status === 'fulfilled') setPettyCash(tin.value)
+  else loadError.value = tin.reason?.message || 'Unable to load petty cash.'
+
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+}
+
+onMounted(loadPettyCash)
+
 const activeTab = ref('expenses')
 const showExpenseForm = ref(false)
 const showTopUpForm = ref(false)
@@ -43,7 +69,7 @@ const categoryTotals = computed(() => pettyCashByCategory())
 const pendingExpenses = computed(() => pettyCashPendingExpenses())
 const pendingTopUps = computed(() => pettyCashPendingTopUps())
 
-const expenseForm = ref({ amount: '', date: todayValue(), category: 'Office supplies', payee: '', description: '', receiptName: '' })
+const expenseForm = ref({ amount: '', date: todayValue(), category: 'Office supplies', payee: '', description: '', receipt: null, receiptName: '' })
 const topUpForm = ref({ amount: '', date: todayValue(), reference: '', note: '' })
 const reconcileForm = ref({ countedAmount: '', note: '' })
 
@@ -81,13 +107,9 @@ function statusClass(status) {
   return 'bg-rose-100 text-rose-700'
 }
 
-function nextId(list) {
-  return list.reduce((max, item) => Math.max(max, item.id), 0) + 1
-}
-
 function openExpenseForm() {
   expenseError.value = ''
-  expenseForm.value = { amount: '', date: todayValue(), category: state.settings.pettyCash.categories[0], payee: '', description: '', receiptName: '' }
+  expenseForm.value = { amount: '', date: todayValue(), category: state.settings.pettyCash.categories[0], payee: '', description: '', receipt: null, receiptName: '' }
   showExpenseForm.value = true
 }
 
@@ -118,24 +140,35 @@ function validateExpense() {
   return ''
 }
 
-function saveExpense() {
+async function saveExpense() {
   expenseError.value = validateExpense()
   if (expenseError.value) return
+
   const amount = Number(expenseForm.value.amount)
   const needsApproval = pettyCashNeedsApproval(amount)
-  state.pettyCashExpenses.unshift({
-    id: nextId(state.pettyCashExpenses),
-    amount,
-    date: expenseForm.value.date,
-    category: expenseForm.value.category,
-    payee: expenseForm.value.payee.trim(),
-    description: expenseForm.value.description.trim(),
-    receiptName: expenseForm.value.receiptName,
-    loggedById: state.currentUser.id,
-    status: needsApproval ? 'pending' : 'recorded',
-    approvedById: null,
-    approvedAt: null
-  })
+
+  // The API decides whether this is recorded or pending, and refuses spend
+  // beyond what the tin holds — the checks above are the fast path.
+  busy.value = true
+  try {
+    await pettyCashService.recordExpense({
+      amount,
+      date: expenseForm.value.date,
+      category: expenseForm.value.category,
+      payee: expenseForm.value.payee.trim(),
+      description: expenseForm.value.description.trim(),
+      receipt: expenseForm.value.receipt || undefined
+    })
+    // Re-read rather than splice the row in: recording spend moves the
+    // balance, and the summary is what every tile on this page shows.
+    setPettyCash(await pettyCashService.load())
+  } catch (error) {
+    expenseError.value = error?.message || 'Unable to record that expense.'
+    return
+  } finally {
+    busy.value = false
+  }
+
   logActivity({
     module: 'petty cash',
     action: 'expense recorded',
@@ -162,23 +195,31 @@ function validateTopUp() {
   return ''
 }
 
-function saveTopUp() {
+async function saveTopUp() {
   topUpError.value = validateTopUp()
   if (topUpError.value) return
+
   const amount = Number(topUpForm.value.amount)
   // An approver's own request is settled immediately; HR's awaits sign-off.
+  // The API makes the same call from the permission held.
   const autoApproved = canApprove.value
-  state.pettyCashTopUps.unshift({
-    id: nextId(state.pettyCashTopUps),
-    amount,
-    date: topUpForm.value.date,
-    reference: topUpForm.value.reference.trim(),
-    note: topUpForm.value.note.trim(),
-    requestedById: state.currentUser.id,
-    status: autoApproved ? 'approved' : 'pending',
-    approvedById: autoApproved ? state.currentUser.id : null,
-    approvedAt: autoApproved ? new Date().toISOString() : null
-  })
+
+  busy.value = true
+  try {
+    await pettyCashService.addTopUp({
+      amount,
+      date: topUpForm.value.date,
+      reference: topUpForm.value.reference.trim(),
+      note: topUpForm.value.note.trim()
+    })
+    setPettyCash(await pettyCashService.load())
+  } catch (error) {
+    topUpError.value = error?.message || 'Unable to record that top-up.'
+    return
+  } finally {
+    busy.value = false
+  }
+
   logActivity({
     module: 'petty cash',
     action: autoApproved ? 'top-up added' : 'top-up requested',
@@ -196,11 +237,48 @@ function saveTopUp() {
   showTopUpForm.value = false
 }
 
-function approveTopUp(topUp) {
+/**
+ * Sends one decision and re-reads the tin.
+ *
+ * A full reload rather than patching the row: approving a top-up moves the
+ * float and rejecting spend returns it to the balance, so every tile on the
+ * page changes. Returns false when the call failed.
+ */
+async function decideTopUp(topUp, decision) {
+  loadError.value = ''
+  busy.value = true
+  try {
+    await pettyCashService.decideTopUp(topUp.id, decision)
+    setPettyCash(await pettyCashService.load())
+    return true
+  } catch (error) {
+    loadError.value = error?.message || 'Unable to record that decision.'
+    return false
+  } finally {
+    busy.value = false
+  }
+}
+
+async function decideExpense(expense, decision) {
+  loadError.value = ''
+  busy.value = true
+  try {
+    await pettyCashService.decideExpense(expense.id, decision)
+    setPettyCash(await pettyCashService.load())
+    return true
+  } catch (error) {
+    loadError.value = error?.message || 'Unable to record that decision.'
+    return false
+  } finally {
+    busy.value = false
+  }
+}
+
+async function approveTopUp(topUp) {
   if (!canApprove.value || topUp.status !== 'pending') return
-  topUp.status = 'approved'
-  topUp.approvedById = state.currentUser.id
-  topUp.approvedAt = new Date().toISOString()
+  // Approving adds the amount to the float, so the whole tin is re-read.
+  if (!await decideTopUp(topUp, 'approved')) return
+
   logActivity({
     module: 'petty cash',
     action: 'top-up approved',
@@ -215,11 +293,10 @@ function approveTopUp(topUp) {
   })
 }
 
-function rejectTopUp(topUp) {
+async function rejectTopUp(topUp) {
   if (!canApprove.value || topUp.status !== 'pending') return
-  topUp.status = 'rejected'
-  topUp.approvedById = state.currentUser.id
-  topUp.approvedAt = new Date().toISOString()
+  if (!await decideTopUp(topUp, 'rejected')) return
+
   logActivity({
     module: 'petty cash',
     action: 'top-up rejected',
@@ -227,11 +304,10 @@ function rejectTopUp(topUp) {
   })
 }
 
-function approveExpense(expense) {
+async function approveExpense(expense) {
   if (!canApprove.value || expense.status !== 'pending') return
-  expense.status = 'recorded'
-  expense.approvedById = state.currentUser.id
-  expense.approvedAt = new Date().toISOString()
+  if (!await decideExpense(expense, 'approved')) return
+
   logActivity({
     module: 'petty cash',
     action: 'expense approved',
@@ -239,11 +315,11 @@ function approveExpense(expense) {
   })
 }
 
-function rejectExpense(expense) {
+async function rejectExpense(expense) {
   if (!canApprove.value || expense.status !== 'pending') return
-  expense.status = 'rejected'
-  expense.approvedById = state.currentUser.id
-  expense.approvedAt = new Date().toISOString()
+  // Rejecting returns the amount to the balance — the money is not owed.
+  if (!await decideExpense(expense, 'rejected')) return
+
   logActivity({
     module: 'petty cash',
     action: 'expense rejected',
@@ -263,20 +339,32 @@ const reconcileVariance = computed(() => {
   return Number(reconcileForm.value.countedAmount) - balance.value
 })
 
-function saveReconciliation() {
+async function saveReconciliation() {
   reconcileError.value = validateReconcile()
   if (reconcileError.value) return
+
   const counted = Number(reconcileForm.value.countedAmount)
-  const variance = counted - balance.value
-  state.pettyCashReconciliations.unshift({
-    id: nextId(state.pettyCashReconciliations),
-    date: todayValue(),
-    countedAmount: counted,
-    bookBalance: balance.value,
-    variance,
-    note: reconcileForm.value.note.trim(),
-    byId: state.currentUser.id
-  })
+  let variance = counted - balance.value
+
+  // The API captures the book balance at the moment of counting and computes
+  // the variance from it — that figure is the one on record, so it is read
+  // back rather than trusting the browser's arithmetic.
+  busy.value = true
+  try {
+    const saved = await pettyCashService.reconcile({
+      countedAmount: counted,
+      date: todayValue(),
+      note: reconcileForm.value.note.trim()
+    })
+    variance = Number(saved.variance)
+    setPettyCash(await pettyCashService.load())
+  } catch (error) {
+    reconcileError.value = error?.message || 'Unable to record that count.'
+    return
+  } finally {
+    busy.value = false
+  }
+
   logActivity({
     module: 'petty cash',
     action: 'reconciliation recorded',
@@ -313,6 +401,10 @@ function saveReconciliation() {
           Reconcile
         </button>
       </div>
+    </div>
+
+    <div v-if="loadError" class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      {{ loadError }}
     </div>
 
     <!-- Balance summary -->
@@ -410,7 +502,7 @@ function saveReconciliation() {
                 <td class="px-4 py-3 text-slate-900 font-medium">{{ expense.category }}</td>
                 <td class="px-4 py-3 text-slate-700">{{ expense.payee }}</td>
                 <td class="px-4 py-3 text-slate-900 font-semibold">{{ formatCurrency(expense.amount) }}</td>
-                <td class="px-4 py-3 text-slate-600 text-xs">{{ expense.receiptName || '—' }}</td>
+                <td class="px-4 py-3 text-slate-600 text-xs">{{ expense.hasReceipt ? 'Attached' : '—' }}</td>
                 <td class="px-4 py-3">
                   <span class="rounded-full px-2 py-0.5 text-[11px] font-bold capitalize" :class="statusClass(expense.status)">{{ expense.status }}</span>
                 </td>
@@ -539,7 +631,7 @@ function saveReconciliation() {
             <div class="md:col-span-2">
               <label class="block">
               <span class="text-sm font-medium text-slate-700 block mb-1.5">Receipt</span>
-              <input type="file" accept=".pdf,image/*" @change="expenseForm.receiptName = $event.target.files[0]?.name || ''" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+              <input type="file" accept=".pdf,image/*" @change="expenseForm.receipt = $event.target.files[0] || null; expenseForm.receiptName = $event.target.files[0]?.name || ''" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               </label>
             </div>
           </div>

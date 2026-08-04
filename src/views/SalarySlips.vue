@@ -165,11 +165,20 @@ function statusClass(status) {
   return 'company-hub-badge-muted'
 }
 
+/**
+ * The local draft for a row that has no server-side request yet.
+ *
+ * Only the payroll editor uses this: it holds the reviewer's adjustments
+ * until generateSlip() sends them as overrides, at which point the API
+ * creates the real request and its id replaces this one. It is deliberately
+ * not persisted — nothing here is a record until the slip is issued.
+ */
 function ensureSlipRequest(row) {
   let request = row.request
   if (!request) {
     request = {
       id: Date.now(),
+      draft: true,
       employeeId: row.employee.id,
       month: row.month,
       status: 'requested',
@@ -203,45 +212,6 @@ function addPayrollHistory(request, action, detail) {
   })
 }
 
-function movePayrollStatus(row, nextStatus) {
-  const request = ensureSlipRequest(row)
-  request.status = nextStatus
-  request.period = { ...selectedPeriod.value }
-  if (nextStatus === 'generated') {
-    request.slipNo = request.slipNo || `PAY-${row.month.replace(/\s/g, '').toUpperCase()}-${String(row.employee.id).padStart(3, '0')}`
-    request.generatedAt = new Date().toISOString()
-    request.generatedById = state.currentUser.id
-    request.details = {
-      baseSalary: row.baseSalary,
-      houseAllowance: row.houseAllowance,
-      medicalAllowance: row.medicalAllowance,
-      bonus: row.bonus,
-      taxDeduction: row.taxDeduction,
-      attendanceDeduction: row.attendanceDeduction,
-      advanceDeduction: row.advanceDeduction,
-      notes: row.notes
-    }
-  }
-  if (nextStatus === 'paid') {
-    request.paidAt = new Date().toISOString()
-  }
-  addPayrollHistory(request, statusLabel(nextStatus), `${state.currentUser.name} moved payroll to ${statusLabel(nextStatus)}.`)
-  logActivity({
-    module: 'salary',
-    action: `payroll ${nextStatus}`,
-    details: `${employeeName(row.employee.id)} payroll for ${row.month} moved to ${statusLabel(nextStatus)}.`,
-    targetId: row.employee.id,
-    targetType: 'employee'
-  })
-  pushNotification({
-    title: nextStatus === 'paid' ? 'Salary paid' : 'Payroll updated',
-    message: `${row.month} payroll is now ${statusLabel(nextStatus).toLowerCase()}.`,
-    type: 'salary',
-    userIds: [row.employee.id],
-    route: { name: 'payroll' }
-  })
-}
-
 /**
  * Issues the slip for a row.
  *
@@ -258,8 +228,32 @@ async function generateSlip(row, openDetail = Boolean(selectedPayroll.value)) {
   try {
     let request = row.request
 
-    if (!request) {
-      request = await payrollService.requestSlip(row.period?.from || selectedPeriod.value.from)
+    // A draft is the editor's local placeholder — its id is a timestamp, not
+    // a record the API knows about, so a real request still has to be raised.
+    if (!request || request.draft) {
+      const draftId = request?.id
+      const period = row.period?.from || selectedPeriod.value.from
+
+      try {
+        request = await payrollService.requestSlip(period)
+      } catch (error) {
+        // 409 means a request for that month already exists — the employee
+        // raised it themselves. Re-read and use theirs rather than failing.
+        if (error?.status !== 409) throw error
+
+        setSalarySlipRequests(await payrollService.requests())
+        request = state.salarySlipRequests.find(
+          item => item.employeeId === row.employee.id && item.month === row.month && !item.draft
+        )
+        if (!request) throw error
+      }
+
+      // Drop the placeholder so the row resolves to the real request.
+      if (draftId) {
+        const index = state.salarySlipRequests.findIndex(item => item.id === draftId)
+        if (index !== -1) state.salarySlipRequests.splice(index, 1)
+      }
+
       upsertSalarySlipRequest(request)
     }
 
@@ -293,16 +287,8 @@ async function generateSlip(row, openDetail = Boolean(selectedPayroll.value)) {
   if (openDetail) selectedPayroll.value = updatedRow
 }
 
-/**
- * Releases a generated slip for payment.
- *
- * Gated server-side on 'Payroll Approval' — a different right from the one
- * that prepares payroll, so HR cannot authorise its own run.
- */
 async function approvePayroll(row) {
-  if (!canApprovePayroll.value || !['processing', 'generated'].includes(row.status)) return
-
-  // Nothing to release until the slip exists.
+  if (!canApprovePayroll.value || !['processing', 'generated'].includes(row.status)) returnp exists.
   if (!row.slipId) {
     await generateSlip(row, false)
     row = payrollRows.value.find(item => item.id === row.id) || row
@@ -480,8 +466,6 @@ async function confirmPaid() {
   payrollError.value = ''
   busyRowId.value = row.id
   try {
-    // The API refuses to settle a slip that was never released, so the
-    // authorisation step cannot be skipped by calling this directly.
     const slip = await payrollService.markPaid(row.slipId, {
       method: paymentDraft.value.method,
       reference: paymentDraft.value.reference.trim(),
@@ -522,8 +506,6 @@ async function reopenPayroll(row) {
   payrollError.value = ''
   busyRowId.value = row.id
   try {
-    // The API refuses to reopen a paid slip — money has already left, so the
-    // correction belongs in the next run rather than in rewriting this one.
     const slip = await payrollService.reopenSlip(row.slipId)
     upsertSalarySlipRequest({ ...row.request, slip })
   } catch (error) {
@@ -596,14 +578,6 @@ function validatePayrollDraft(draft) {
   return ''
 }
 
-/**
- * Saves the reviewer's adjustments for a row.
- *
- * Deliberately local: these are the figures for a slip that has not been
- * issued yet, and they reach the server as overrides when generateSlip()
- * runs. An issued slip is immutable — correcting one means reopening it,
- * which is a separate action.
- */
 function savePayrollDetails() {
   if (!editingPayroll.value || !payrollDraft.value) return
   payrollError.value = validatePayrollDraft(payrollDraft.value)
@@ -654,8 +628,6 @@ function toggleAllVisiblePayroll() {
   selectedPayrollIds.value = [...new Set([...selectedPayrollIds.value, ...selectableRows.value.map(row => row.id)])]
 }
 
-// Sequential rather than concurrent: each call re-reads the store, and firing
-// them in parallel would have later rows working from stale data.
 async function generateSelected() {
   for (const row of selectedRows.value.filter(item => item.status !== 'paid')) {
     await generateSlip(row, false)
@@ -684,8 +656,6 @@ async function markSelectedPaid() {
       upsertSalarySlipRequest({ ...row.request, slip })
       addPayrollHistory(row.request || {}, 'Paid', `${state.currentUser.name} marked payroll paid in bulk.`)
     } catch (error) {
-      // One failure should not abandon the rest of the run — the error names
-      // the employee so it is clear which row still needs attention.
       payrollError.value = `${employeeName(row.employee.id)}: ${error?.message || 'payment failed'}`
     } finally {
       busyRowId.value = null
@@ -693,13 +663,21 @@ async function markSelectedPaid() {
   }
 }
 
-function moveRequestNext(request) {
-  const currentStatus = request.status
-  const currentIndex = statusFlow.indexOf(currentStatus)
-  const nextStatus = statusFlow[Math.min(currentIndex + 1, statusFlow.length - 1)] || 'processing'
-  if (nextStatus === 'approved' && !canApprovePayroll.value) return
-  request.status = nextStatus
-  addPayrollHistory(request, statusLabel(nextStatus), `${state.currentUser.name} moved request to ${statusLabel(nextStatus)}.`)
+async function moveRequestNext(request) {
+  const row = payrollRows.value.find(item => item.employee.id === request.employeeId && item.month === request.month)
+
+  if (!row) {
+    payrollError.value = 'That request is not part of the selected month.'
+    return
+  }
+  if (!row.slipId) {
+    await generateSlip(row, false)
+    return
+  }
+
+  if (row.status === 'generated') {
+    await approvePayroll(row)
+  }
 }
 </script>
 
@@ -821,9 +799,6 @@ function moveRequestNext(request) {
                   >
                     Edit
                   </button>
-                  <!-- A slip is issued once. Correcting one means reopening
-                       it, not generating a second — the API refuses a
-                       duplicate for the same employee and month. -->
                   <button
                     v-if="canManagePayroll && !row.slipId"
                     @click="generateSlip(row, false)"
@@ -848,9 +823,6 @@ function moveRequestNext(request) {
                   >
                     Paid
                   </button>
-                  <!-- Only a released slip can be reopened: a paid one has
-                       already moved money, so its correction belongs in the
-                       next run. -->
                   <button
                     v-if="canManagePayroll && row.status === 'approved'"
                     @click="reopenPayroll(row)"

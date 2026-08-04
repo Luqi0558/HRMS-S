@@ -25,6 +25,7 @@ class SettingsController extends Controller
                 'attendance' => $this->settings->group('attendance'),
                 'leave' => $this->settings->group('leave'),
                 'claims' => $this->settings->group('claims'),
+                'pettyCash' => $this->settings->group('pettyCash'),
             ],
         ]);
     }
@@ -32,7 +33,7 @@ class SettingsController extends Controller
     public function update(Request $request, string $group): JsonResponse
     {
         abort_unless(
-            in_array($group, ['attendance', 'leave', 'claims'], true),
+            in_array($group, ['attendance', 'leave', 'claims', 'pettyCash'], true),
             404,
             'Unknown settings group.',
         );

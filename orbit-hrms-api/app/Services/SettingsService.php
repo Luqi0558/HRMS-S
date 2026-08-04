@@ -27,6 +27,13 @@ class SettingsService
             'receiptRequiredAbove' => 5000,
             'approvalFlow' => 'HR + Super Admin',
         ],
+        // Spend at or below approvalThreshold is recorded directly; above it
+        // the entry waits for sign-off. lowBalanceThreshold drives the warning
+        // that a top-up is due before the tin runs dry.
+        'pettyCash' => [
+            'approvalThreshold' => 5000,
+            'lowBalanceThreshold' => 10000,
+        ],
     ];
 
     /** @return array<string, mixed> */

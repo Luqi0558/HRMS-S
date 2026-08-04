@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\MedicalClaimController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PermissionController;
+use App\Http\Controllers\Api\PettyCashController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\TicketController;
@@ -255,6 +256,36 @@ Route::middleware([
         Route::post('/employees/{employee}/salaries', [PayrollController::class, 'setSalary'])
             ->whereNumber('employee')
             ->name('api.payroll.salaries.store');
+
+        /*
+         * Petty cash. Gated on the module's own rights: view to read, create
+         * to record, approve to sign off spend above the threshold. HR holds
+         * create but not approve, so its large spend waits for a super admin —
+         * which is the separation the tin exists to provide.
+         */
+        Route::get('/petty-cash', [PettyCashController::class, 'index'])
+            ->middleware('can.module:Petty Cash,view')
+            ->name('api.petty-cash.index');
+
+        Route::post('/petty-cash/top-ups', [PettyCashController::class, 'storeTopUp'])
+            ->middleware('can.module:Petty Cash,create')
+            ->name('api.petty-cash.top-ups.store');
+        Route::post('/petty-cash/top-ups/{topUp}/decision', [PettyCashController::class, 'decideTopUp'])
+            ->whereNumber('topUp')
+            ->middleware('can.module:Petty Cash,approve')
+            ->name('api.petty-cash.top-ups.decide');
+
+        Route::post('/petty-cash/expenses', [PettyCashController::class, 'storeExpense'])
+            ->middleware('can.module:Petty Cash,create')
+            ->name('api.petty-cash.expenses.store');
+        Route::post('/petty-cash/expenses/{expense}/decision', [PettyCashController::class, 'decideExpense'])
+            ->whereNumber('expense')
+            ->middleware('can.module:Petty Cash,approve')
+            ->name('api.petty-cash.expenses.decide');
+
+        Route::post('/petty-cash/reconciliations', [PettyCashController::class, 'reconcile'])
+            ->middleware('can.module:Petty Cash,create')
+            ->name('api.petty-cash.reconcile');
 
         Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
             ->middleware('can.module:Employees,create')

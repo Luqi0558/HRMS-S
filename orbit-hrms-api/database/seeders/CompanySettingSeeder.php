@@ -31,6 +31,12 @@ class CompanySettingSeeder extends Seeder
             'receiptRequiredAbove' => 5000,
             'approvalFlow' => 'HR + Super Admin',
         ],
+        // Petty cash spend above approvalThreshold waits for sign-off;
+        // lowBalanceThreshold warns that a top-up is due.
+        'pettyCash' => [
+            'approvalThreshold' => 5000,
+            'lowBalanceThreshold' => 10000,
+        ],
     ];
 
     public function run(): void
