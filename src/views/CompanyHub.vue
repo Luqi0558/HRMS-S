@@ -1,11 +1,13 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { employeeService } from '../services/employeeService.js'
+import { companyHubService } from '../services/companyHubService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
 const { state, can, formatDate: formatCompanyDate, logActivity, pushNotification,
-  setEmployees
+  setEmployees,
+  setCompanyHub
 } = useStore()
 
 const canManage = computed(() => can('Company Hub', 'create'))
@@ -78,7 +80,7 @@ function closeItem() {
   selectedItemType.value = ''
 }
 
-function publishAnnouncement() {
+async function publishAnnouncement() {
   announcementError.value = ''
   if (!announcementForm.value.title.trim()) {
     announcementError.value = 'Please enter an announcement title.'
@@ -88,12 +90,14 @@ function publishAnnouncement() {
     announcementError.value = 'Please write the announcement body.'
     return
   }
-  state.announcements.unshift({
-    id: Date.now(),
-    ...announcementForm.value,
-    authorId: state.currentUser.id,
-    publishedAt: new Date().toISOString()
-  })
+  try {
+    await companyHubService.publish(announcementForm.value)
+    await loadHub()
+  } catch (error) {
+    announcementError.value = error?.message || 'Unable to publish that announcement.'
+    return
+  }
+
   logActivity({ module: 'announcements', action: 'announcement published', details: `${announcementForm.value.title} was published.` })
   pushNotification({
     title: 'New announcement',
@@ -106,7 +110,7 @@ function publishAnnouncement() {
   showAnnouncementForm.value = false
 }
 
-function savePolicy() {
+async function savePolicy() {
   policyError.value = ''
   if (!policyForm.value.title.trim()) {
     policyError.value = 'Please enter a policy title.'
@@ -116,12 +120,14 @@ function savePolicy() {
     policyError.value = 'Please write a short policy summary.'
     return
   }
-  state.policies.unshift({
-    id: Date.now(),
-    ...policyForm.value,
-    ownerId: state.currentUser.id,
-    updatedAt: new Date().toISOString().slice(0, 10)
-  })
+  try {
+    await companyHubService.savePolicy(policyForm.value)
+    await loadHub()
+  } catch (error) {
+    policyError.value = error?.message || 'Unable to save that policy.'
+    return
+  }
+
   logActivity({ module: 'policies', action: 'policy added', details: `${policyForm.value.title} was added.` })
   pushNotification({
     title: 'Policy updated',
@@ -140,14 +146,39 @@ function savePolicy() {
  * Non-fatal: roles reaching this page hold different permissions, and one 403
  * should not blank the whole view.
  */
-onMounted(async () => {
+const hubError = ref('')
+
+async function loadHub() {
+  const [hub, employees] = await Promise.allSettled([
+    companyHubService.load(),
+    employeeService.list()
+  ])
+
+  if (hub.status === 'fulfilled') setCompanyHub(hub.value)
+  else hubError.value = hub.reason?.message || 'Unable to load the company hub.'
+
+  // Non-fatal: an employee cannot read the roster, and the stored author name
+  // on each item means they do not need it.
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+}
+
+onMounted(loadHub)
+
+/**
+ * Records that this person has read the CURRENT version.
+ *
+ * The badge on a policy has always said "Acknowledgment required" — until now
+ * nothing could satisfy it.
+ */
+async function acknowledgePolicy(policy) {
+  hubError.value = ''
   try {
-    const employees = await employeeService.list()
-    setEmployees(employees.data)
-  } catch {
-    // Announcements still render; only author names fall back to blank.
+    await companyHubService.acknowledge(policy.id)
+    await loadHub()
+  } catch (error) {
+    hubError.value = error?.message || 'Unable to record that acknowledgement.'
   }
-})
+}
 </script>
 
 <template>

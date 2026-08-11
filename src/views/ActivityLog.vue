@@ -2,14 +2,21 @@
 import { computed, ref, onMounted } from 'vue'
 import { projectService } from '../services/projectService.js'
 import { ticketService } from '../services/ticketService.js'
+import { activityLogService } from '../services/activityLogService.js'
 import { useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
 const { state, can, formatDateTime,
   setProjects,
-  setTickets
+  setTickets,
+  setActivityLogs
 } = useStore()
+
+const loadError = ref('')
+// Only the modules that actually appear in the trail, so the filter cannot
+// offer an option matching nothing.
+const availableModules = ref([])
 const router = useRouter()
 
 const canAccess = computed(() => can('Activity Log', 'view'))
@@ -96,11 +103,21 @@ function exportActivityCsv() {
  * should not blank the whole view.
  */
 onMounted(async () => {
-  const [projects, tickets] = await Promise.allSettled([
+  const [logs, projects, tickets] = await Promise.allSettled([
+    activityLogService.list({ per_page: 200 }),
     projectService.list(),
     ticketService.list()
   ])
 
+  if (logs.status === 'fulfilled') {
+    setActivityLogs(logs.value.logs)
+    availableModules.value = logs.value.modules
+  } else {
+    loadError.value = logs.reason?.message || 'Unable to load the activity log.'
+  }
+
+  // Projects and tickets resolve the links back to each logged record; a 403
+  // on either leaves the entries readable, just without links.
   if (projects.status === 'fulfilled') setProjects(projects.value)
   if (tickets.status === 'fulfilled') setTickets(tickets.value.data)
 })

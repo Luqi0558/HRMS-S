@@ -2,8 +2,11 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\ActivityLogController;
+use App\Http\Controllers\Api\AssetController;
 use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CompanyHubController;
 use App\Http\Controllers\Api\EmployeeController;
 use App\Http\Controllers\Api\EmployeeInvitationController;
 use App\Http\Controllers\Api\LeaveRequestController;
@@ -344,6 +347,75 @@ Route::middleware([
         Route::post('/notifications/{notification}/read', [MessageController::class, 'markNotificationRead'])
             ->whereNumber('notification')
             ->name('api.notifications.read');
+
+        /*
+         * Assets. Reading is gated on Assets.view — an employee holds it with
+         * scope self, so they see what they hold and not the whole register.
+         * Every write needs Assets.create, which only HR and super admin have.
+         */
+        Route::get('/assets', [AssetController::class, 'index'])
+            ->name('api.assets.index');
+        Route::post('/assets', [AssetController::class, 'store'])
+            ->middleware('can.module:Assets,create')
+            ->name('api.assets.store');
+        Route::patch('/assets/{asset}', [AssetController::class, 'update'])
+            ->whereNumber('asset')
+            ->middleware('can.module:Assets,create')
+            ->name('api.assets.update');
+        Route::get('/assets/{asset}/history', [AssetController::class, 'history'])
+            ->whereNumber('asset')
+            ->name('api.assets.history');
+        Route::post('/assets/{asset}/assign', [AssetController::class, 'assign'])
+            ->whereNumber('asset')
+            ->middleware('can.module:Assets,create')
+            ->name('api.assets.assign');
+        Route::post('/assets/{asset}/return', [AssetController::class, 'returnAsset'])
+            ->whereNumber('asset')
+            ->middleware('can.module:Assets,create')
+            ->name('api.assets.return');
+        Route::post('/assets/{asset}/retire', [AssetController::class, 'retire'])
+            ->whereNumber('asset')
+            ->middleware('can.module:Assets,create')
+            ->name('api.assets.retire');
+
+        /*
+         * Company Hub. Everyone reads announcements and policies; only HR and
+         * super admin publish. Acknowledging is ungated — it is the employee
+         * asserting something about themselves, and the badge on the policy
+         * promises they can.
+         */
+        Route::get('/company-hub', [CompanyHubController::class, 'index'])
+            ->name('api.company-hub.index');
+        Route::post('/company-hub/announcements', [CompanyHubController::class, 'publish'])
+            ->middleware('can.module:Company Hub,create')
+            ->name('api.company-hub.announce');
+        Route::post('/company-hub/policies', [CompanyHubController::class, 'savePolicy'])
+            ->middleware('can.module:Company Hub,create')
+            ->name('api.company-hub.policies.store');
+        Route::patch('/company-hub/policies/{policy}', [CompanyHubController::class, 'savePolicy'])
+            ->whereNumber('policy')
+            ->middleware('can.module:Company Hub,create')
+            ->name('api.company-hub.policies.update');
+        Route::post('/company-hub/policies/{policy}/acknowledge', [CompanyHubController::class, 'acknowledge'])
+            ->whereNumber('policy')
+            ->name('api.company-hub.policies.acknowledge');
+        Route::get('/company-hub/policies/{policy}/acknowledgements', [CompanyHubController::class, 'acknowledgements'])
+            ->whereNumber('policy')
+            ->middleware('can.module:Company Hub,create')
+            ->name('api.company-hub.policies.acknowledgements');
+
+        /*
+         * Audit trail. Reading it is administrative — no grid row names
+         * 'Activity Log', so only super admin reaches it via the blanket
+         * grant. Writing is open to anyone signed in: the caller has already
+         * done the thing being logged, and the actor comes from their token
+         * rather than the request body, so it cannot be forged.
+         */
+        Route::get('/activity-logs', [ActivityLogController::class, 'index'])
+            ->name('api.activity-logs.index');
+        Route::post('/activity-logs', [ActivityLogController::class, 'store'])
+            ->middleware('throttle:120,1')
+            ->name('api.activity-logs.store');
 
         Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
             ->middleware('can.module:Employees,create')

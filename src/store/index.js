@@ -57,44 +57,9 @@ const state = reactive({
   medicalClaims: [],
   leaveRequests: [],
   salarySlipRequests: [],
-  assets: [
-    {
-      id: 1,
-      name: 'MacBook Pro 14',
-      category: 'Laptop',
-      serialNumber: 'ORB-MBP-014',
-      assignedTo: 1,
-      condition: 'Good',
-      status: 'assigned',
-      issuedAt: '2026-06-10',
-      returnDue: '2027-06-10',
-      notes: 'Developer machine with charger and sleeve.'
-    },
-    {
-      id: 2,
-      name: 'Dell Latitude 7440',
-      category: 'Laptop',
-      serialNumber: 'ORB-DLL-022',
-      assignedTo: 3,
-      condition: 'Excellent',
-      status: 'assigned',
-      issuedAt: '2026-05-18',
-      returnDue: '2027-05-18',
-      notes: 'Manager laptop.'
-    },
-    {
-      id: 3,
-      name: 'Logitech MX Master 3S',
-      category: 'Accessory',
-      serialNumber: 'ORB-MSE-008',
-      assignedTo: null,
-      condition: 'New',
-      status: 'available',
-      issuedAt: '',
-      returnDue: '',
-      notes: 'Available in IT inventory.'
-    }
-  ],
+  // The asset register, API-backed. Seeded empty like everything else with a
+  // real endpoint: sample rows would show equipment the company does not own.
+  assets: [],
   // Petty cash: office running costs, distinct from Finance (client revenue).
   // Float in, expenses out, and a reconciliation that compares the book
   // balance against physically counted cash. All API-backed, so seeded empty.
@@ -121,48 +86,10 @@ const state = reactive({
   // until loaded, which is when the local helpers below are used instead.
   pettyCashSummary: null,
   pettyCashReconciliations: [],
-  announcements: [
-    {
-      id: 1,
-      title: 'Quarterly performance reviews',
-      audience: 'All company',
-      priority: 'normal',
-      body: 'Team leads will schedule review sessions during the last week of July.',
-      authorId: 99,
-      publishedAt: new Date().toISOString()
-    },
-    {
-      id: 2,
-      title: 'Updated leave policy',
-      audience: 'Employees and Managers',
-      priority: 'high',
-      body: 'Half-day leave is now available in the leave request form.',
-      authorId: 6,
-      publishedAt: new Date().toISOString()
-    }
-  ],
-  policies: [
-    {
-      id: 1,
-      title: 'Remote work policy',
-      category: 'HR',
-      ownerId: 6,
-      version: '1.2',
-      updatedAt: '2026-07-01',
-      summary: 'Guidelines for remote attendance, availability, and approvals.',
-      acknowledgmentRequired: true
-    },
-    {
-      id: 2,
-      title: 'Asset handling policy',
-      category: 'IT',
-      ownerId: 6,
-      version: '1.0',
-      updatedAt: '2026-06-20',
-      summary: 'Employees are responsible for company assets assigned to them.',
-      acknowledgmentRequired: true
-    }
-  ],
+  // Company Hub, API-backed. Seeded empty: a sample policy is a rule the
+  // company never wrote, which in an HR system is worse than an empty page.
+  announcements: [],
+  policies: [],
   // Loaded from the API. Seeded empty rather than with sample conversations:
   // mock messages would render for the moment before the fetch lands, showing
   // people a conversation that does not exist and then replacing it.
@@ -260,18 +187,9 @@ const state = reactive({
     { role: 'super_admin', module: 'Medical Request', view: true, create: false, approve: true, finance: false, scope: 'all' },
     { role: 'super_admin', module: 'Tickets', view: true, create: false, approve: false, finance: false, scope: 'all' }
   ],
-  activityLogs: [
-    {
-      id: 1,
-      actorId: 99,
-      actorName: 'System',
-      actorRole: 'system',
-      module: 'finance',
-      action: 'module enabled',
-      details: 'Finance tracking and notifications were enabled.',
-      createdAt: new Date().toISOString()
-    }
-  ],
+  // The audit trail, loaded from the API. Seeded empty: a sample entry would
+  // put a fabricated action in a log whose whole value is that it is true.
+  activityLogs: [],
   settings: {
     company: {
       name: 'Orbit HRMS',
@@ -335,17 +253,9 @@ const state = reactive({
     ],
     stacks: ['MERN', '.NET', 'Angular', 'Laravel', 'Vue', 'QA Automation', 'UI/UX']
   },
-  notifications: [
-    {
-      id: 1,
-      title: 'Finance module ready',
-      message: 'Module budgets, payments, and commissions are now tracked in Finance.',
-      type: 'finance',
-      createdAt: new Date().toISOString(),
-      readBy: [],
-      recipients: { roles: ['manager', 'super_admin'], userIds: [] }
-    }
-  ],
+  // Delivered by the sync poll, so seeded empty. A sample notification would
+  // announce something that never happened, and clicking it would go nowhere.
+  notifications: [],
   // At most one ticket timer runs per user at a time.
   activeTimer: null // { ticketId }
 })
@@ -944,9 +854,22 @@ function markAllNotificationsRead() {
   visibleNotifications.value.forEach(notification => markNotificationRead(notification.id))
 }
 
+/**
+ * Records one action in the audit trail.
+ *
+ * Seventeen modules call this. It used to write only to the reactive array
+ * below, so every leave approval, payroll release and petty-cash decision was
+ * lost on refresh — the one log an HR system actually has to keep.
+ *
+ * Added locally first so an administrator watching the page sees it at once,
+ * then persisted. Fire-and-forget on purpose: the action being logged has
+ * already happened, so failing the log would only lose the record of it, and
+ * interrupting the user over a failed audit write helps nobody. The server
+ * copy is authoritative and replaces this row on the next load.
+ */
 function logActivity({ module, action, details, targetId = null, targetType = '' }) {
   state.activityLogs.unshift({
-    id: Date.now() + Math.floor(Math.random() * 1000),
+    id: `local:${Date.now()}`,
     actorId: state.currentUser.id,
     actorName: state.currentUser.name,
     actorRole: state.currentUser.role,
@@ -957,6 +880,33 @@ function logActivity({ module, action, details, targetId = null, targetType = ''
     targetType,
     createdAt: new Date().toISOString()
   })
+
+  // Skipped when signed out: there is no token to attribute the action to, and
+  // the request would only 401.
+  if (!state.currentUser.id) return
+
+  import('../services/activityLogService.js')
+    .then(({ activityLogService }) =>
+      activityLogService.record({ module, action, details, targetId, targetType }))
+    .catch(() => {
+      /* the local entry stands; the next load reads the server's copy */
+    })
+}
+
+/** Replaces the local trail with the server's, newest first. */
+function setActivityLogs(rows) {
+  state.activityLogs = (rows || []).map(row => ({
+    id: row.id,
+    actorId: row.actorId,
+    actorName: row.actorName,
+    actorRole: row.actorRole,
+    module: row.module,
+    action: row.action,
+    details: row.details,
+    targetId: row.targetId,
+    targetType: row.targetType,
+    createdAt: row.createdAt
+  }))
 }
 
 /**
@@ -1446,6 +1396,24 @@ function prependMessages(rows) {
   state.messages.push(...older)
 }
 
+/** Maps API assets onto the shape the view reads. */
+function setAssets(rows) {
+  state.assets = (rows || []).map(row => ({
+    ...row,
+    // The view reads these off the asset; the API keeps them on the open
+    // assignment, because an asset issued three times has three sets of dates
+    // and only the current one belongs here.
+    issuedAt: row.issuedAt || '',
+    returnDue: row.returnDue || ''
+  }))
+}
+
+/** Both Company Hub lists, from one call. */
+function setCompanyHub({ announcements, policies }) {
+  if (announcements) state.announcements = announcements
+  if (policies) state.policies = policies
+}
+
 function setMessages(rows) {
   state.messages = (rows || []).map(mapMessage)
 }
@@ -1580,7 +1548,10 @@ export function useStore() {
     upsertSalarySlipRequest,
     setPettyCash,
     applySync,
+    setAssets,
+    setCompanyHub,
     setMessages,
+    setActivityLogs,
     prependMessages,
     applyPresence,
     setChosenPresence,

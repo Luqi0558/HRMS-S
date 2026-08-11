@@ -1,16 +1,19 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { employeeService } from '../services/employeeService.js'
+import { assetService } from '../services/assetService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
 const { state, can, logActivity, pushNotification,
-  setEmployees
+  setEmployees,
+  setAssets
 } = useStore()
 
 const canAccess = computed(() => can('Assets', 'view'))
 const canManage = computed(() => can('Assets', 'create'))
 const showForm = ref(false)
+const saving = ref(false)
 const selectedAsset = ref(null)
 const assetError = ref('')
 const form = ref({
@@ -83,22 +86,45 @@ function validateAsset() {
   return ''
 }
 
-function saveAsset() {
+async function saveAsset() {
   assetError.value = validateAsset()
   if (assetError.value) return
+
   const payload = {
     ...form.value,
-    assignedTo: form.value.assignedTo ? Number(form.value.assignedTo) : null,
-    status: form.value.assignedTo ? 'assigned' : form.value.status
+    assignedTo: form.value.assignedTo ? Number(form.value.assignedTo) : null
   }
 
-  if (selectedAsset.value) {
-    Object.assign(selectedAsset.value, payload)
-    logActivity({ module: 'assets', action: 'asset updated', details: `${payload.name} was updated.` })
-  } else {
-    state.assets.unshift({ id: Date.now(), ...payload })
-    logActivity({ module: 'assets', action: 'asset added', details: `${payload.name} was added to inventory.` })
+  // Assignment is its own action, not a field on the asset: the API records a
+  // handover so the register keeps who held what, which an overwritten column
+  // could never do.
+  saving.value = true
+  try {
+    const saved = selectedAsset.value
+      ? await assetService.update(selectedAsset.value.id, payload)
+      : await assetService.create(payload)
+
+    if (payload.assignedTo) {
+      await assetService.assign(saved.id, {
+        employeeId: payload.assignedTo,
+        returnDue: payload.returnDue || undefined,
+        condition: payload.condition
+      })
+    }
+
+    await loadAssets()
+  } catch (error) {
+    assetError.value = error?.message || 'Unable to save that asset.'
+    return
+  } finally {
+    saving.value = false
   }
+
+  logActivity({
+    module: 'assets',
+    action: selectedAsset.value ? 'asset updated' : 'asset added',
+    details: `${payload.name} was ${selectedAsset.value ? 'updated' : 'added to inventory'}.`
+  })
 
   if (payload.assignedTo) {
     pushNotification({
@@ -112,11 +138,19 @@ function saveAsset() {
   showForm.value = false
 }
 
-function markReturned(asset) {
+async function markReturned(asset) {
   const previousEmployee = asset.assignedTo
-  asset.assignedTo = null
-  asset.status = 'available'
-  asset.returnDue = ''
+
+  assetError.value = ''
+  try {
+    // The API closes the open assignment, so the history keeps who had it.
+    await assetService.returnAsset(asset.id, { condition: asset.condition })
+    await loadAssets()
+  } catch (error) {
+    assetError.value = error?.message || 'Unable to record that return.'
+    return
+  }
+
   logActivity({ module: 'assets', action: 'asset returned', details: `${asset.name} was returned to inventory.` })
   if (previousEmployee) {
     pushNotification({
@@ -135,14 +169,20 @@ function markReturned(asset) {
  * Non-fatal: roles reaching this page hold different permissions, and one 403
  * should not blank the whole view.
  */
-onMounted(async () => {
-  try {
-    const employees = await employeeService.list()
-    setEmployees(employees.data)
-  } catch {
-    // Assets still render; only the assignee names fall back to blank.
-  }
-})
+async function loadAssets() {
+  const [assets, employees] = await Promise.allSettled([
+    assetService.list(),
+    employeeService.list()
+  ])
+
+  if (assets.status === 'fulfilled') setAssets(assets.value)
+  else assetError.value = assets.reason?.message || 'Unable to load assets.'
+
+  // Non-fatal: only the assignee names fall back to blank.
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+}
+
+onMounted(loadAssets)
 </script>
 
 <template>
