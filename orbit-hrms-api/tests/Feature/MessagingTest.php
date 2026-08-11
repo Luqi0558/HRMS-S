@@ -822,6 +822,71 @@ class MessagingTest extends TenantTestCase
         $this->putJson('/api/presence', ['status' => 'invisible'], $headers)->assertStatus(422);
     }
 
+    // --- delivery hygiene ------------------------------------------------
+
+    /**
+     * An invited employee who has never signed in still has a row. Delivering
+     * to them creates a recipient record nobody can ever read, so the sender's
+     * tick could never reach "everyone has read this" and stayed single
+     * forever.
+     */
+    public function test_a_broadcast_skips_employees_who_are_not_active(): void
+    {
+        $invited = $this->makeEmployee('invited@test.com', 'employee');
+        $invited->update(['status' => 'invited']);
+
+        $this->postJson('/api/messages', [
+            'body' => 'Welcome aboard',
+            'audience' => 'all_company',
+        ], $this->auth('hr@test.com'))->assertCreated();
+
+        $this->assertDatabaseHas('message_recipients', ['employee_id' => $this->worker->id]);
+        $this->assertDatabaseMissing('message_recipients', ['employee_id' => $invited->id]);
+    }
+
+    /** And so the read count can actually reach the total. */
+    public function test_a_broadcast_can_reach_fully_read(): void
+    {
+        $invited = $this->makeEmployee('invited@test.com', 'employee');
+        $invited->update(['status' => 'invited']);
+
+        $sent = $this->postJson('/api/messages', [
+            'body' => 'Please confirm',
+            'audience' => 'all_company',
+        ], $this->auth('hr@test.com'))->assertCreated()->json('sent');
+
+        $service = app(MessageService::class);
+        $service->markMessageRead(User::where('email', 'worker@test.com')->firstOrFail(), $sent['id']);
+
+        $feed = $service->sync(User::where('email', 'hr@test.com')->firstOrFail(), 999, 999, 0);
+        $receipt = collect($feed['receipts'])->firstWhere('id', $sent['id']);
+
+        // Everyone it went to has read it.
+        $this->assertSame($receipt['total'], $receipt['read']);
+    }
+
+    // --- presence expiry -------------------------------------------------
+
+    /**
+     * Nobody means "away" to outlive the day they set it. presence_updated_at
+     * was written and never read, so an away set weeks ago stayed forever.
+     */
+    public function test_a_stale_presence_override_is_ignored(): void
+    {
+        $service = app(MessageService::class);
+        $worker = User::where('email', 'worker@test.com')->firstOrFail();
+
+        $service->setPresence($worker, 'away', 'Back Monday');
+
+        // Fresh: reported.
+        $this->assertCount(1, $service->presenceStatuses($worker));
+
+        // Backdated beyond the TTL.
+        $this->worker->fresh()->update(['presence_updated_at' => now()->subDay()]);
+
+        $this->assertSame([], $service->presenceStatuses($worker));
+    }
+
     // --- broadcasting ----------------------------------------------------
 
     /** With Pusher configured, each recipient gets a ping on their own channel. */

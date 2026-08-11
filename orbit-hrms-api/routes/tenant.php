@@ -156,6 +156,21 @@ Route::middleware([
          */
         Route::get('/settings', [SettingsController::class, 'index'])
             ->name('api.settings.index');
+        // Dropdown options. Readable by anyone signed in — onboarding needs
+        // them before the user has any permissions at all — but only writable
+        // with Settings.create. Fixed segments precede /settings/{group} so
+        // 'lists' is not parsed as a group name.
+        Route::get('/settings/lists', [SettingsController::class, 'lists'])
+            ->name('api.settings.lists');
+        Route::post('/settings/lists/{type}', [SettingsController::class, 'addListItem'])
+            ->whereIn('type', ['designations', 'stacks'])
+            ->middleware('can.module:Settings,create')
+            ->name('api.settings.lists.add');
+        Route::delete('/settings/lists/{type}', [SettingsController::class, 'removeListItem'])
+            ->whereIn('type', ['designations', 'stacks'])
+            ->middleware('can.module:Settings,create')
+            ->name('api.settings.lists.remove');
+
         Route::put('/settings/{group}', [SettingsController::class, 'update'])
             ->middleware('can.module:Settings,create')
             ->name('api.settings.update');

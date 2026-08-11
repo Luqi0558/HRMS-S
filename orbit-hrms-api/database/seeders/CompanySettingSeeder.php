@@ -13,6 +13,18 @@ use Illuminate\Database\Seeder;
 class CompanySettingSeeder extends Seeder
 {
     private const SETTINGS = [
+        // Locale drives every currency and date format in the app, so these
+        // are not cosmetic: changing the currency here changes what every
+        // payroll and petty-cash figure reads as.
+        'company' => [
+            'name' => 'Orbit HRMS',
+            'timezone' => 'Asia/Karachi',
+            'workWeek' => 'Monday - Friday',
+            'locale' => 'en-US',
+            'currency' => 'PKR',
+            // 'code' renders "PKR 1,200"; 'symbol' renders the currency glyph.
+            'currencyDisplay' => 'code',
+        ],
         'attendance' => [
             'startTime' => '09:30',
             'endTime' => '18:00',

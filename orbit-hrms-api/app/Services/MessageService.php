@@ -38,6 +38,15 @@ class MessageService
      * 'all_company' is absent deliberately — it means "everyone in scope",
      * which is the fallback.
      */
+    /**
+     * How long a chosen presence lasts.
+     *
+     * Long enough to cover a working day, short enough that an "away" set on
+     * Friday is gone by Monday. Online/offline is unaffected — that comes from
+     * the socket and needs no expiry.
+     */
+    private const PRESENCE_TTL_HOURS = 12;
+
     private const BROADCAST_AUDIENCES = [
         'employees' => ['employee'],
         'managers' => ['manager', 'team_lead'],
@@ -89,10 +98,14 @@ class MessageService
         $messages = $isFirstPoll
             ? collect()
             : MessageRecipient::query()
-                // recipients is loaded because the view groups conversations by
-                // who else is on them, and tells a broadcast from a direct
-                // message by the count.
-                ->with(['message.sender:id,name', 'message.recipients'])
+                // Only the ids, not whole rows. The view needs recipientIds to
+                // group a conversation; hydrating every delivery row meant a
+                // company-wide broadcast pulled one model per employee into
+                // memory on every poll, for a list the client only counts.
+                ->with([
+                    'message.sender:id,name',
+                    'message.recipients:id,message_id,employee_id',
+                ])
                 ->where('employee_id', $employee->id)
                 ->where('message_id', '>', $sinceMessage)
                 ->orderBy('message_id')
@@ -192,7 +205,7 @@ class MessageService
         $employee = $this->requireEmployee($user);
 
         $messages = Message::query()
-            ->with(['sender:id,name', 'recipients'])
+            ->with(['sender:id,name', 'recipients:id,message_id,employee_id,read_at'])
             ->where(fn ($query) => $query
                 ->where('sender_id', $employee->id)
                 ->orWhereHas('recipients', fn ($r) => $r->where('employee_id', $employee->id)))
@@ -500,6 +513,11 @@ class MessageService
         return Employee::query()
             ->whereNotNull('presence_status')
             ->where('status', 'active')
+            // Stale overrides are ignored rather than returned. Nobody means
+            // "away" to outlive the day they set it, and presence_updated_at
+            // was being written and never read — so someone who marked
+            // themselves away weeks ago stayed away forever.
+            ->where('presence_updated_at', '>', now()->subHours(self::PRESENCE_TTL_HOURS))
             ->get(['id', 'presence_status', 'presence_message'])
             ->map(fn (Employee $employee) => [
                 'id' => $employee->id,
@@ -540,6 +558,11 @@ class MessageService
     public function employeeIdsForRoles(array $roles): array
     {
         return Employee::query()
+            // Active only. An invited employee who has never signed in still
+            // has a row, and delivering to them creates a recipient record
+            // nobody can ever read — so the sender's tick could never reach
+            // "everyone has read this" and stayed single forever.
+            ->where('status', 'active')
             ->whereHas('user', fn ($query) => $query->whereIn('role', $roles))
             ->pluck('id')
             ->all();
@@ -626,7 +649,15 @@ class MessageService
             $reachable = array_merge($reachable, $this->employeeIdsForRoles(['hr']));
         }
 
-        return array_values(array_diff(array_unique($reachable), [$sender->id]));
+        $reachable = array_values(array_diff(array_unique($reachable), [$sender->id]));
+
+        // ScopeResolver works from project membership and does not know about
+        // employment status, so a scoped sender could still address someone
+        // who has left or never arrived.
+        return Employee::whereIn('id', $reachable)
+            ->where('status', 'active')
+            ->pluck('id')
+            ->all();
     }
 
     /**

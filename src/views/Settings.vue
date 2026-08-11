@@ -8,13 +8,18 @@ const { state, can, logActivity, pushNotification, setServerSettings } = useStor
 
 /**
  * Which sections are stored server-side, keyed by the label the save buttons
- * pass. The rest (Company, Petty cash) are still local and belong to later
- * phases — saving those stays an in-memory change until their API exists.
+ * pass. Every section now persists; the map exists because the buttons pass a
+ * human label and the API takes a group key.
  */
 const SERVER_SECTIONS = {
+  Company: 'company',
   Attendance: 'attendance',
   'Leave policy': 'leave',
-  'Claims and finance': 'claims'
+  'Claims and finance': 'claims',
+  // The API has accepted this group since petty cash was built; the mapping
+  // was missing, so the approval threshold appeared to save and reverted on
+  // refresh — while the API went on enforcing the old value.
+  'Petty cash': 'pettyCash'
 }
 
 const saving = ref('')
@@ -44,14 +49,22 @@ const stackPresets = ['MERN', 'MEAN', '.NET', 'Angular', 'React', 'Vue', 'Larave
 const settingsError = ref('')
 const settingsSaved = ref('')
 
-// The server holds attendance, leave and claims; the rest of state.settings is
-// still local, so this merges those three in rather than replacing the object.
+// Merged per group rather than replacing state.settings wholesale: 'company',
+// designations and stacks are not in this response, and a replace would erase
+// them.
 onMounted(async () => {
-  try {
-    setServerSettings(await settingsService.all())
-  } catch (error) {
-    settingsError.value = error?.message || 'Unable to load company settings.'
-  }
+  const [groups, lists] = await Promise.allSettled([
+    settingsService.all(),
+    settingsService.lists()
+  ])
+
+  if (groups.status === 'fulfilled') setServerSettings(groups.value)
+  else settingsError.value = groups.reason?.message || 'Unable to load company settings.'
+
+  // The dropdown options live in their own tables. They were seeded from the
+  // start but never served, so this page carried hardcoded copies and every
+  // add or removal was lost on refresh.
+  if (lists.status === 'fulfilled') setServerSettings(lists.value)
 })
 
 function nonNegative(value) {
@@ -107,10 +120,10 @@ async function saveSettings(section) {
   settingsError.value = validateSection(section)
   if (settingsError.value) return
 
-  // Attendance, leave and claims are policy the API enforces — grace minutes
-  // decide who is marked late, the allowance decides which claims are
-  // refused — so those must reach the server. Company and petty cash have no
-  // endpoint yet and stay in memory.
+  // These groups are policy the API enforces — grace minutes decide who is
+  // marked late, the thresholds decide what needs approval — so a change that
+  // only reached memory would leave the UI and the API disagreeing about the
+  // rule.
   const group = SERVER_SECTIONS[section]
   if (group) {
     saving.value = section
@@ -139,10 +152,18 @@ async function saveSettings(section) {
   settingsSaved.value = `${section} settings saved.`
 }
 
-function addDesignation() {
+async function addDesignation() {
   const value = newDesignation.value.trim()
   if (!value || state.settings.designations.includes(value)) return
-  state.settings.designations.push(value)
+
+  settingsError.value = ''
+  try {
+    setServerSettings(await settingsService.addListItem('designations', value))
+  } catch (error) {
+    settingsError.value = error?.message || 'Unable to add that designation.'
+    return
+  }
+
   logActivity({ module: 'settings', action: 'designation added', details: `${value} was added to designations.` })
   newDesignation.value = ''
 }
@@ -172,23 +193,44 @@ function askRemoveStack(value) {
   }
 }
 
-function confirmRemoval() {
+async function confirmRemoval() {
   const request = pendingRemoval.value
   if (!request) return
-  if (request.kind === 'designation') {
-    state.settings.designations = state.settings.designations.filter(item => item !== request.value)
-    logActivity({ module: 'settings', action: 'designation removed', details: `${request.value} was removed from designations.` })
-  } else {
-    state.settings.stacks = state.settings.stacks.filter(item => item !== request.value)
-    logActivity({ module: 'settings', action: 'stack removed', details: `${request.value} was removed from onboarding stacks.` })
+
+  const type = request.kind === 'designation' ? 'designations' : 'stacks'
+
+  settingsError.value = ''
+  try {
+    // Deactivated, not deleted: the employees who hold this designation keep
+    // it on their record. The API says how many still do.
+    const { lists } = await settingsService.removeListItem(type, request.value)
+    setServerSettings(lists)
+  } catch (error) {
+    settingsError.value = error?.message || 'Unable to remove that option.'
+    pendingRemoval.value = null
+    return
   }
+
+  logActivity({
+    module: 'settings',
+    action: request.kind === 'designation' ? 'designation removed' : 'stack removed',
+    details: `${request.value} was removed from ${request.kind === 'designation' ? 'designations' : 'onboarding stacks'}.`
+  })
   pendingRemoval.value = null
 }
 
-function addStack() {
+async function addStack() {
   const value = newStack.value.trim()
   if (!value || state.settings.stacks.includes(value)) return
-  state.settings.stacks.push(value)
+
+  settingsError.value = ''
+  try {
+    setServerSettings(await settingsService.addListItem('stacks', value))
+  } catch (error) {
+    settingsError.value = error?.message || 'Unable to add that stack.'
+    return
+  }
+
   logActivity({ module: 'settings', action: 'stack added', details: `${value} was added to onboarding stacks.` })
   newStack.value = ''
 }

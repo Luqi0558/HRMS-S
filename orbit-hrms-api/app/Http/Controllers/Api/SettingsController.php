@@ -3,14 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\SettingsListService;
 use App\Services\SettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class SettingsController extends Controller
 {
-    public function __construct(private readonly SettingsService $settings)
-    {
+    public function __construct(
+        private readonly SettingsService $settings,
+        private readonly SettingsListService $lists,
+    ) {
     }
 
     /**
@@ -22,6 +25,7 @@ class SettingsController extends Controller
     {
         return response()->json([
             'settings' => [
+                'company' => $this->settings->group('company'),
                 'attendance' => $this->settings->group('attendance'),
                 'leave' => $this->settings->group('leave'),
                 'claims' => $this->settings->group('claims'),
@@ -30,10 +34,48 @@ class SettingsController extends Controller
         ]);
     }
 
+    /**
+     * The dropdown options: job titles and technical stacks.
+     *
+     * Readable by anyone signed in — onboarding and the invite form need them,
+     * and they are not sensitive.
+     */
+    public function lists(): JsonResponse
+    {
+        return response()->json(['lists' => $this->lists->all()]);
+    }
+
+    public function addListItem(Request $request, string $type): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+        ]);
+
+        return response()->json([
+            'lists' => $this->lists->add($request->user(), $type, $validated['name']),
+        ], 201);
+    }
+
+    public function removeListItem(Request $request, string $type): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+        ]);
+
+        $result = $this->lists->remove($request->user(), $type, $validated['name']);
+
+        return response()->json([
+            'lists' => $result['lists'],
+            // So the UI can say how many people still hold it rather than
+            // implying nothing was affected.
+            'stillAssigned' => $result['stillAssigned'],
+        ]);
+    }
+
     public function update(Request $request, string $group): JsonResponse
     {
         abort_unless(
-            in_array($group, ['attendance', 'leave', 'claims', 'pettyCash'], true),
+            in_array($group, ['company', 'attendance', 'leave', 'claims', 'pettyCash'], true),
             404,
             'Unknown settings group.',
         );

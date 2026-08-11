@@ -25,12 +25,44 @@ export const settingsService = {
   /**
    * Replaces one group's values.
    *
-   * @param {'attendance'|'leave'|'claims'} group
+   * @param {'attendance'|'leave'|'claims'|'pettyCash'} group
    * @returns {Promise<object>} the group as stored
    */
   async putGroup(group, values) {
     const data = await apiClient.put(`/settings/${group}`, { values })
 
     return data.settings?.[group] || {}
+  },
+
+  /**
+   * The dropdown options: job titles and technical stacks.
+   *
+   * These live in their own tables rather than the key/value settings, because
+   * onboarding needs them before a user has any permissions at all — and
+   * because removing one has to leave the employees who hold it untouched.
+   */
+  async lists() {
+    const data = await apiClient.get('/settings/lists')
+
+    return data.lists || { designations: [], stacks: [] }
+  },
+
+  /** @param {'designations'|'stacks'} type */
+  async addListItem(type, name) {
+    const data = await apiClient.post(`/settings/lists/${type}`, { name })
+
+    return data.lists
+  },
+
+  /**
+   * Deactivates an option so it stops appearing in dropdowns.
+   *
+   * Never deletes: a designation is recorded on every employee who holds it.
+   * Returns how many still do, so the UI can say so.
+   */
+  async removeListItem(type, name) {
+    const data = await apiClient.delete(`/settings/lists/${type}`, { body: { name } })
+
+    return { lists: data.lists, stillAssigned: data.stillAssigned || 0 }
   }
 }

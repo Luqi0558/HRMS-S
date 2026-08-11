@@ -59,10 +59,15 @@ Broadcast::channel('tenant.{tenantId}.presence', function ($user, string $tenant
         return false;
     }
 
+    // A stale override is ignored here too, or someone who marked themselves
+    // away last week would rejoin the roster still away.
+    $fresh = $employee->presence_updated_at
+        && $employee->presence_updated_at->gt(now()->subHours(12));
+
     return [
         'id' => $employee->id,
         'name' => $employee->name,
-        'status' => $employee->presence_status ?? 'available',
-        'message' => $employee->presence_message,
+        'status' => $fresh ? ($employee->presence_status ?? 'available') : 'available',
+        'message' => $fresh ? $employee->presence_message : null,
     ];
 });

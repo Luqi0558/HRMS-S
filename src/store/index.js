@@ -1088,6 +1088,16 @@ function upsertMedicalClaim(claim) {
 function setServerSettings(groups) {
   Object.entries(groups || {}).forEach(([group, values]) => {
     if (!values || typeof values !== 'object') return
+
+    // designations and stacks are ARRAYS, not key/value groups. Spreading one
+    // into an object turns ['a','b'] into {0:'a',1:'b'} — which still passes
+    // the typeof check above and then breaks every .includes() and spread that
+    // reads it.
+    if (Array.isArray(values)) {
+      state.settings[group] = [...values]
+      return
+    }
+
     state.settings[group] = { ...state.settings[group], ...values }
   })
 }
@@ -1415,7 +1425,13 @@ function setCompanyHub({ announcements, policies }) {
 }
 
 function setMessages(rows) {
-  state.messages = (rows || []).map(mapMessage)
+  // Messages still in flight are carried over. A wholesale replace destroys
+  // the optimistic row a send is waiting on, and confirmOptimisticMessage then
+  // finds nothing to update — so the message vanishes from the thread while
+  // the request that created it succeeds.
+  const pending = state.messages.filter(message => message.status === 'sending' || message.status === 'failed')
+
+  state.messages = [...pending, ...(rows || []).map(mapMessage)]
 }
 
 /** Marks a server-backed row read locally, so the badge updates at once. */
