@@ -1,11 +1,21 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { projects } from '../data/mock.js'
 import { useStore } from '../store/index.js'
 import { authService } from '../services/authService.js'
 import { setUnauthenticatedHandler } from '../services/apiClient.js'
 
+/**
+ * Resolves a legacy numeric project URL against the LIVE store.
+ *
+ * These routes only exist for bookmarks from before projects moved to slugs.
+ * They used to look the id up in mock data, which meant they could never match
+ * a real project — every old link silently bounced to the list. Reading the
+ * store at least resolves correctly whenever projects are already loaded, and
+ * falls back to the list when they are not.
+ */
 function projectById(id) {
-  return projects.find(project => project.id === Number(id))
+  const { state } = useStore()
+
+  return state.projects.find(project => project.id === Number(id))
 }
 
 function moduleById(project, moduleId) {

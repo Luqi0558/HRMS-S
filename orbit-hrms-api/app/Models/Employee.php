@@ -19,6 +19,9 @@ class Employee extends Model
     protected $fillable = [
         'user_id',
         'employee_code',
+        'presence_status',
+        'presence_message',
+        'presence_updated_at',
         'name',
         'email',
         'designation',
@@ -35,6 +38,7 @@ class Employee extends Model
         'birthday' => 'date',
         'joining_date' => 'date',
         'exit_date' => 'date',
+        'presence_updated_at' => 'datetime',
     ];
 
     public function user(): BelongsTo

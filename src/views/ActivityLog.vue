@@ -1,10 +1,15 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { projectService } from '../services/projectService.js'
+import { ticketService } from '../services/ticketService.js'
 import { useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
-const { state, can, formatDateTime } = useStore()
+const { state, can, formatDateTime,
+  setProjects,
+  setTickets
+} = useStore()
 const router = useRouter()
 
 const canAccess = computed(() => can('Activity Log', 'view'))
@@ -83,6 +88,22 @@ function exportActivityCsv() {
   link.click()
   URL.revokeObjectURL(url)
 }
+/**
+ * The log resolves project and ticket names to build its links, so it has
+ * to load them rather than hoping another page already did.
+ *
+ * Non-fatal: roles reaching this page hold different permissions, and one 403
+ * should not blank the whole view.
+ */
+onMounted(async () => {
+  const [projects, tickets] = await Promise.allSettled([
+    projectService.list(),
+    ticketService.list()
+  ])
+
+  if (projects.status === 'fulfilled') setProjects(projects.value)
+  if (tickets.status === 'fulfilled') setTickets(tickets.value.data)
+})
 </script>
 
 <template>

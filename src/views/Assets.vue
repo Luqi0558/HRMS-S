@@ -1,9 +1,12 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { employeeService } from '../services/employeeService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
-const { state, can, logActivity, pushNotification } = useStore()
+const { state, can, logActivity, pushNotification,
+  setEmployees
+} = useStore()
 
 const canAccess = computed(() => can('Assets', 'view'))
 const canManage = computed(() => can('Assets', 'create'))
@@ -125,6 +128,21 @@ function markReturned(asset) {
     })
   }
 }
+/**
+ * Assets are assigned to people, so the roster has to be real. The assets
+ * themselves are still local until their own API lands.
+ *
+ * Non-fatal: roles reaching this page hold different permissions, and one 403
+ * should not blank the whole view.
+ */
+onMounted(async () => {
+  try {
+    const employees = await employeeService.list()
+    setEmployees(employees.data)
+  } catch {
+    // Assets still render; only the assignee names fall back to blank.
+  }
+})
 </script>
 
 <template>

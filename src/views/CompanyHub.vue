@@ -1,9 +1,12 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { employeeService } from '../services/employeeService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
-const { state, can, formatDate: formatCompanyDate, logActivity, pushNotification } = useStore()
+const { state, can, formatDate: formatCompanyDate, logActivity, pushNotification,
+  setEmployees
+} = useStore()
 
 const canManage = computed(() => can('Company Hub', 'create'))
 const activeTab = ref('announcements')
@@ -130,6 +133,21 @@ function savePolicy() {
   policyForm.value = { title: '', category: 'HR', version: '1.0', summary: '', acknowledgmentRequired: true }
   showPolicyForm.value = false
 }
+/**
+ * Announcements and policies name their author, which means resolving a real
+ * employee rather than a seeded one.
+ *
+ * Non-fatal: roles reaching this page hold different permissions, and one 403
+ * should not blank the whole view.
+ */
+onMounted(async () => {
+  try {
+    const employees = await employeeService.list()
+    setEmployees(employees.data)
+  } catch {
+    // Announcements still render; only author names fall back to blank.
+  }
+})
 </script>
 
 <template>

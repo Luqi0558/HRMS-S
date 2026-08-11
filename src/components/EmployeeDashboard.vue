@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import StatCard from './StatCard.vue'
 import TimesheetChart from './TimesheetChart.vue'
 import { useDashboard } from '../composables/useDashboard.js'
-import { statusMeta } from '../data/mock.js'
+import { statusMeta } from '../config/ticketStatus.js'
 
 // Employee: their own work only — tickets, hours, claims, leave, and the
 // self check-in widget. No team or company-wide data.

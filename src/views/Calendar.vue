@@ -1,8 +1,13 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { leaveService } from '../services/leaveService.js'
+import { employeeService } from '../services/employeeService.js'
 import { useStore } from '../store/index.js'
 
-const { state, can, formatDate: formatCompanyDate } = useStore()
+const {
+  state, can, formatDate: formatCompanyDate,
+  setLeaveRequests, setEmployees
+} = useStore()
 const eventType = ref('all')
 const currentYear = new Date().getFullYear()
 const canAccess = computed(() => can('Calendar', 'view'))
@@ -124,6 +129,20 @@ function employeeName(id) {
 function formatDate(value) {
   return formatCompanyDate(value, { weekday: 'short', month: 'short', day: 'numeric' })
 }
+/**
+ * The calendar plots approved leave, so it has to load it. It previously read
+ * whatever was already in the store — seeded mock leave, or nothing at all if
+ * the user came straight here.
+ */
+onMounted(async () => {
+  const [leave, employees] = await Promise.allSettled([
+    leaveService.list(),
+    employeeService.list()
+  ])
+
+  if (leave.status === 'fulfilled') setLeaveRequests(leave.value)
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+})
 </script>
 
 <template>

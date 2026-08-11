@@ -1,8 +1,84 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useStore } from '../store/index.js'
+import { messageService } from '../services/messageService.js'
 
-const { state, can, permissionRow, formatDateTime, formatTime: formatCompanyTime, logActivity, pushNotification } = useStore()
+const {
+  state, can, permissionRow, formatDateTime, formatTime: formatCompanyTime,
+  logActivity, pushNotification, setMessages, markMessageReadLocally,
+  addOptimisticMessage, confirmOptimisticMessage, failOptimisticMessage, removeMessage,
+  presenceFor
+} = useStore()
+
+// Who this user may write to, as the API resolves it. Not derived from
+// state.employees: an employee cannot read the roster, and the contacts they
+// may message are a much smaller set than "everyone".
+const contacts = ref([])
+
+const loadError = ref('')
+const sending = ref(false)
+// True until the first fetch settles. Without it the page renders its empty
+// state while the request is in flight — "No conversations yet" is a claim,
+// and it is the wrong one for the two seconds before the data arrives.
+const loading = ref(true)
+// Paging backwards through history. The API pages on a keyset (the oldest id
+// held) rather than an offset, which would shift under us every time a new
+// message arrived.
+const hasMore = ref(false)
+const oldestId = ref(0)
+const loadingOlder = ref(false)
+// The scroll container, so a new message can bring itself into view.
+const threadRef = ref(null)
+// The first message not yet read when a conversation was opened. Frozen at
+// that moment so the "new messages" line does not jump as they are marked
+// read a fraction of a second later.
+const unreadMarkerId = ref(null)
+
+/**
+ * The inbox for the first paint. Anything that arrives afterwards comes
+ * through the sync poll running in App.vue, so this is a one-off load rather
+ * than something that needs refreshing.
+ */
+async function loadMessages() {
+  try {
+    const { messages, contacts: reachable, hasMore: more, oldestId: oldest } = await messageService.list()
+    setMessages(messages)
+    contacts.value = reachable
+    hasMore.value = more
+    oldestId.value = oldest
+  } catch (error) {
+    loadError.value = error?.message || 'Unable to load messages.'
+  } finally {
+    loading.value = false
+  }
+}
+
+/** Fetches the page of history before what is already on screen. */
+async function loadOlder() {
+  if (loadingOlder.value || !hasMore.value) return
+
+  loadingOlder.value = true
+  const thread = threadRef.value
+  const heightBefore = thread?.scrollHeight ?? 0
+
+  try {
+    const { messages, hasMore: more, oldestId: oldest } = await messageService.list(oldestId.value)
+    prependMessages(messages)
+    hasMore.value = more
+    if (oldest) oldestId.value = oldest
+
+    // Hold the reading position: without this, inserting older messages above
+    // yanks the thread and the user loses their place.
+    await nextTick()
+    if (thread) thread.scrollTop = thread.scrollHeight - heightBefore
+  } catch (error) {
+    loadError.value = error?.message || 'Unable to load older messages.'
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+onMounted(loadMessages)
 
 const messageMode = ref('direct')
 const selectedRecipientId = ref('')
@@ -35,35 +111,13 @@ const myTeamIds = computed(() => {
 // role checks. Previously any role that was not manager or employee fell
 // through to "everyone" — a team lead could message the entire company,
 // including super admin, despite holding scope 'owned'.
-const directRecipients = computed(() => {
-  const scope = permissionRow('Messages')?.scope
-  const others = state.employees.filter(employee => employee.id !== state.currentUser.id)
-
-  if (scope === 'all') return others
-
-  if (scope === 'owned') {
-    // Their team, plus the people they escalate to.
-    const teamIds = new Set(myTeamIds.value)
-    return others.filter(employee => teamIds.has(employee.id) || employee.role === 'hr')
-  }
-
-  // scope 'self' (employees): the managers/leads they report to, plus HR.
-  const contactIds = new Set()
-  state.projects.forEach(project => {
-    const onProject = (project.teamMembers || []).includes(state.currentUser.id)
-    const onModule = (project.modules || []).some(module =>
-      (module.teamMembers || []).includes(state.currentUser.id)
-    )
-    if (!onProject && !onModule) return
-    if (project.managerId) contactIds.add(project.managerId)
-    ;(project.modules || []).forEach(module => {
-      if (module.leadId && (module.teamMembers || []).includes(state.currentUser.id)) {
-        contactIds.add(module.leadId)
-      }
-    })
-  })
-  return others.filter(employee => contactIds.has(employee.id) || employee.role === 'hr')
-})
+// Who this user may DM. The API resolves this — it knows the project and
+// module membership that decides it, and it is the same list the send
+// endpoint enforces, so the dropdown cannot offer someone the API will refuse.
+//
+// Previously computed here from state.projects, which this page never loads:
+// the list was empty or wrong depending on what another page had fetched.
+const directRecipients = computed(() => contacts.value)
 
 // Broadcasting is company-wide messaging: the 'all' scope on Messages.
 const canBroadcast = computed(() => can('Messages', 'create') && permissionRow('Messages')?.scope === 'all')
@@ -103,7 +157,7 @@ const conversations = computed(() => {
     if (!existing) {
       map.set(key, {
         key,
-        type: message.recipientIds.length > 1 ? 'broadcast' : 'direct',
+        type: isBroadcastMessage(message) ? 'broadcast' : 'direct',
         title: conversationTitle(message),
         subtitle: conversationSubtitle(message),
         avatar: conversationAvatar(message),
@@ -131,6 +185,57 @@ const selectedConversation = computed(() => {
 })
 
 const selectedMessages = computed(() => selectedConversation.value?.messages || [])
+
+/**
+ * The thread as it is rendered: messages, with a date heading whenever the day
+ * changes and a "new messages" line at the first thing unread when this
+ * conversation was opened.
+ */
+const threadItems = computed(() => {
+  const items = []
+  let lastDay = null
+  let markerPlaced = false
+
+  selectedMessages.value.forEach(message => {
+    const day = (message.createdAt || '').slice(0, 10)
+
+    if (day && day !== lastDay) {
+      items.push({ kind: 'day', key: `day-${day}`, label: dayLabel(message.createdAt) })
+      lastDay = day
+    }
+
+    if (!markerPlaced && unreadMarkerId.value && message.id === unreadMarkerId.value) {
+      items.push({ kind: 'unread', key: 'unread-marker' })
+      markerPlaced = true
+    }
+
+    items.push({ kind: 'message', key: message.id, message })
+  })
+
+  return items
+})
+
+/** "Today" / "Yesterday" / "Monday" — a full date on every line is noise. */
+function dayLabel(value) {
+  if (!value) return ''
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const today = new Date()
+  const startOf = d => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const days = Math.round((startOf(today) - startOf(date)) / 86400000)
+
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days > 1 && days < 7) return date.toLocaleDateString(undefined, { weekday: 'long' })
+
+  return date.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric'
+  })
+}
 
 const conversationList = computed(() => {
   const items = [...conversations.value]
@@ -165,47 +270,113 @@ watch(directRecipients, recipients => {
   if (!selectedRecipientId.value && recipients[0]) selectedRecipientId.value = String(recipients[0].id)
 }, { immediate: true })
 
+// Opening a conversation reads it. Marked locally first so the badge responds
+// immediately, then persisted — a failed write is corrected by the next poll
+// rather than blocking the click.
 watch(selectedConversation, conversation => {
   if (!conversation) return
   conversation.messages.forEach(message => {
     if (message.recipientIds.includes(currentUserId.value) && !message.readBy.includes(currentUserId.value)) {
       message.readBy.push(currentUserId.value)
+
+      if (message.fromServer) {
+        markMessageReadLocally(message.id)
+        messageService.markRead(message.id).catch(() => {})
+      }
     }
   })
 }, { immediate: true })
 
+/** A broadcast is defined by its audience, not by how many rows it fanned to. */
+function isBroadcastMessage(message) {
+  if (message.audience && message.audience !== 'Direct message') return true
+
+  return (message.recipientIds || []).length > 1
+}
+
+/**
+ * Which conversation a message belongs to.
+ *
+ * Decided by audience, not by counting recipients. A broadcast's optimistic
+ * row has no recipients yet — the API resolves them — so counting produced the
+ * key `direct:undefined` and filed a company-wide announcement under a
+ * conversation with nobody.
+ */
 function conversationKey(message) {
-  if (message.recipientIds.length > 1) return `broadcast:${message.senderId}:${message.audience}`
-  const otherId = message.senderId === currentUserId.value ? message.recipientIds[0] : message.senderId
+  const isBroadcast = message.audience && message.audience !== 'Direct message'
+  if (isBroadcast || (message.recipientIds || []).length > 1) {
+    return `broadcast:${message.senderId}:${message.audience}`
+  }
+
+  const otherId = message.senderId === currentUserId.value
+    ? (message.recipientIds || [])[0]
+    : message.senderId
+
   return `direct:${otherId}`
 }
 
 function conversationTitle(message) {
-  if (message.recipientIds.length > 1) return message.audience
+  if (isBroadcastMessage(message)) return message.audience
   const otherId = message.senderId === currentUserId.value ? message.recipientIds[0] : message.senderId
   return employeeName(otherId)
 }
 
 function conversationSubtitle(message) {
-  if (message.recipientIds.length > 1) return `${message.senderName} broadcast`
+  if (isBroadcastMessage(message)) return `${message.senderName} broadcast`
   const otherId = message.senderId === currentUserId.value ? message.recipientIds[0] : message.senderId
-  const employee = state.employees.find(item => item.id === Number(otherId))
-  return employee?.role ? employee.role.replace('_', ' ') : 'Direct message'
+  const person = personFor(otherId)
+  return person?.role ? person.role.replace('_', ' ') : 'Direct message'
 }
 
 function conversationAvatar(message) {
   return initials(conversationTitle(message))
 }
 
+/** The other person in a direct conversation. */
+function conversationPartnerId(conversation) {
+  if (!conversation?.key?.startsWith('direct:')) return null
+
+  return Number(conversation.key.replace('direct:', ''))
+}
+
+const PRESENCE_DOTS = {
+  active: 'bg-emerald-500',
+  away: 'bg-amber-400',
+  offline: 'bg-slate-300'
+}
+
+function presenceDotClass(employeeId) {
+  if (!employeeId) return PRESENCE_DOTS.offline
+
+  return PRESENCE_DOTS[presenceFor(employeeId).status] || PRESENCE_DOTS.offline
+}
+
+/** Hover text: the status, plus their note if they left one. */
+function presenceLabel(employeeId) {
+  if (!employeeId) return ''
+
+  const { status, message } = presenceFor(employeeId)
+  const label = { active: 'Active', away: 'Away', offline: 'Offline' }[status] || 'Offline'
+
+  return message ? `${label} — ${message}` : label
+}
+
+/** A contact, falling back to the roster on pages that have it loaded. */
+function personFor(id) {
+  return contacts.value.find(person => person.id === Number(id))
+    || state.employees.find(employee => employee.id === Number(id))
+    || null
+}
+
 function directConversationStub(key) {
   const employeeId = Number(key.replace('direct:', ''))
-  const employee = state.employees.find(item => item.id === employeeId)
+  const employee = personFor(employeeId)
   if (!employee) return null
   return {
     key,
     type: 'direct',
     title: employee.name,
-    subtitle: employee.role.replace('_', ' '),
+    subtitle: (employee.role || 'direct message').replace('_', ' '),
     avatar: initials(employee.name),
     messages: [],
     lastMessage: null,
@@ -213,9 +384,15 @@ function directConversationStub(key) {
   }
 }
 
+/**
+ * A person's name.
+ *
+ * Contacts first — that list is always loaded here, while state.employees is
+ * only populated on pages allowed to read the roster. Messages carry
+ * senderName themselves, so this is only needed for compose targets.
+ */
 function employeeName(id) {
-  if (id === 99) return 'Admin User'
-  return state.employees.find(employee => employee.id === Number(id))?.name || 'Unknown user'
+  return personFor(id)?.name || 'Unknown user'
 }
 
 function initials(name) {
@@ -231,22 +408,13 @@ function shortTime(value) {
   return formatCompanyTime(value)
 }
 
+/**
+ * Deliberately empty: the API resolves a broadcast's audience to its roles
+ * itself and ignores whatever ids the client sends. Deriving them here would
+ * be a second, weaker answer to a question the server already decides — and
+ * it needs the roster, which an employee cannot read.
+ */
 function recipientIdsForBroadcast() {
-  if (broadcastAudience.value === 'all_company') {
-    return state.employees
-      .filter(employee => employee.status === 'active')
-      .map(employee => employee.id)
-      .filter(id => id !== state.currentUser.id)
-  }
-  if (broadcastAudience.value === 'employees') {
-    return state.employees.filter(employee => employee.role === 'employee' && employee.status === 'active').map(employee => employee.id)
-  }
-  if (broadcastAudience.value === 'managers') {
-    return state.employees.filter(employee => employee.role === 'manager' && employee.status === 'active').map(employee => employee.id)
-  }
-  if (broadcastAudience.value === 'hr') {
-    return state.employees.filter(employee => employee.role === 'hr' && employee.status === 'active').map(employee => employee.id)
-  }
   return []
 }
 
@@ -260,59 +428,203 @@ function openDirectConversation(employeeId) {
   selectedRecipientId.value = String(employeeId)
 }
 
-function sendMessage() {
+/**
+ * Builds the payload from what is on screen, then hands it to deliver().
+ *
+ * The split matters: deliver() takes an explicit payload, so a retry replays
+ * exactly what was originally sent. Re-deriving it from component state was a
+ * real defect — sending reset messageMode to 'direct' before awaiting, so
+ * retrying a failed BROADCAST read the reset mode and delivered a company-wide
+ * announcement as a private message to whoever was selected in the dropdown.
+ */
+async function sendMessage() {
   const body = messageText.value.trim()
   if (!body) return
 
-  let recipientIds = []
-  let audience = 'Direct message'
-  let subject = 'Direct message'
+  let payload
 
   if (messageMode.value === 'broadcast') {
-    recipientIds = recipientIdsForBroadcast()
-    audience = audienceLabel()
-    subject = 'Team announcement'
+    payload = {
+      body,
+      subject: 'Team announcement',
+      // The id, not the label: the API resolves the audience to its roles
+      // itself, which is also why recipientIds stays empty by design.
+      audience: broadcastAudience.value,
+      recipientIds: []
+    }
   } else {
     const recipientId = activeRecipientId.value || Number(selectedRecipientId.value)
-    recipientIds = [recipientId].filter(Boolean)
+    if (!recipientId || recipientId === state.currentUser.id) return
+
+    payload = {
+      body,
+      subject: 'Direct message',
+      audience: 'Direct message',
+      recipientIds: [recipientId]
+    }
   }
 
-  recipientIds = [...new Set(recipientIds.filter(id => id !== state.currentUser.id))]
-  if (!recipientIds.length) return
-
-  const message = {
-    id: Date.now() + Math.floor(Math.random() * 1000),
-    senderId: state.currentUser.id,
-    senderName: state.currentUser.name,
-    senderRole: state.currentUser.role,
-    recipientIds,
-    audience,
-    subject,
-    body,
-    createdAt: new Date().toISOString(),
-    readBy: [state.currentUser.id]
-  }
-
-  state.messages.unshift(message)
-
-  pushNotification({
-    title: message.recipientIds.length > 1 ? audience : state.currentUser.name,
-    message: body,
-    type: 'messages',
-    userIds: recipientIds,
-    route: { name: 'messages' }
-  })
-
-  logActivity({
-    module: 'messages',
-    action: message.recipientIds.length > 1 ? 'broadcast sent' : 'direct message sent',
-    details: `${state.currentUser.name} sent a message to ${message.recipientIds.length > 1 ? audience : employeeName(message.recipientIds[0])}.`
-  })
-
-  selectedConversationKey.value = conversationKey(message)
-  messageMode.value = 'direct'
+  // Cleared immediately so the next message can be typed while this one is in
+  // flight. The text survives on the optimistic row, so a failure is retryable.
   messageText.value = ''
+  saveDraft('')
+
+  await deliver(payload)
 }
+
+/**
+ * Sends one payload and reconciles the optimistic row with the result.
+ *
+ * The payload is stored on the row so a retry replays it verbatim rather than
+ * rebuilding it from whatever the UI happens to look like by then.
+ */
+async function deliver(payload) {
+  const tempId = `pending:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+
+  addOptimisticMessage({ tempId, ...payload })
+  loadError.value = ''
+  selectedConversationKey.value = conversationKey(state.messages[0])
+
+  const wasBroadcast = payload.audience !== 'Direct message'
+  // Reset only after the payload is safely captured on the row.
+  messageMode.value = 'direct'
+
+  try {
+    const sent = await messageService.send(payload)
+    confirmOptimisticMessage(tempId, sent)
+
+    logActivity({
+      module: 'messages',
+      action: wasBroadcast ? 'broadcast sent' : 'direct message sent',
+      details: `${state.currentUser.name} sent a message to ${wasBroadcast ? payload.audience : employeeName(payload.recipientIds[0])}.`
+    })
+  } catch (error) {
+    // The text stays on screen marked failed rather than disappearing —
+    // losing what someone typed is worse than showing it did not send.
+    failOptimisticMessage(tempId)
+    loadError.value = error?.message || 'Unable to send that message.'
+  }
+}
+
+/**
+ * Whether everyone it was sent to has read it.
+ *
+ * A broadcast to twelve people shows read only once all twelve have opened
+ * it — a double tick that appeared after the first would misrepresent what
+ * the sender actually knows.
+ */
+function messageIsRead(message) {
+  const delivery = message.delivery
+  if (!delivery || !delivery.total) return false
+
+  return delivery.read >= delivery.total
+}
+
+/**
+ * Keeps the newest message in view.
+ *
+ * Without this a message arriving while you are at the bottom renders below
+ * the fold and simply is not seen — the single most jarring thing about the
+ * thread before. Only auto-scrolls when you are already near the bottom: if
+ * you have scrolled up to read history, yanking you back down is worse.
+ */
+const NEAR_BOTTOM = 120
+
+function isNearBottom() {
+  const el = threadRef.value
+  if (!el) return true
+
+  return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM
+}
+
+async function scrollToNewest(force = false) {
+  const shouldStick = force || isNearBottom()
+  await nextTick()
+
+  const el = threadRef.value
+  if (el && shouldStick) el.scrollTop = el.scrollHeight
+}
+
+// A new message in the open thread.
+watch(() => selectedMessages.value.length, (now, before) => {
+  if (now > (before ?? 0)) scrollToNewest()
+})
+
+// Opening a different conversation always starts at the newest, and freezes
+// the "new messages" line where it was at that moment — the messages are
+// marked read a fraction of a second later, so reading unread state after
+// that would never show a divider at all.
+watch(selectedConversationKey, () => {
+  const firstUnread = selectedMessages.value.find(
+    message => message.senderId !== currentUserId.value && !(message.readBy || []).includes(currentUserId.value)
+  )
+  unreadMarkerId.value = firstUnread?.id ?? null
+
+  restoreDraft()
+  scrollToNewest(true)
+}, { immediate: true })
+
+// Scroll to the bottom once the first load lands.
+watch(loading, isLoading => {
+  if (!isLoading) scrollToNewest(true)
+})
+
+/**
+ * Drafts, kept per conversation.
+ *
+ * Typing half a message, navigating away and losing it is a small thing that
+ * feels careless. Held in localStorage so it survives a refresh too.
+ */
+const DRAFT_PREFIX = 'orbit-draft:'
+
+function draftKey() {
+  return `${DRAFT_PREFIX}${state.currentUser.id}:${selectedConversationKey.value || 'none'}`
+}
+
+function restoreDraft() {
+  try {
+    messageText.value = window.localStorage.getItem(draftKey()) || ''
+  } catch {
+    messageText.value = ''
+  }
+}
+
+function saveDraft(value) {
+  try {
+    if (value) window.localStorage.setItem(draftKey(), value)
+    else window.localStorage.removeItem(draftKey())
+  } catch {
+    /* storage unavailable — the draft simply will not survive a reload */
+  }
+}
+
+watch(messageText, value => saveDraft(value))
+
+/**
+ * Enter sends, Shift+Enter starts a new line.
+ *
+ * Reaching for the mouse after every sentence is what made this feel like a
+ * form rather than a conversation.
+ */
+function onComposerKeydown(event) {
+  if (event.key !== 'Enter' || event.shiftKey) return
+  // Leave IME composition alone: in a language that composes characters,
+  // Enter confirms the candidate rather than sending.
+  if (event.isComposing) return
+
+  event.preventDefault()
+  sendMessage()
+}
+
+/** Resends a failed message with its ORIGINAL audience and recipients. */
+async function retryMessage(message) {
+  const payload = message.payload
+  if (!payload) return
+
+  removeMessage(message.id)
+  await deliver(payload)
+}
+
 </script>
 
 <template>
@@ -362,14 +674,24 @@ function sendMessage() {
 
         <div class="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-200">
           <button
-            v-for="conversation in conversationList"
+            v-for="conversation in (loading ? [] : conversationList)"
             :key="conversation.key"
             @click="selectedConversationKey = conversation.key; messageMode = 'direct'"
             :class="selectedConversation?.key === conversation.key ? 'bg-slate-50/80' : 'hover:bg-slate-50/60'"
             class="w-full px-4 py-4 text-left transition-colors flex items-start gap-3"
           >
-            <div class="w-10 h-10 rounded-2xl bg-slate-950 text-white flex items-center justify-center text-sm font-bold shrink-0">
-              {{ conversation.avatar }}
+            <div class="relative shrink-0">
+              <div class="w-10 h-10 rounded-2xl bg-slate-950 text-white flex items-center justify-center text-sm font-bold">
+                {{ conversation.avatar }}
+              </div>
+              <!-- Only on direct chats: a broadcast has no single person whose
+                   status would mean anything. -->
+              <span
+                v-if="conversation.type === 'direct'"
+                class="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full border-2 border-white"
+                :class="presenceDotClass(conversationPartnerId(conversation))"
+                :title="presenceLabel(conversationPartnerId(conversation))"
+              ></span>
             </div>
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
@@ -384,7 +706,18 @@ function sendMessage() {
               <div v-if="conversation.unread" class="mt-2 ml-auto w-fit rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white">{{ conversation.unread }}</div>
             </div>
           </button>
-          <div v-if="conversationList.length === 0" class="px-4 py-10 text-center text-sm text-slate-500">No conversations yet.</div>
+          <!-- Skeletons rather than a message: the list is unknown, not known
+               to be empty. -->
+          <div v-if="loading" class="px-4 py-4 space-y-3">
+            <div v-for="n in 3" :key="n" class="flex items-center gap-3 animate-pulse">
+              <div class="h-10 w-10 rounded-full bg-slate-200 shrink-0"></div>
+              <div class="flex-1 space-y-2">
+                <div class="h-3 w-1/2 rounded bg-slate-200"></div>
+                <div class="h-3 w-3/4 rounded bg-slate-100"></div>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="conversationList.length === 0" class="px-4 py-10 text-center text-sm text-slate-500">No conversations yet.</div>
         </div>
       </div>
 
@@ -399,7 +732,17 @@ function sendMessage() {
               <div class="text-lg font-bold text-slate-900 truncate">{{ selectedConversation.title }}</div>
               <span v-if="selectedConversation.type === 'broadcast'" class="rounded-full bg-blue-100 px-3 py-1 text-xs font-bold text-blue-700">Broadcast</span>
             </div>
-            <div class="text-xs text-slate-500 mt-1 capitalize">{{ selectedConversation.subtitle }}</div>
+            <div class="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
+              <template v-if="selectedConversation.type === 'direct'">
+                <span class="h-2 w-2 rounded-full" :class="presenceDotClass(conversationPartnerId(selectedConversation))"></span>
+                <span>{{ presenceLabel(conversationPartnerId(selectedConversation)) }}</span>
+              </template>
+              <span v-else class="capitalize">{{ selectedConversation.subtitle }}</span>
+            </div>
+          </div>
+          <div v-else-if="loading" class="min-w-0 animate-pulse">
+            <div class="h-5 w-40 rounded bg-slate-200"></div>
+            <div class="mt-2 h-3 w-56 rounded bg-slate-100"></div>
           </div>
           <div v-else>
             <div class="text-lg font-bold text-slate-900">Select a chat</div>
@@ -407,24 +750,75 @@ function sendMessage() {
           </div>
         </div>
 
-        <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 bg-slate-50/40">
-          <template v-if="selectedMessages.length">
-            <div
-              v-for="message in selectedMessages"
-              :key="message.id"
-              class="flex"
-              :class="message.senderId === currentUserId ? 'justify-end' : 'justify-start'"
-            >
-              <div
-                class="max-w-[78%] rounded-2xl px-4 py-3 shadow-sm"
-                :class="message.senderId === currentUserId ? 'bg-slate-950 text-white' : 'bg-white border border-slate-200 text-slate-800'"
+        <div ref="threadRef" class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 bg-slate-50/40">
+          <template v-if="!loading && threadItems.length">
+            <!-- Older history, on demand. The 100 most recent load first, so a
+                 conversation is not capped at whatever fits in one response. -->
+            <div v-if="hasMore" class="flex justify-center pb-2">
+              <button
+                @click="loadOlder"
+                :disabled="loadingOlder"
+                class="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-60"
               >
-                <div v-if="message.senderId !== currentUserId" class="text-[11px] font-bold mb-1 text-slate-500">{{ message.senderName }}</div>
-                <div class="text-sm leading-relaxed whitespace-pre-line">{{ message.body }}</div>
-                <div class="mt-2 text-[10px]" :class="message.senderId === currentUserId ? 'text-white/60' : 'text-slate-400'">{{ formatTime(message.createdAt) }}</div>
-              </div>
+                {{ loadingOlder ? 'Loading...' : 'Load older messages' }}
+              </button>
             </div>
+
+            <template v-for="item in threadItems" :key="item.key">
+              <!-- Date heading, so a long thread reads as days rather than a
+                   wall of identical timestamps. -->
+              <div v-if="item.kind === 'day'" class="flex justify-center py-1">
+                <span class="rounded-full bg-slate-200/70 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                  {{ item.label }}
+                </span>
+              </div>
+
+              <!-- Where you left off. -->
+              <div v-else-if="item.kind === 'unread'" class="flex items-center gap-3 py-1">
+                <div class="h-px flex-1 bg-rose-300"></div>
+                <span class="text-[10px] font-bold uppercase tracking-wide text-rose-500">New messages</span>
+                <div class="h-px flex-1 bg-rose-300"></div>
+              </div>
+
+              <div
+                v-else
+                class="flex"
+                :class="item.message.senderId === currentUserId ? 'justify-end' : 'justify-start'"
+              >
+                <div
+                  class="max-w-[78%] rounded-2xl px-4 py-3 shadow-sm"
+                  :class="item.message.senderId === currentUserId ? 'bg-slate-950 text-white' : 'bg-white border border-slate-200 text-slate-800'"
+                >
+                  <div v-if="item.message.senderId !== currentUserId" class="text-[11px] font-bold mb-1 text-slate-500">{{ item.message.senderName }}</div>
+                  <div class="text-sm leading-relaxed whitespace-pre-line">{{ item.message.body }}</div>
+                  <div class="mt-2 flex items-center gap-1.5 text-[10px]" :class="item.message.senderId === currentUserId ? 'text-white/60' : 'text-slate-400'">
+                    <span>{{ formatTime(item.message.createdAt) }}</span>
+                  <!-- Ticks only on your own messages: whether you have read
+                       something you received is not information you need. -->
+                  <template v-if="item.message.senderId === currentUserId">
+                    <span v-if="item.message.status === 'sending'" class="opacity-70" title="Sending">○</span>
+                    <button
+                      v-else-if="item.message.status === 'failed'"
+                      @click="retryMessage(item.message)"
+                      class="text-rose-300 hover:text-rose-200 font-bold"
+                      title="Not sent — click to retry"
+                    >! retry</button>
+                    <span
+                      v-else
+                      :class="messageIsRead(item.message) ? 'text-sky-300' : 'opacity-70'"
+                      :title="messageIsRead(item.message) ? 'Read' : 'Delivered'"
+                    >{{ messageIsRead(item.message) ? '✓✓' : '✓' }}</span>
+                  </template>
+                  </div>
+                </div>
+              </div>
+            </template>
           </template>
+          <div v-else-if="loading" class="space-y-4">
+            <div v-for="n in 3" :key="n" class="flex animate-pulse" :class="n % 2 ? 'justify-start' : 'justify-end'">
+              <div class="h-14 w-1/2 rounded-2xl" :class="n % 2 ? 'bg-white border border-slate-200' : 'bg-slate-200'"></div>
+            </div>
+          </div>
           <div v-else class="h-full min-h-[360px] flex items-center justify-center text-sm text-slate-500">
             No messages in this conversation yet.
           </div>
@@ -436,14 +830,16 @@ function sendMessage() {
           </div>
           <div class="grid grid-cols-[1fr_auto] gap-3">
             <textarea
+              @keydown="onComposerKeydown"
               v-model="messageText"
               placeholder="Type a message..."
               class="rounded-xl border border-slate-200 px-3 py-3 text-sm min-h-12 max-h-32 focus:outline-none focus:ring-1 focus:ring-emerald-500"
             ></textarea>
-            <button @click="sendMessage" class="self-end rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700 transition-colors">
-              Send
+            <button @click="sendMessage" :disabled="sending" class="self-end rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+              {{ sending ? 'Sending...' : 'Send' }}
             </button>
           </div>
+          <div v-if="loadError" class="mt-2 text-xs text-rose-600">{{ loadError }}</div>
         </div>
       </div>
     </section>

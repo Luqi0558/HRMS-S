@@ -2,7 +2,9 @@
 // HTTP library — the app needs headers, JSON and error mapping, all of which
 // fetch already does.
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
+// Exported so the realtime client can point Pusher's channel authorisation at
+// the same origin, with the same tenant header.
+export const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 const DEFAULT_TENANT = import.meta.env.VITE_TENANT || 'orbit'
 
 const tokenStorageKey = 'orbit-auth-token'
@@ -77,23 +79,54 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, { method = 'GET', body, headers = {}, auth = true } = {}) {
+/**
+ * How long to wait before giving up on a request.
+ *
+ * fetch() has no default timeout: a server that accepts the connection and
+ * then stalls leaves the promise pending forever. That is exactly what happens
+ * when the office RDP pins the CPU and every PHP worker is busy — and it is
+ * worse than an error, because every retry and backoff path in the app sits
+ * after the await and so never runs. The poll would not slow down, it would
+ * stop dead until the page was reloaded.
+ */
+const DEFAULT_TIMEOUT = 15000
+
+async function request(path, { method = 'GET', body, headers = {}, auth = true, timeout = DEFAULT_TIMEOUT } = {}) {
   const token = auth ? getToken() : null
   const isFormData = body instanceof FormData
 
-  const response = await fetch(`${API_URL}${path}`, {
-    method,
-    headers: {
-      Accept: 'application/json',
-      // Let the browser set Content-Type for FormData so it can add the
-      // multipart boundary — setting it manually breaks file uploads.
-      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      'X-Tenant': getTenant(),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...headers
-    },
-    body: isFormData ? body : (body ? JSON.stringify(body) : undefined)
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+
+  let response
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      method,
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        // Let the browser set Content-Type for FormData so it can add the
+        // multipart boundary — setting it manually breaks file uploads.
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        'X-Tenant': getTenant(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...headers
+      },
+      body: isFormData ? body : (body ? JSON.stringify(body) : undefined)
+    })
+  } catch (error) {
+    // Surfaced as an ApiError with status 0 so callers treat a timeout the
+    // same as any other failure — counting it, backing off, and trying again —
+    // rather than hanging on a promise that will never settle.
+    throw new ApiError(
+      error?.name === 'AbortError'
+        ? 'The server did not respond in time.'
+        : 'Could not reach the server.',
+      { status: 0, code: error?.name === 'AbortError' ? 'timeout' : 'network' }
+    )
+  } finally {
+    clearTimeout(timer)
+  }
 
   // 204 and empty bodies are valid; treat an unparseable body as empty rather
   // than throwing a JSON error that hides the real status.
@@ -137,16 +170,32 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true }
  * 401 handling are the same; only the body handling differs. An error response
  * is still JSON, so it is parsed as such to keep the message.
  */
-async function requestBlob(path, { headers = {} } = {}) {
+async function requestBlob(path, { headers = {}, timeout = DEFAULT_TIMEOUT } = {}) {
   const token = getToken()
 
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: {
-      'X-Tenant': getTenant(),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...headers
-    }
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+
+  let response
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      signal: controller.signal,
+      headers: {
+        'X-Tenant': getTenant(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...headers
+      }
+    })
+  } catch (error) {
+    throw new ApiError(
+      error?.name === 'AbortError'
+        ? 'The download did not complete in time.'
+        : 'Could not reach the server.',
+      { status: 0, code: error?.name === 'AbortError' ? 'timeout' : 'network' }
+    )
+  } finally {
+    clearTimeout(timer)
+  }
 
   if (!response.ok) {
     if (response.status === 401) {

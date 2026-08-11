@@ -46,6 +46,7 @@ class PayrollService
     public function __construct(
         private readonly PermissionService $permissions,
         private readonly ScopeResolver $scopes,
+        private readonly MessageService $messages,
     ) {
     }
 
@@ -184,7 +185,7 @@ class PayrollService
 
         $reviewer = $this->employeeFor($user);
 
-        return DB::transaction(function () use ($request, $decision, $overrides, $comment, $reviewer) {
+        $decided = DB::transaction(function () use ($request, $decision, $overrides, $comment, $reviewer) {
             $request->update([
                 'status' => $decision,
                 'reviewed_by' => $reviewer?->id,
@@ -198,6 +199,15 @@ class PayrollService
 
             return $request->refresh()->load(['employee:id,name', 'reviewer:id,name', 'slip']);
         });
+
+        $this->messages->notify([$decided->employee_id], [
+            'title' => $decision === 'approved' ? 'Payslip ready' : 'Payslip request rejected',
+            'body' => sprintf('Your payslip for %s was %s.', $decided->period->format('F Y'), $decision),
+            'type' => 'salary',
+            'routeName' => 'payroll',
+        ]);
+
+        return $decided;
     }
 
     // --- slips -----------------------------------------------------------
@@ -308,6 +318,14 @@ class PayrollService
             'payment_notes' => $payment['notes'] ?? null,
             'paid_by' => $this->employeeFor($user)?->id,
             'paid_at' => now(),
+        ]);
+
+        // The one payroll event an employee genuinely wants to hear about.
+        $this->messages->notify([$slip->employee_id], [
+            'title' => 'Salary paid',
+            'body' => sprintf('Your %s salary has been paid.', $slip->period->format('F Y')),
+            'type' => 'salary',
+            'routeName' => 'payroll',
         ]);
 
         return $slip->refresh()->load(['employee:id,name', 'payer:id,name']);

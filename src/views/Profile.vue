@@ -1,8 +1,11 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { employeeService } from '../services/employeeService.js'
 import { useStore } from '../store/index.js'
 
-const { state, roleLabel: formatRoleLabel, logActivity, setCurrentUser } = useStore()
+const { state, roleLabel: formatRoleLabel, logActivity, setCurrentUser,
+  setEmployees
+} = useStore()
 
 const employee = computed(() => state.employees.find(item => item.id === state.currentUser.id))
 const isBlocked = computed(() => employee.value?.status === 'blocked')
@@ -262,6 +265,22 @@ function updatePassword() {
     details: `${state.currentUser.name} updated their password.`
   })
 }
+/**
+ * The page resolves the signed-in user against the roster. Without loading it
+ * that lookup fell through to seeded data.
+ *
+ * Non-fatal: roles reaching this page hold different permissions, and one 403
+ * should not blank the whole view.
+ */
+onMounted(async () => {
+  try {
+    const employees = await employeeService.list()
+    setEmployees(employees.data)
+  } catch {
+    // An employee cannot read the roster; their own record still renders from
+    // the session, which is all this page needs for them.
+  }
+})
 </script>
 
 <template>

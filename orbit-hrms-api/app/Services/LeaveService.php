@@ -27,6 +27,7 @@ class LeaveService
         private readonly PermissionService $permissions,
         private readonly ScopeResolver $scopes,
         private readonly SettingsService $settings,
+        private readonly MessageService $messages,
     ) {
     }
 
@@ -88,7 +89,7 @@ class LeaveService
 
         $this->assertWithinAllowance($employee, $attributes['type'], $days);
 
-        return LeaveRequest::create([
+        $request = LeaveRequest::create([
             'employee_id' => $employee->id,
             'type' => $attributes['type'],
             'from_date' => $from,
@@ -97,6 +98,20 @@ class LeaveService
             'reason' => $attributes['reason'] ?? null,
             'status' => 'pending',
         ]);
+
+        // Nobody acts on a request they were never told about, so the people
+        // who can approve it hear about it as it is filed.
+        $this->messages->notify(
+            $this->messages->employeeIdsForRoles(['hr', 'team_lead', 'super_admin']),
+            [
+                'title' => 'Leave request submitted',
+                'body' => sprintf('%s requested %s from %s.', $employee->name, strtolower($request->type), $from),
+                'type' => 'leave',
+                'routeName' => 'leave-requests',
+            ],
+        );
+
+        return $request;
     }
 
     /**
@@ -155,7 +170,7 @@ class LeaveService
             throw new ConflictHttpException('This request has already been decided.');
         }
 
-        return DB::transaction(function () use ($request, $stage, $approver, $decision, $comment) {
+        $decided = DB::transaction(function () use ($request, $stage, $approver, $decision, $comment) {
             LeaveApproval::updateOrCreate(
                 ['leave_request_id' => $request->id, 'stage' => $stage],
                 [
@@ -169,6 +184,24 @@ class LeaveService
 
             return $request->refresh()->load('approvals.approver:id,name');
         });
+
+        // Told after the commit, so a notification is never raised for a
+        // decision that rolled back. A request still pending says which stage
+        // signed off rather than claiming it is settled.
+        $this->messages->notify([$decided->employee_id], [
+            'title' => match ($decided->status) {
+                'approved' => 'Leave approved',
+                'rejected' => 'Leave rejected',
+                default => 'Leave request updated',
+            },
+            'body' => $decided->status === 'pending'
+                ? sprintf('Your %s was approved at the %s stage and is awaiting the next.', strtolower($decided->type), $stage)
+                : sprintf('Your %s from %s was %s.', strtolower($decided->type), $decided->from_date->toDateString(), $decided->status),
+            'type' => 'leave',
+            'routeName' => 'leave-requests',
+        ]);
+
+        return $decided;
     }
 
     public function cancel(User $user, int $requestId): LeaveRequest

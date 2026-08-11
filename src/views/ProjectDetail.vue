@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
 // A static display map (labels and colour classes), not data — this stays.
-import { statusMeta } from '../data/mock.js'
+import { statusMeta } from '../config/ticketStatus.js'
 import TicketTimer from '../components/TicketTimer.vue'
 import { projectService } from '../services/projectService.js'
 import { ticketService } from '../services/ticketService.js'

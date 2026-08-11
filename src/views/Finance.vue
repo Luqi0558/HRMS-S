@@ -1,5 +1,7 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { projectService } from '../services/projectService.js'
+import { employeeService } from '../services/employeeService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
@@ -14,7 +16,9 @@ const {
   can,
   scopedList,
   pushNotification,
-  logActivity
+  logActivity,
+  setProjects,
+  setEmployees
 } = useStore()
 
 const activeTab = ref('overview')
@@ -299,6 +303,23 @@ function updateCommissionStatus(project, status) {
     targetType: 'module'
   })
 }
+/**
+ * Every figure on this page is derived from projects and their modules, so
+ * reading whatever happened to be in the store was how a finance total could
+ * silently be built from stale or seeded data.
+ *
+ * Non-fatal: roles reaching this page hold different permissions, and one 403
+ * should not blank the whole view.
+ */
+onMounted(async () => {
+  const [projects, employees] = await Promise.allSettled([
+    projectService.list(),
+    employeeService.list()
+  ])
+
+  if (projects.status === 'fulfilled') setProjects(projects.value)
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+})
 </script>
 
 <template>

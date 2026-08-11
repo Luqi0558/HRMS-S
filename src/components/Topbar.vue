@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
 
+import { presenceService } from '../services/presenceService.js'
+
 const route = useRoute()
 const router = useRouter()
 const {
@@ -119,6 +121,34 @@ const notificationTypeCounts = computed(() => {
     return groups
   }, {})
 })
+// Your own status, shown as a dot on your avatar. Clicking toggles it — two
+// states is all an HRMS needs, and 'Active' is stored as no override at all so
+// it keeps following the connection.
+const isAway = computed(() =>
+  state.presence.chosen[state.currentUser.employeeId]?.status === 'away'
+)
+
+const myPresenceLabel = computed(() =>
+  isAway.value ? 'Away — click to go active' : 'Active — click to set away'
+)
+
+async function toggleMyPresence() {
+  const next = isAway.value ? null : 'away'
+
+  // Applied locally first so the dot responds immediately; the socket tells
+  // everyone else.
+  state.presence.chosen[state.currentUser.employeeId] = {
+    status: next ?? 'available',
+    message: null
+  }
+
+  try {
+    await presenceService.set(next)
+  } catch {
+    // Presence is cosmetic — a failed write is not worth interrupting anyone
+    // over, and the next page load reads the real value.
+  }
+}
 </script>
 
 <template>
@@ -238,9 +268,34 @@ const notificationTypeCounts = computed(() => {
           </div>
         </div>
       </div>
-      <div class="w-9 h-9 rounded-full bg-slate-950 text-white flex items-center justify-center text-sm font-bold shadow-sm">
-        {{ state.currentUser.name.split(' ').map(n => n[0]).join('').toUpperCase() }}
+      <!-- A stalled feed, made visible. Without this, a poll that has stopped
+           working looks exactly like a quiet office — which is the failure
+           this whole design exists to prevent. Only shown when the POLL is
+           struggling; a dropped socket is not a problem, it just costs a few
+           seconds of latency. -->
+      <div
+        v-if="state.syncStatus === 'reconnecting'"
+        class="flex items-center gap-1.5 rounded-full bg-amber-50 border border-amber-200 px-2.5 py-1 text-[11px] font-semibold text-amber-700"
+        title="Cannot reach the server — retrying. New messages may be delayed."
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+        Reconnecting
       </div>
+
+      <!-- Your own presence. Two states only: Active, or Away. Active is the
+           absence of an override, so it follows the connection and goes away
+           by itself after five minutes idle. -->
+      <button
+        @click="toggleMyPresence"
+        :title="myPresenceLabel"
+        class="relative w-9 h-9 rounded-full bg-slate-950 text-white flex items-center justify-center text-sm font-bold shadow-sm transition-opacity hover:opacity-90"
+      >
+        {{ state.currentUser.name.split(' ').map(n => n[0]).join('').toUpperCase() }}
+        <span
+          class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white"
+          :class="isAway ? 'bg-amber-400' : 'bg-emerald-500'"
+        ></span>
+      </button>
     </div>
   </header>
 </template>

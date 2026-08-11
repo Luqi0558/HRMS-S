@@ -1,10 +1,18 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
+import { attendanceService } from '../services/attendanceService.js'
+import { leaveService } from '../services/leaveService.js'
+import { medicalClaimService } from '../services/medicalClaimService.js'
+import { employeeService } from '../services/employeeService.js'
 
 const {
   state,
+  setAttendance,
+  setLeaveRequests,
+  setMedicalClaims,
+  setEmployees,
   formatCurrency,
   formatDuration,
   ticketSeconds,
@@ -222,6 +230,27 @@ function exportCsv() {
     details: `${state.currentUser.name} exported ${reportType.value} report.`
   })
 }
+/**
+ * Reports renders attendance, leave and claims — and until now fetched none of
+ * them. It read whatever another page happened to have loaded, or the seeded
+ * mock data, so an export could silently be built from stale or fake rows.
+ *
+ * Each fetch is independent and non-fatal: the roles that reach this page hold
+ * different permissions, and one 403 should not blank the rest of the report.
+ */
+onMounted(async () => {
+  const [attendance, leave, claims, employees] = await Promise.allSettled([
+    attendanceService.list(),
+    leaveService.list(),
+    medicalClaimService.list(),
+    employeeService.list()
+  ])
+
+  if (attendance.status === 'fulfilled') setAttendance(attendance.value)
+  if (leave.status === 'fulfilled') setLeaveRequests(leave.value)
+  if (claims.status === 'fulfilled') setMedicalClaims(claims.value)
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+})
 </script>
 
 <template>

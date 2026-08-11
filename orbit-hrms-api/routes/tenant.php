@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\EmployeeController;
 use App\Http\Controllers\Api\EmployeeInvitationController;
 use App\Http\Controllers\Api\LeaveRequestController;
 use App\Http\Controllers\Api\MedicalClaimController;
+use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PermissionController;
@@ -15,6 +16,8 @@ use App\Http\Controllers\Api\PettyCashController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\TicketController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
 use Stancl\Tenancy\Middleware\InitializeTenancyByRequestData;
 
@@ -286,6 +289,61 @@ Route::middleware([
         Route::post('/petty-cash/reconciliations', [PettyCashController::class, 'reconcile'])
             ->middleware('can.module:Petty Cash,create')
             ->name('api.petty-cash.reconcile');
+
+        /*
+         * Messages and notifications.
+         *
+         * /sync is polled every few seconds by every signed-in client, so it
+         * carries a deliberately higher throttle than the rest of the API and
+         * is gated on nothing: the recipient rows already decide what a user
+         * can see, and a permission lookup on every tick would be the most
+         * expensive part of the cheapest query here.
+         */
+        Route::get('/sync', [MessageController::class, 'sync'])
+            ->middleware('throttle:120,1')
+            ->name('api.sync');
+
+        /*
+         * Pusher channel authorisation.
+         *
+         * Registered here rather than through Broadcast::routes() so it runs
+         * inside the tenant group: the default route sits outside tenancy and
+         * would resolve `users` against the central database, where that table
+         * does not exist. routes/channels.php holds the actual check.
+         */
+        Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request))
+            ->name('api.broadcasting.auth');
+
+        Route::get('/messages', [MessageController::class, 'index'])
+            ->middleware('can.module:Messages,view')
+            ->name('api.messages.index');
+        // Throttled like every other write. Generous enough for real typing —
+        // 30 messages a minute is faster than anyone converses — but it stops
+        // a stuck retry loop or a script from flooding the table.
+        Route::post('/messages', [MessageController::class, 'store'])
+            ->middleware(['can.module:Messages,create', 'throttle:30,1'])
+            ->name('api.messages.store');
+        Route::post('/messages/read-all', [MessageController::class, 'markAllRead'])
+            ->name('api.messages.read-all');
+        Route::post('/messages/{message}/read', [MessageController::class, 'markRead'])
+            ->whereNumber('message')
+            ->name('api.messages.read');
+
+        /*
+         * Presence. Ungated: everyone signed in may see who is available, and
+         * the status a person sets is their own. Online/offline is not here at
+         * all — that comes from the Pusher presence channel.
+         */
+        Route::get('/presence', [MessageController::class, 'presence'])
+            ->name('api.presence.index');
+        Route::put('/presence', [MessageController::class, 'setPresence'])
+            ->name('api.presence.update');
+
+        Route::post('/notifications/read-all', [MessageController::class, 'markAllNotificationsRead'])
+            ->name('api.notifications.read-all');
+        Route::post('/notifications/{notification}/read', [MessageController::class, 'markNotificationRead'])
+            ->whereNumber('notification')
+            ->name('api.notifications.read');
 
         Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
             ->middleware('can.module:Employees,create')

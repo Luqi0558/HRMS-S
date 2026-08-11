@@ -288,7 +288,9 @@ async function generateSlip(row, openDetail = Boolean(selectedPayroll.value)) {
 }
 
 async function approvePayroll(row) {
-  if (!canApprovePayroll.value || !['processing', 'generated'].includes(row.status)) returnp exists.
+  if (!canApprovePayroll.value || !['processing', 'generated'].includes(row.status)) return
+
+  // Nothing to release until the slip exists.
   if (!row.slipId) {
     await generateSlip(row, false)
     row = payrollRows.value.find(item => item.id === row.id) || row

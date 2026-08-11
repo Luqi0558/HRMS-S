@@ -33,6 +33,7 @@ class PettyCashService
     public function __construct(
         private readonly PermissionService $permissions,
         private readonly SettingsService $settings,
+        private readonly MessageService $messages,
     ) {
     }
 
@@ -149,6 +150,15 @@ class PettyCashService
             'approved_at' => now(),
         ]);
 
+        if ($topUp->requested_by) {
+            $this->messages->notify([$topUp->requested_by], [
+                'title' => $decision === 'approved' ? 'Petty cash top-up approved' : 'Petty cash top-up rejected',
+                'body' => sprintf('Your %s top-up request was %s.', number_format((float) $topUp->amount), $decision),
+                'type' => 'finance',
+                'routeName' => 'petty-cash',
+            ]);
+        }
+
         return $topUp->refresh()->load(['requester:id,name', 'approver:id,name']);
     }
 
@@ -184,7 +194,7 @@ class PettyCashService
         $approves = $this->permissions->can($user, 'Petty Cash', 'approve');
         $employee = $this->employeeFor($user);
 
-        return PettyCashExpense::create([
+        $expense = PettyCashExpense::create([
             'amount' => $amount,
             'date' => $attributes['date'] ?? now()->toDateString(),
             'category' => $attributes['category'],
@@ -196,6 +206,21 @@ class PettyCashService
             'approved_by' => ($needsApproval && $approves) ? $employee?->id : null,
             'approved_at' => ($needsApproval && $approves) ? now() : null,
         ]);
+
+        // Only spend that is actually waiting on someone needs raising.
+        if ($expense->status === 'pending') {
+            $this->messages->notify(
+                $this->messages->employeeIdsForRoles(['super_admin']),
+                [
+                    'title' => 'Petty cash needs approval',
+                    'body' => sprintf('%s for %s is above the approval limit.', number_format($amount), $expense->category),
+                    'type' => 'finance',
+                    'routeName' => 'petty-cash',
+                ],
+            );
+        }
+
+        return $expense;
     }
 
     public function decideExpense(User $user, int $id, string $decision, ?string $comment = null): PettyCashExpense
@@ -218,6 +243,15 @@ class PettyCashService
             'approved_at' => now(),
             'review_comment' => $comment,
         ]);
+
+        if ($expense->logged_by) {
+            $this->messages->notify([$expense->logged_by], [
+                'title' => $decision === 'approved' ? 'Petty cash expense approved' : 'Petty cash expense rejected',
+                'body' => sprintf('%s for %s was %s.', number_format((float) $expense->amount), $expense->category, $decision),
+                'type' => 'finance',
+                'routeName' => 'petty-cash',
+            ]);
+        }
 
         return $expense->refresh()->load(['logger:id,name', 'approver:id,name']);
     }

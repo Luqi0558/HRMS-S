@@ -7,6 +7,10 @@ import { useStore } from '../store/index.js'
 import { projectService } from '../services/projectService.js'
 import { ticketService } from '../services/ticketService.js'
 import { employeeService } from '../services/employeeService.js'
+import { attendanceService } from '../services/attendanceService.js'
+import { leaveService } from '../services/leaveService.js'
+import { medicalClaimService } from '../services/medicalClaimService.js'
+import { payrollService } from '../services/payrollService.js'
 import TicketDetailModal from '../components/TicketDetailModal.vue'
 import CameraCheckInModal from '../components/CameraCheckInModal.vue'
 import TeamLeadDashboard from '../components/TeamLeadDashboard.vue'
@@ -16,7 +20,11 @@ import HrDashboard from '../components/HrDashboard.vue'
 import SuperAdminDashboard from '../components/SuperAdminDashboard.vue'
 
 const router = useRouter()
-const { state, can, setProjects, setTickets, setEmployees } = useStore()
+const {
+  state, can,
+  setProjects, setTickets, setEmployees,
+  setAttendance, setLeaveRequests, setMedicalClaims, setSalarySlipRequests
+} = useStore()
 
 /**
  * The dashboard is a common entry point — reached by redirect after login and
@@ -31,14 +39,27 @@ async function loadDashboardData() {
   const results = await Promise.allSettled([
     projectService.list(),
     ticketService.list(),
-    employeeService.list()
+    employeeService.list(),
+    // The role dashboards read all four of these — attendance for the
+    // check-in widget and the absentee lists, leave and claims for the
+    // approval queues, payroll for the "due" tile. They used to render from
+    // seeded mock data, so the pages looked populated while fetching none of
+    // it: the API could fail completely and nobody would notice.
+    attendanceService.list(),
+    leaveService.list(),
+    medicalClaimService.list(),
+    payrollService.requests()
   ])
 
-  const [projects, tickets, employees] = results
+  const [projects, tickets, employees, attendance, leave, claims, payroll] = results
 
   if (projects.status === 'fulfilled') setProjects(projects.value)
   if (tickets.status === 'fulfilled') setTickets(tickets.value.data)
   if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+  if (attendance.status === 'fulfilled') setAttendance(attendance.value)
+  if (leave.status === 'fulfilled') setLeaveRequests(leave.value)
+  if (claims.status === 'fulfilled') setMedicalClaims(claims.value)
+  if (payroll.status === 'fulfilled') setSalarySlipRequests(payroll.value)
 }
 
 onMounted(loadDashboardData)

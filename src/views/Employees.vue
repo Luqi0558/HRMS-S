@@ -1,12 +1,44 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { employeeService } from '../services/employeeService.js'
+import { leaveService } from '../services/leaveService.js'
+import { medicalClaimService } from '../services/medicalClaimService.js'
+import { payrollService } from '../services/payrollService.js'
 
 const route = useRoute()
-const { state, can, logActivity, pushNotification } = useStore()
+const {
+  state, can, logActivity, pushNotification,
+  setEmployees, setLeaveRequests, setMedicalClaims, setSalarySlipRequests
+} = useStore()
+const loadError = ref('')
+
+/**
+ * This page had no loader at all — it rendered whatever another page had put in
+ * the store, or the seeded mock roster. The detail modal reads leave, claims
+ * and payslips too, so all four are fetched here.
+ *
+ * Independent and non-fatal: the modal degrades to an empty panel for a role
+ * that cannot read payroll, rather than failing the whole page.
+ */
+onMounted(async () => {
+  const [employees, leave, claims, payroll] = await Promise.allSettled([
+    employeeService.list(),
+    leaveService.list(),
+    medicalClaimService.list(),
+    payrollService.requests()
+  ])
+
+  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+  else loadError.value = employees.reason?.message || 'Unable to load employees.'
+
+  if (leave.status === 'fulfilled') setLeaveRequests(leave.value)
+  if (claims.status === 'fulfilled') setMedicalClaims(claims.value)
+  if (payroll.status === 'fulfilled') setSalarySlipRequests(payroll.value)
+})
 const showForm = ref(false)
 const showDetails = ref(false)
 const selectedEmployee = ref(null)

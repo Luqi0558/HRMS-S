@@ -37,7 +37,7 @@ async function login() {
 
   try {
     const { user } = await authService.login(email.value.trim(), password.value)
-    setCurrentUser(user.id, user.name, user.role, user.email)
+    setCurrentUser(user.id, user.name, user.role, user.email, user.employeeId)
 
     // Load the authoritative grid before navigating: the destination route's
     // guard calls can(), and doing this after the redirect would evaluate it

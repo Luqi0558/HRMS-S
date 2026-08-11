@@ -2,6 +2,7 @@
 
 namespace App\Exceptions;
 
+use App\Exceptions\Domain\DomainException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Http\Request;
@@ -27,7 +28,11 @@ class Handler extends ExceptionHandler
      * @var array<int, class-string<\Throwable>>
      */
     protected $dontReport = [
-        //
+        // Domain exceptions are expected outcomes, not faults: an expired
+        // invitation link or a wrong password is the system working. Each one
+        // renders its own 4xx response, so logging them at ERROR fills the log
+        // with normal traffic and buries the failures worth reading.
+        DomainException::class,
     ];
 
     /**
@@ -46,8 +51,15 @@ class Handler extends ExceptionHandler
      */
     public function register(): void
     {
-        $this->reportable(function (Throwable $e) {
-            //
+        /*
+         * Domain exceptions are expected outcomes, not faults: an expired
+         * invitation link or a wrong password is the system working as
+         * designed, and each renders its own 4xx response. Returning false
+         * stops the default logging — without this the log fills with normal
+         * traffic and buries the failures actually worth reading.
+         */
+        $this->reportable(function (DomainException $e) {
+            return false;
         });
 
         /*

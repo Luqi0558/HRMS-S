@@ -17,6 +17,7 @@ class MedicalClaimService
         private readonly PermissionService $permissions,
         private readonly ScopeResolver $scopes,
         private readonly SettingsService $settings,
+        private readonly MessageService $messages,
     ) {
     }
 
@@ -66,7 +67,7 @@ class MedicalClaimService
 
         $this->assertWithinAnnualLimit($employee, $amount, $claims);
 
-        return MedicalClaim::create([
+        $claim = MedicalClaim::create([
             'employee_id' => $employee->id,
             'type' => $attributes['type'],
             'amount' => $amount,
@@ -75,6 +76,18 @@ class MedicalClaimService
             'receipt_path' => $attributes['receiptPath'] ?? null,
             'status' => 'pending',
         ]);
+
+        $this->messages->notify(
+            $this->messages->employeeIdsForRoles(['hr', 'super_admin']),
+            [
+                'title' => 'Medical claim submitted',
+                'body' => sprintf('%s claimed %s for %s.', $employee->name, number_format($amount), $claim->type),
+                'type' => 'medical',
+                'routeName' => 'medical-claims',
+            ],
+        );
+
+        return $claim;
     }
 
     public function decide(
@@ -123,6 +136,19 @@ class MedicalClaimService
             'reviewed_by' => $reviewer?->id,
             'reviewed_at' => now(),
             'review_comment' => $comment,
+        ]);
+
+        // A partial approval is the case worth spelling out — being told
+        // "approved" when less than the claim was authorised is misleading.
+        $settled = $authorised !== null && $authorised < (float) $claim->amount;
+
+        $this->messages->notify([$claim->employee_id], [
+            'title' => $decision === 'approved' ? 'Medical claim approved' : 'Medical claim rejected',
+            'body' => $settled
+                ? sprintf('%s of your %s claim was approved.', number_format($authorised), number_format((float) $claim->amount))
+                : sprintf('Your %s claim was %s.', $claim->type, $decision),
+            'type' => 'medical',
+            'routeName' => 'medical-claims',
         ]);
 
         return $claim->refresh()->load('reviewer:id,name');

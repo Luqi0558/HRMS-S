@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import TicketTimer from './TicketTimer.vue'
 import { useStore } from '../store/index.js'
 // A static label/colour map, not data.
-import { statusMeta } from '../data/mock.js'
+import { statusMeta } from '../config/ticketStatus.js'
 import { ticketService } from '../services/ticketService.js'
 import { ApiError } from '../services/apiClient.js'
 

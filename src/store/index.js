@@ -1,12 +1,11 @@
 import { reactive, computed } from 'vue'
-import { employees, attendance, projects, tickets, medicalClaims, leaveRequests, salarySlipRequests } from '../data/mock.js'
 
 const currentUserStorageKey = 'orbit-current-user'
 
 // A signed-out session. Previously this defaulted to a hardcoded manager
 // ("Zara Nadeem"), which meant anyone opening the app was silently logged in —
 // the router guard checked permissions but never authentication.
-const guestUser = { id: null, name: '', role: 'guest', email: '' }
+const guestUser = { id: null, name: '', role: 'guest', email: '', employeeId: null }
 
 function loadStoredCurrentUser() {
   if (typeof window === 'undefined') return { ...guestUser }
@@ -19,7 +18,10 @@ function loadStoredCurrentUser() {
       id: parsed.id,
       name: parsed.name,
       role: parsed.role,
-      email: parsed.email || ''
+      email: parsed.email || '',
+      // Restored so a page refresh resubscribes to the right channel without
+      // waiting for another login.
+      employeeId: parsed.employeeId ?? null
     }
   } catch {
     return { ...guestUser }
@@ -31,19 +33,30 @@ function persistCurrentUser(user) {
   window.localStorage.setItem(currentUserStorageKey, JSON.stringify(user))
 }
 
-// Single reactive store, no backend yet. Swap the mutating functions below
-// for Laravel API calls (axios) once the backend is ready — the shape of
-// state.tickets / state.attendance is designed to map 1:1 onto typical
-// REST responses.
+// Single reactive store, backed by the Laravel API.
+//
+// Every collection below starts EMPTY and is filled by the view that needs it,
+// through a service in src/services. Nothing is seeded with sample data: mock
+// rows make a failed request look like a working page, and that failure is
+// silent and plausible — the worst kind. If a list is empty here, either the
+// fetch has not landed yet or it genuinely returned nothing.
+//
+// The exceptions are the modules whose APIs do not exist yet (assets,
+// announcements, policies) and rolePermissions, whose seed is a deliberate
+// fallback documented at its declaration.
 const state = reactive({
   currentUser: loadStoredCurrentUser(),
-  employees,
-  attendance,
-  projects,
-  tickets,
-  medicalClaims,
-  leaveRequests,
-  salarySlipRequests,
+  // All API-backed. Seeded EMPTY, not with sample rows: mock data makes a
+  // failed request look like a working page, which is the worst kind of
+  // failure — silent and plausible. Every view that reads these now fetches
+  // them on mount.
+  employees: [],
+  attendance: [],
+  projects: [],
+  tickets: [],
+  medicalClaims: [],
+  leaveRequests: [],
+  salarySlipRequests: [],
   assets: [
     {
       id: 1,
@@ -83,72 +96,31 @@ const state = reactive({
     }
   ],
   // Petty cash: office running costs, distinct from Finance (client revenue).
-  // Float in, expenses out, and a reconciliation that compares the book balance
-  // against physically counted cash.
-  pettyCashTopUps: [
-    {
-      id: 1,
-      amount: 50000,
-      date: '2026-07-01',
-      reference: 'Opening float',
-      note: 'Initial petty cash float for July.',
-      requestedById: 6,
-      status: 'approved',
-      approvedById: 99,
-      approvedAt: '2026-07-01T09:00:00'
-    },
-    {
-      id: 2,
-      amount: 20000,
-      date: '2026-07-21',
-      reference: 'Mid-month top-up',
-      note: 'Replenishment after courier and refreshment spend.',
-      requestedById: 6,
-      status: 'pending',
-      approvedById: null,
-      approvedAt: null
-    }
-  ],
-  pettyCashExpenses: [
-    {
-      id: 1, amount: 2400, date: '2026-07-03', category: 'Office supplies',
-      payee: 'Metro Stationers', description: 'Printer paper and markers.',
-      receiptName: 'metro-3jul.jpg', loggedById: 6,
-      status: 'recorded', approvedById: null, approvedAt: null
-    },
-    {
-      id: 2, amount: 1850, date: '2026-07-08', category: 'Refreshments',
-      payee: 'Cafe Junction', description: 'Team lunch during release day.',
-      receiptName: '', loggedById: 6,
-      status: 'recorded', approvedById: null, approvedAt: null
-    },
-    {
-      id: 3, amount: 12500, date: '2026-07-17', category: 'Repairs',
-      payee: 'CoolAir Services', description: 'Office AC servicing.',
-      receiptName: 'coolair-inv.pdf', loggedById: 6,
-      status: 'pending', approvedById: null, approvedAt: null
-    },
-    {
-      id: 4, amount: 900, date: '2026-07-24', category: 'Courier',
-      payee: 'TCS Express', description: 'Contract documents to client.',
-      receiptName: '', loggedById: 6,
-      status: 'recorded', approvedById: null, approvedAt: null
-    }
-  ],
+  // Float in, expenses out, and a reconciliation that compares the book
+  // balance against physically counted cash. All API-backed, so seeded empty.
+  pettyCashTopUps: [],
+  pettyCashExpenses: [],
+  // Unread counts as the server reports them, so the badge does not depend on
+  // the client having loaded every row it is counting.
+  unreadCounts: { messages: 0, notifications: 0 },
+  // The POLL's health: 'idle' | 'live' | 'reconnecting'. This is the one that
+  // matters — the poll is what guarantees delivery, so this is what the UI
+  // warns on. Surfaced so a stalled feed is visible rather than looking like
+  // an absence of news.
+  syncStatus: 'idle',
+  // The Pusher socket's health: 'idle' | 'live' | 'polling'. Only an
+  // accelerator, so 'polling' is not a problem — it just means messages take
+  // up to three seconds instead of arriving instantly.
+  socketStatus: 'idle',
+  // Presence has two independent sources and they must not be conflated.
+  // `online` is who has a browser connected, from the Pusher presence channel.
+  // `chosen` is what people have declared — busy, away — which persists across
+  // sessions. Someone can be online AND busy; those are different facts.
+  presence: { online: {}, chosen: {} },
   // The API's view of the tin — float, spend, balance and the low flag. Null
   // until loaded, which is when the local helpers below are used instead.
   pettyCashSummary: null,
-  pettyCashReconciliations: [
-    {
-      id: 1,
-      date: '2026-06-30',
-      countedAmount: 4500,
-      bookBalance: 4500,
-      variance: 0,
-      note: 'June close — cash matched.',
-      byId: 6
-    }
-  ],
+  pettyCashReconciliations: [],
   announcements: [
     {
       id: 1,
@@ -191,32 +163,11 @@ const state = reactive({
       acknowledgmentRequired: true
     }
   ],
-  messages: [
-    {
-      id: 1,
-      senderId: 3,
-      senderName: 'Zara Nadeem',
-      senderRole: 'manager',
-      recipientIds: [1],
-      audience: 'Direct message',
-      subject: 'Today priorities',
-      body: 'Please focus on the WebAuthn check-in flow first, then update the ticket before EOD.',
-      createdAt: new Date().toISOString(),
-      readBy: []
-    },
-    {
-      id: 2,
-      senderId: 99,
-      senderName: 'Admin User',
-      senderRole: 'super_admin',
-      recipientIds: [1, 2, 3, 4, 6],
-      audience: 'All employees',
-      subject: 'Friday town hall',
-      body: 'We will have a short company town hall this Friday to review delivery updates and celebrate team milestones.',
-      createdAt: new Date().toISOString(),
-      readBy: [3]
-    }
-  ],
+  // Loaded from the API. Seeded empty rather than with sample conversations:
+  // mock messages would render for the moment before the fetch lands, showing
+  // people a conversation that does not exist and then replacing it.
+  messages: [],
+
   // Single source of truth for role permissions. `can(module, action, resource)`
   // reads this table — editing a row in Access Control changes real behaviour.
   //
@@ -963,13 +914,30 @@ function pushNotification({ title, message, type = 'system', roles = [], userIds
   })
 }
 
+/**
+ * Marks a notification read.
+ *
+ * Updates locally first so the badge responds immediately, then persists. A
+ * server-backed row is told to the API; a seeded one has no server record to
+ * update, which is why the call is conditional rather than unconditional.
+ */
 function markNotificationRead(notificationId) {
   const notification = state.notifications.find(item => item.id === notificationId)
   if (!notification) return
   if (!notification.readBy) notification.readBy = []
-  if (!notification.readBy.includes(state.currentUser.id)) {
-    notification.readBy.push(state.currentUser.id)
-  }
+  if (notification.readBy.includes(state.currentUser.id)) return
+
+  notification.readBy.push(state.currentUser.id)
+
+  if (!notification.fromServer) return
+
+  if (state.unreadCounts.notifications > 0) state.unreadCounts.notifications -= 1
+
+  // Fire and forget: the badge is already right, and a failed write is
+  // corrected by the next poll rather than needing to block the click.
+  import('../services/messageService.js')
+    .then(({ messageService }) => messageService.markNotificationRead(notificationId))
+    .catch(() => {})
 }
 
 function markAllNotificationsRead() {
@@ -991,8 +959,13 @@ function logActivity({ module, action, details, targetId = null, targetType = ''
   })
 }
 
-function setCurrentUser(id, name, role, email = '') {
-  state.currentUser = { id, name, role, email }
+/**
+ * @param {number} [employeeId] the employment record's id, which is what the
+ *   realtime channel is keyed on — a user id would subscribe to the wrong
+ *   channel and be rejected by channel authorisation.
+ */
+function setCurrentUser(id, name, role, email = '', employeeId = null) {
+  state.currentUser = { id, name, role, email, employeeId }
   persistCurrentUser(state.currentUser)
 }
 
@@ -1246,6 +1219,246 @@ function mapPettyCashRow(row) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Live feed
+//
+// syncService polls /api/sync and hands the results here. Both collections are
+// merged by id rather than replaced: a poll returns only what is new, so
+// overwriting would discard everything older than the last few seconds.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps an API notification onto the shape the bell already reads.
+ *
+ * The store's rows carry `message` and a `readBy` array (a client-side idea
+ * of who has read a shared row); the API tracks read state per recipient
+ * because a notification belongs to exactly one person. Translating here
+ * keeps every consumer of unreadNotifications() working untouched.
+ */
+function mapNotification(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    message: row.body,
+    type: row.type,
+    route: row.route,
+    createdAt: row.createdAt,
+    // Already read on the server means read for this user.
+    readBy: row.isRead ? [state.currentUser.id] : [],
+    recipients: { roles: [], userIds: [state.currentUser.id] },
+    fromServer: true
+  }
+}
+
+// Broadcasts are stored by audience id so the API can resolve the group
+// itself; these are the labels the UI shows for them.
+const AUDIENCE_LABELS = {
+  all_company: 'All company',
+  employees: 'All employees',
+  managers: 'All managers',
+  hr: 'HR team'
+}
+
+function mapMessage(row) {
+  return {
+    id: row.id,
+    senderId: row.senderId,
+    senderName: row.senderName,
+    audience: AUDIENCE_LABELS[row.audience] || row.audience,
+    subject: row.subject,
+    body: row.body,
+    createdAt: row.createdAt,
+    readBy: row.isRead ? [state.currentUser.id] : [],
+    // The real delivery list: the view groups a conversation by who is on the
+    // other side, and tells a broadcast from a direct message by the count.
+    // Falling back to the current user would make every message look like a
+    // one-to-one with themselves.
+    recipientIds: row.recipientIds ?? [state.currentUser.id],
+    // Present only on messages you sent: how many recipients have read it.
+    // Drives the delivery ticks.
+    delivery: row.delivery ?? null,
+    // 'sent' once the API has it. An optimistic row starts 'sending' and
+    // becomes 'failed' if the request does not land.
+    status: 'sent',
+    fromServer: true
+  }
+}
+
+/** Merges newly polled rows in, newest first, without duplicating. */
+function mergeById(collection, rows) {
+  rows.forEach(row => {
+    const index = collection.findIndex(item => item.id === row.id && item.fromServer)
+    if (index === -1) collection.unshift(row)
+    else collection[index] = { ...collection[index], ...row }
+  })
+}
+
+/**
+ * Adds a message to the thread before the API has confirmed it.
+ *
+ * Chat has to feel immediate: waiting for a round trip before showing what
+ * someone just typed is the difference between an app that feels instant and
+ * one that feels sluggish, even at 150ms. The row carries a temporary id and
+ * status 'sending' until confirmOptimisticMessage() swaps in the real one.
+ */
+function addOptimisticMessage({ tempId, body, subject, audience, recipientIds }) {
+  state.messages.unshift({
+    id: tempId,
+    // The exact payload, kept so a retry replays what was actually sent rather
+    // than rebuilding it from UI state that has since moved on.
+    payload: { body, subject, audience, recipientIds },
+    senderId: state.currentUser.id,
+    senderName: state.currentUser.name,
+    senderRole: state.currentUser.role,
+    audience,
+    subject,
+    body,
+    createdAt: new Date().toISOString(),
+    readBy: [state.currentUser.id],
+    recipientIds,
+    delivery: null,
+    status: 'sending',
+    fromServer: false
+  })
+}
+
+/** Replaces a pending row with what the API actually stored. */
+function confirmOptimisticMessage(tempId, sent) {
+  const index = state.messages.findIndex(item => item.id === tempId)
+  if (index === -1) return
+
+  state.messages[index] = {
+    ...state.messages[index],
+    id: sent.id,
+    createdAt: sent.createdAt,
+    recipientIds: sent.recipientIds ?? state.messages[index].recipientIds,
+    delivery: { total: (sent.recipientIds ?? []).length, read: 0 },
+    status: 'sent',
+    fromServer: true
+  }
+}
+
+/**
+ * Marks a pending row failed, keeping the text so it can be retried rather
+ * than silently vanishing — losing what someone typed is worse than showing
+ * that it did not send.
+ */
+function failOptimisticMessage(tempId) {
+  const message = state.messages.find(item => item.id === tempId)
+  if (message) message.status = 'failed'
+}
+
+function removeMessage(id) {
+  const index = state.messages.findIndex(item => item.id === id)
+  if (index !== -1) state.messages.splice(index, 1)
+}
+
+function applySync({ messages, notifications, receipts, unread }) {
+  if (messages?.length) mergeById(state.messages, messages.map(mapMessage))
+  if (notifications?.length) mergeById(state.notifications, notifications.map(mapNotification))
+
+  // Delivery counts for messages this user sent, so a single tick becomes a
+  // double one when the other side opens the thread — without a reload.
+  receipts?.forEach(receipt => {
+    const message = state.messages.find(item => item.id === receipt.id)
+    if (message) message.delivery = { total: receipt.total, read: receipt.read }
+  })
+
+  if (unread) state.unreadCounts = unread
+}
+
+/**
+ * Applies a presence event from the socket.
+ *
+ * 'here' is the full roster on joining and replaces what we had; the others
+ * are deltas. A member's entry carries their chosen status too, so joining
+ * populates both halves at once.
+ */
+function applyPresence(event) {
+  if (!event) return
+
+  if (event.type === 'here') {
+    const online = {}
+    ;(event.members || []).forEach(member => {
+      online[member.id] = true
+      if (member.status) state.presence.chosen[member.id] = { status: member.status, message: member.message }
+    })
+    state.presence.online = online
+    return
+  }
+
+  if (event.type === 'joined' && event.member) {
+    state.presence.online[event.member.id] = true
+    if (event.member.status) {
+      state.presence.chosen[event.member.id] = { status: event.member.status, message: event.member.message }
+    }
+    return
+  }
+
+  if (event.type === 'left' && event.member) {
+    delete state.presence.online[event.member.id]
+    return
+  }
+
+  // A status change from someone who stayed connected.
+  if (event.type === 'changed' && event.member) {
+    state.presence.chosen[event.member.id] = {
+      status: event.member.status,
+      message: event.member.message
+    }
+  }
+}
+
+/** The chosen statuses fetched on load, for people who are currently offline. */
+function setChosenPresence(rows) {
+  const chosen = { ...state.presence.chosen }
+  ;(rows || []).forEach(row => {
+    chosen[row.id] = { status: row.status, message: row.message }
+  })
+  state.presence.chosen = chosen
+}
+
+/**
+ * One person's effective status: active, away, or offline.
+ *
+ * Away wins over the connection — someone who marked themselves away is away
+ * whether or not the browser is still open, which is the whole point of
+ * saying so. Otherwise presence follows the socket.
+ */
+function presenceFor(employeeId) {
+  const chosen = state.presence.chosen[employeeId]
+  const isOnline = Boolean(state.presence.online[employeeId])
+
+  if (chosen?.status === 'away') {
+    return { status: 'away', message: chosen.message }
+  }
+
+  return {
+    status: isOnline ? 'active' : 'offline',
+    message: chosen?.message ?? null
+  }
+}
+
+/** Adds a page of older history without disturbing what is already loaded. */
+function prependMessages(rows) {
+  const existing = new Set(state.messages.map(m => m.id))
+  const older = (rows || []).map(mapMessage).filter(m => !existing.has(m.id))
+  state.messages.push(...older)
+}
+
+function setMessages(rows) {
+  state.messages = (rows || []).map(mapMessage)
+}
+
+/** Marks a server-backed row read locally, so the badge updates at once. */
+function markMessageReadLocally(id) {
+  const message = state.messages.find(item => item.id === id && item.fromServer)
+  if (message && !message.readBy.includes(state.currentUser.id)) {
+    message.readBy.push(state.currentUser.id)
+    if (state.unreadCounts.messages > 0) state.unreadCounts.messages -= 1
+  }
+}
+
 /** Replaces one project in place, e.g. after a member sync. */
 function upsertProject(project) {
   const mapped = mapProject(project)
@@ -1265,8 +1478,24 @@ function upsertTicket(ticket) {
   else state.tickets[index] = { ...state.tickets[index], ...mapped }
 }
 
+/**
+ * Ends the session and clears everything that belonged to it.
+ *
+ * Not just the user: the message history, notifications, unread counts, sync
+ * cursors and presence all have to go. Clearing only currentUser left the next
+ * person to sign in on this browser looking at the previous user's
+ * conversations — the cursors were already past those ids, so nothing would
+ * ever correct it.
+ */
 function clearCurrentUser() {
   state.currentUser = { ...guestUser }
+  state.messages = []
+  state.notifications = []
+  state.unreadCounts = { messages: 0, notifications: 0 }
+  state.presence = { online: {}, chosen: {} }
+  state.syncStatus = 'idle'
+  state.socketStatus = 'idle'
+
   try {
     window.localStorage.removeItem(currentUserStorageKey)
   } catch {
@@ -1350,6 +1579,17 @@ export function useStore() {
     setSalarySlipRequests,
     upsertSalarySlipRequest,
     setPettyCash,
+    applySync,
+    setMessages,
+    prependMessages,
+    applyPresence,
+    setChosenPresence,
+    presenceFor,
+    addOptimisticMessage,
+    confirmOptimisticMessage,
+    failOptimisticMessage,
+    removeMessage,
+    markMessageReadLocally,
     setServerSettings,
     upsertProject,
     upsertTicket,
