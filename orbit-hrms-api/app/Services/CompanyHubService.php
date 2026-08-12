@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Jobs\AnnouncePostToTeams;
 use App\Models\Announcement;
 use App\Models\Employee;
 use App\Models\Policy;
@@ -77,6 +78,11 @@ class CompanyHubService
             'targetId' => $announcement->id,
             'targetType' => 'announcement',
         ]);
+
+        // Mirrored into the Teams announcements channel, when one is configured.
+        // Dispatched last so a Teams problem cannot prevent the announcement
+        // being recorded or the in-app notifications going out.
+        AnnouncePostToTeams::dispatch($announcement->id);
 
         return $announcement->load('author:id,name');
     }

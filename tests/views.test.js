@@ -116,7 +116,7 @@ describe('every view renders', () => {
 describe('views render for every role', () => {
   // A view can be correct for super admin and broken for an employee: the two
   // take different template branches, and employees are the majority of users.
-  const ROLES = ['employee', 'manager', 'team_lead', 'hr']
+  const ROLES = ['employee', 'manager', 'team_lead', 'hr', 'qa', 'intern', 'super_admin']
 
   // The pages most roles actually open day to day.
   const EVERYDAY = ['Dashboard', 'Messages', 'LeaveRequests', 'MedicalClaims', 'Profile', 'Attendance']

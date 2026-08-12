@@ -14,6 +14,8 @@ import { payrollService } from '../services/payrollService.js'
 import TicketDetailModal from '../components/TicketDetailModal.vue'
 import CameraCheckInModal from '../components/CameraCheckInModal.vue'
 import TeamLeadDashboard from '../components/TeamLeadDashboard.vue'
+import QaDashboard from '../components/QaDashboard.vue'
+import InternDashboard from '../components/InternDashboard.vue'
 import EmployeeDashboard from '../components/EmployeeDashboard.vue'
 import ManagerDashboard from '../components/ManagerDashboard.vue'
 import HrDashboard from '../components/HrDashboard.vue'
@@ -81,6 +83,8 @@ const isSuperAdmin = computed(() => state.currentUser.role === 'super_admin')
 const isManager = computed(() => state.currentUser.role === 'manager')
 const isEmployee = computed(() => state.currentUser.role === 'employee')
 const isHR = computed(() => state.currentUser.role === 'hr')
+const isQa = computed(() => state.currentUser.role === 'qa')
+const isIntern = computed(() => state.currentUser.role === 'intern')
 const dashboardTicket = ref(null)
 const dashboardTicketDraft = ref(null)
 const dashboardNewComment = ref('')
@@ -138,6 +142,13 @@ function closeDashboardTicket() {
        full finance/company dashboard to ANY role that was not employee,
        manager, or HR. -->
   <SuperAdminDashboard v-else-if="isSuperAdmin" />
+
+  <!-- QA owns the review column; the intern page is their own work plus who is
+       responsible for them. Both emit open-ticket like the others so the shared
+       modal below serves every role. -->
+  <QaDashboard v-else-if="isQa" @open-ticket="openDashboardTicket" />
+
+  <InternDashboard v-else-if="isIntern" @open-ticket="openDashboardTicket" />
 
   <!-- Any role outside the four built-in dashboards (e.g. a custom role added
        via Access Control) gets a neutral overview instead of falling through

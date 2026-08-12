@@ -108,6 +108,103 @@ class ProjectService
      * sign-off, and it is what closes the module to new tickets. Mirrors
      * can('Projects', 'approve', project) in the frontend.
      */
+    /**
+     * Creates a module inside a project.
+     *
+     * There was no endpoint for this at all: the client built a module with
+     * `id: Date.now()`, pushed it into local state and logged an activity, so
+     * every module anyone "created" disappeared on refresh — for super admins
+     * as much as for anybody else.
+     */
+    public function createModule(User $user, string $projectSlug, array $attributes): ProjectModule
+    {
+        $project = $this->projects->findBySlug($projectSlug);
+
+        if (! $project) {
+            throw new NotFoundHttpException('Project not found.');
+        }
+
+        $scope = $this->requireScope($user, 'create');
+        $this->assertWithinScope($user, $project, $scope);
+
+        return $this->projects->createModule([
+            'project_id' => $project->id,
+            'name' => $attributes['name'],
+            'slug' => $this->uniqueModuleSlug($project, $attributes['name']),
+            'description' => $attributes['description'] ?? null,
+            // Defaults to the creator, so a lead setting up training work is
+            // the lead of it and their squad resolves without a second step.
+            'lead_id' => $attributes['leadId'] ?? $this->employeeFor($user)?->id,
+            'status' => 'active',
+            'budget' => $attributes['budget'] ?? 0,
+            'commission_type' => $attributes['commissionType'] ?? 'percent',
+            'commission_value' => $attributes['commissionValue'] ?? 0,
+            'commission_status' => 'pending',
+        ]);
+    }
+
+    public function updateModule(User $user, int $moduleId, array $attributes): ProjectModule
+    {
+        $module = $this->projects->findModule($moduleId);
+
+        if (! $module) {
+            throw new NotFoundHttpException('Module not found.');
+        }
+
+        $scope = $this->requireScope($user, 'create');
+        $this->assertWithinScope($user, $module->project, $scope);
+
+        $payload = array_filter([
+            'name' => $attributes['name'] ?? null,
+            'description' => $attributes['description'] ?? null,
+            'lead_id' => $attributes['leadId'] ?? null,
+            'budget' => $attributes['budget'] ?? null,
+            'commission_type' => $attributes['commissionType'] ?? null,
+            'commission_value' => $attributes['commissionValue'] ?? null,
+        ], fn ($value) => $value !== null);
+
+        // The slug follows a rename, since it is what the board's URL uses.
+        if (filled($attributes['name'] ?? null) && $attributes['name'] !== $module->name) {
+            $payload['slug'] = $this->uniqueModuleSlug($module->project, $attributes['name'], $module->id);
+        }
+
+        return $this->projects->updateModule($module, $payload);
+    }
+
+    /**
+     * Replaces a module's member list.
+     */
+    public function syncModuleMembers(User $user, int $moduleId, array $employeeIds): ProjectModule
+    {
+        $module = $this->projects->findModule($moduleId);
+
+        if (! $module) {
+            throw new NotFoundHttpException('Module not found.');
+        }
+
+        $scope = $this->requireScope($user, 'create');
+        $this->assertWithinScope($user, $module->project, $scope);
+
+        return $this->projects->syncModuleMembers($module, array_map('intval', $employeeIds));
+    }
+
+    /**
+     * Unique within its project, not globally: two projects may each have an
+     * "Attendance System" and the URL carries the project slug as well.
+     */
+    private function uniqueModuleSlug(Project $project, string $name, ?int $ignoreId = null): string
+    {
+        $base = Str::slug($name) ?: 'module';
+        $slug = $base;
+        $suffix = 2;
+
+        while ($this->projects->moduleSlugExists($project->id, $slug, $ignoreId)) {
+            $slug = $base.'-'.$suffix++;
+        }
+
+        return $slug;
+    }
+
     public function setModuleDelivered(User $user, int $moduleId, bool $delivered): ProjectModule
     {
         $module = $this->projects->findModule($moduleId);

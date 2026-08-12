@@ -1,13 +1,36 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
+import { profileService } from '../services/profileService.js'
 import { employeeService } from '../services/employeeService.js'
+import { ApiError } from '../services/apiClient.js'
 import { useStore } from '../store/index.js'
 
-const { state, roleLabel: formatRoleLabel, logActivity, setCurrentUser,
-  setEmployees
-} = useStore()
+const { state, roleLabel: formatRoleLabel, logActivity, setCurrentUser, can } = useStore()
 
-const employee = computed(() => state.employees.find(item => item.id === state.currentUser.id))
+/**
+ * Employment details — department, joining date, designation, employment type,
+ * probation status — belong to whoever administers staff records, not to the
+ * person the record describes.
+ *
+ * So they follow the Employees permission rather than being locked outright:
+ * HR and super admins can already change these for anybody through the
+ * Employees screen, and greying them out here only on their own profile would
+ * be an inconsistency, not a safeguard. A manager (view-only) and an ordinary
+ * employee (no access) still get them read-only.
+ *
+ * Email stays locked for everyone regardless — it is the login identity, and
+ * UpdateEmployeeRequest deliberately refuses it on the HR route too.
+ */
+const canEditEmployment = computed(() => can('Employees', 'create'))
+
+// Fetched from /profile, which every role can reach. The previous source was
+// state.employees, populated from /employees — a route an ordinary employee is
+// forbidden from calling, so their own onboarding details were always blank
+// here. It also matched on `item.id === state.currentUser.id`, comparing an
+// employee id against a user id, which only ever agreed by coincidence.
+const ownEmployee = ref(null)
+
+const employee = computed(() => ownEmployee.value)
 const isBlocked = computed(() => employee.value?.status === 'blocked')
 const isDeveloperProfile = computed(() => state.currentUser.role === 'employee')
 const roleLabel = computed(() => formatRoleLabel(state.currentUser.role))
@@ -17,9 +40,13 @@ const personal = computed(() => onboarding.value.personal || {})
 const technical = computed(() => onboarding.value.technical || {})
 const documents = computed(() => onboarding.value.documents || {})
 
-const profileForm = ref({
+// Built as a function rather than inline, because the record arrives from the
+// API after setup has already run. Without a rebuild the form would stay bound
+// to the empty values it was constructed with, and saving would post blanks
+// over whatever the employee actually had.
+const buildForm = () => ({
   name: state.currentUser.name || employee.value?.name || '',
-  email: employee.value?.email || state.currentUser.email || 'admin@company.com',
+  email: employee.value?.email || state.currentUser.email || '',
   department: employee.value?.department || '',
   birthday: employee.value?.birthday || '',
   joiningDate: employee.value?.joiningDate || '',
@@ -49,6 +76,8 @@ const profileForm = ref({
   experienceLetters: documents.value.experienceLetters || null
 })
 
+const profileForm = ref(buildForm())
+
 const securityForm = ref({
   currentPassword: '',
   newPassword: '',
@@ -57,6 +86,7 @@ const securityForm = ref({
 
 const statusMessage = ref('')
 const passwordMessage = ref('')
+const passwordError = ref('')
 const openDropdown = ref(null)
 
 const coreTechnologyOptions = [
@@ -175,96 +205,157 @@ function toggleDropdown(name) {
   openDropdown.value = openDropdown.value === name ? null : name
 }
 
-function ensureOnboarding(targetEmployee) {
-  if (!targetEmployee.onboarding) {
-    targetEmployee.onboarding = {
-      personal: {},
-      technical: {},
-      documents: {}
-    }
-  }
-  if (!targetEmployee.onboarding.personal) targetEmployee.onboarding.personal = {}
-  if (!targetEmployee.onboarding.technical) targetEmployee.onboarding.technical = {}
-  if (!targetEmployee.onboarding.documents) targetEmployee.onboarding.documents = {}
-  return targetEmployee.onboarding
-}
+const isSaving = ref(false)
+const saveError = ref('')
 
-function saveProfile() {
-  if (isBlocked.value) return
+/**
+ * This used to mutate the store and announce success without contacting the
+ * server at all, so every edit was lost on the next refresh while the page
+ * insisted it had saved.
+ *
+ * Only self-editable fields are sent. Department, designation, joining date,
+ * employment type, probation status and email are HR's to set and are rejected
+ * by the API regardless — they are rendered read-only above rather than being
+ * posted and silently ignored.
+ */
+async function saveProfile() {
+  if (isBlocked.value || isSaving.value) return
+
   const nextName = profileForm.value.name.trim()
-  const nextEmail = profileForm.value.email.trim()
-  if (!nextName || !nextEmail) return
-
-  setCurrentUser(state.currentUser.id, nextName, state.currentUser.role, nextEmail)
-
-  if (employee.value) {
-    employee.value.name = nextName
-    employee.value.email = nextEmail
-    employee.value.department = profileForm.value.department
-    employee.value.birthday = profileForm.value.birthday
-    employee.value.joiningDate = profileForm.value.joiningDate
-
-    const nextOnboarding = ensureOnboarding(employee.value)
-    nextOnboarding.personal = {
-      phone: profileForm.value.phone,
-      cnic: profileForm.value.cnic,
-      address: profileForm.value.address,
-      emergencyContact: profileForm.value.emergencyContact,
-      bankAccount: profileForm.value.bankAccount,
-      taxNumber: profileForm.value.taxNumber
-    }
-    nextOnboarding.technical = {
-      designation: profileForm.value.designation,
-      employmentType: profileForm.value.employmentType,
-      probationStatus: profileForm.value.probationStatus,
-      primaryStack: profileForm.value.primaryStack,
-      stacks: [...profileForm.value.stacks],
-      experienceYears: profileForm.value.experienceYears,
-      skills: [...profileForm.value.skills],
-      skillLevels: { ...profileForm.value.skillLevels },
-      currentlyLearning: [...profileForm.value.currentlyLearning],
-      githubUrl: profileForm.value.githubUrl,
-      portfolioUrl: profileForm.value.portfolioUrl,
-      linkedinUrl: profileForm.value.linkedinUrl
-    }
-    nextOnboarding.documents = {
-      ...nextOnboarding.documents,
-      photo: profileForm.value.photo,
-      cv: profileForm.value.cv,
-      offerLetter: profileForm.value.offerLetter,
-      contract: profileForm.value.contract,
-      certificates: profileForm.value.certificates,
-      experienceLetters: profileForm.value.experienceLetters
-    }
+  if (!nextName) {
+    saveError.value = 'Name cannot be empty.'
+    return
   }
 
-  logActivity({
-    module: 'profile',
-    action: 'profile updated',
-    details: `${nextName} updated their profile details.`
-  })
-  statusMessage.value = 'Profile updated successfully.'
+  isSaving.value = true
+  saveError.value = ''
+  statusMessage.value = ''
+
+  try {
+    const saved = await profileService.update({
+      name: nextName,
+      birthday: profileForm.value.birthday || null,
+      personal: {
+        phone: profileForm.value.phone,
+        cnic: profileForm.value.cnic,
+        address: profileForm.value.address,
+        emergencyContact: profileForm.value.emergencyContact,
+        bankAccount: profileForm.value.bankAccount,
+        taxNumber: profileForm.value.taxNumber
+      },
+      technical: {
+        primaryStack: profileForm.value.primaryStack,
+        experienceYears: profileForm.value.experienceYears === ''
+          ? null
+          : profileForm.value.experienceYears,
+        stacks: [...profileForm.value.stacks],
+        skills: [...profileForm.value.skills],
+        skillLevels: { ...profileForm.value.skillLevels },
+        currentlyLearning: [...profileForm.value.currentlyLearning],
+        githubUrl: profileForm.value.githubUrl || null,
+        portfolioUrl: profileForm.value.portfolioUrl || null,
+        linkedinUrl: profileForm.value.linkedinUrl || null
+      }
+    })
+
+    // The employment fields live on the employees table and are authorised by
+    // the Employees module, so they go through that endpoint rather than
+    // /profile — which refuses them by design, whoever is asking.
+    const withEmployment = canEditEmployment.value && saved?.id
+      ? await employeeService.update(saved.id, {
+        department: profileForm.value.department || null,
+        joiningDate: profileForm.value.joiningDate || null,
+        designation: profileForm.value.designation || null,
+        employmentType: profileForm.value.employmentType,
+        probationStatus: profileForm.value.probationStatus
+      })
+      : saved
+
+    // Rebuilt from the response rather than from the form, so what is on screen
+    // afterwards is what the server actually stored.
+    ownEmployee.value = withEmployment
+    profileForm.value = buildForm()
+
+    setCurrentUser(
+      state.currentUser.id,
+      saved.name,
+      state.currentUser.role,
+      saved.email ?? state.currentUser.email,
+      // Must be passed through: the parameter defaults to null, so omitting it
+      // would clear the employee identity that "is this ticket mine?" and every
+      // other self-scoped check depends on.
+      state.currentUser.employeeId ?? saved.id ?? null
+    )
+
+    logActivity({
+      module: 'profile',
+      action: 'profile updated',
+      details: `${saved.name} updated their profile details.`
+    })
+    statusMessage.value = 'Profile updated successfully.'
+  } catch (error) {
+    saveError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not save your profile. Please check your connection and try again.'
+  } finally {
+    isSaving.value = false
+  }
 }
 
-function updatePassword() {
-  if (isBlocked.value) return
+const changingPassword = ref(false)
+
+/**
+ * This validated the form, cleared it, and reported "Password updated for this
+ * session" — without ever contacting the server. The wording was an admission:
+ * nothing was persisted, so the next sign-in used the old password.
+ */
+async function updatePassword() {
+  if (isBlocked.value || changingPassword.value) return
   passwordMessage.value = ''
+  passwordError.value = ''
+
+  if (!securityForm.value.currentPassword) {
+    passwordError.value = 'Enter your current password.'
+    return
+  }
   if (!securityForm.value.newPassword || securityForm.value.newPassword.length < 8) {
-    passwordMessage.value = 'New password must be at least 8 characters.'
+    passwordError.value = 'New password must be at least 8 characters.'
     return
   }
   if (securityForm.value.newPassword !== securityForm.value.confirmPassword) {
-    passwordMessage.value = 'New password and confirmation do not match.'
+    passwordError.value = 'New password and confirmation do not match.'
     return
   }
+
+  changingPassword.value = true
+
+  try {
+    passwordMessage.value = await profileService.changePassword({
+      currentPassword: securityForm.value.currentPassword,
+      newPassword: securityForm.value.newPassword
+    })
+  } catch (error) {
+    // The API answers 422 with a field message when the current password is
+    // wrong, which is the case worth showing verbatim.
+    passwordError.value = error instanceof ApiError
+      ? (error.errors?.currentPassword?.[0] || error.errors?.newPassword?.[0] || error.message)
+      : 'Could not update your password. Please try again.'
+    return
+  } finally {
+    changingPassword.value = false
+  }
+
+  // Cleared only after it actually saved, so a failed attempt keeps what was
+  // typed rather than making them start again.
   securityForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
-  passwordMessage.value = 'Password updated for this session.'
+
   logActivity({
     module: 'profile',
     action: 'password updated',
     details: `${state.currentUser.name} updated their password.`
   })
 }
+
 /**
  * The page resolves the signed-in user against the roster. Without loading it
  * that lookup fell through to seeded data.
@@ -274,11 +365,15 @@ function updatePassword() {
  */
 onMounted(async () => {
   try {
-    const employees = await employeeService.list()
-    setEmployees(employees.data)
-  } catch {
-    // An employee cannot read the roster; their own record still renders from
-    // the session, which is all this page needs for them.
+    ownEmployee.value = await profileService.get()
+    profileForm.value = buildForm()
+  } catch (error) {
+    // Unlike the old /employees call this is not expected to fail for anyone,
+    // so a failure is worth showing rather than swallowing — otherwise the form
+    // sits there empty looking like a profile with nothing in it.
+    saveError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not load your profile. Please refresh to try again.'
   }
 })
 </script>
@@ -289,8 +384,8 @@ onMounted(async () => {
       <div>
         <div class="text-sm text-slate-600 mt-1">Manage your account, contact, onboarding, and security details.</div>
       </div>
-      <button v-if="!isBlocked" @click="saveProfile" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">
-        Save profile
+      <button v-if="!isBlocked" @click="saveProfile" :disabled="isSaving" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+        {{ isSaving ? 'Saving...' : 'Save profile' }}
       </button>
     </div>
 
@@ -334,6 +429,11 @@ onMounted(async () => {
         <div v-if="statusMessage" class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
           {{ statusMessage }}
         </div>
+        <!-- A failed save used to be indistinguishable from a successful one,
+             because nothing was ever sent. -->
+        <div v-if="saveError" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+          {{ saveError }}
+        </div>
       </div>
 
       <div v-if="isDeveloperProfile" class="grid grid-cols-1 gap-4">
@@ -373,13 +473,13 @@ onMounted(async () => {
             <div>
               <label class="block">
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Office email</span>
-              <input v-model="profileForm.email" type="email" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+              <input v-model="profileForm.email" type="email" class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 cursor-not-allowed" disabled />
               </label>
             </div>
             <div>
               <label class="block">
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Department / designation</span>
-              <select v-model="profileForm.department" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+              <select v-model="profileForm.department" :class="canEditEmployment ? 'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500' : 'w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 cursor-not-allowed'" :disabled="!canEditEmployment">
                 <option value="">Not specified</option>
                 <option v-for="department in state.settings.designations" :key="department" :value="department">{{ department }}</option>
               </select>
@@ -388,7 +488,7 @@ onMounted(async () => {
             <div>
               <label class="block">
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Joining date</span>
-              <input v-model="profileForm.joiningDate" type="date" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+              <input v-model="profileForm.joiningDate" type="date" :class="canEditEmployment ? 'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500' : 'w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 cursor-not-allowed'" :disabled="!canEditEmployment" />
               </label>
             </div>
             <div>
@@ -448,7 +548,7 @@ onMounted(async () => {
             <div>
               <label class="block">
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Current designation</span>
-              <select v-model="profileForm.designation" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+              <select v-model="profileForm.designation" :class="canEditEmployment ? 'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500' : 'w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 cursor-not-allowed'" :disabled="!canEditEmployment">
                 <option value="">Select designation</option>
                 <option v-for="designation in designationOptions" :key="designation" :value="designation">{{ designation }}</option>
               </select>
@@ -478,7 +578,7 @@ onMounted(async () => {
             <div>
               <label class="block">
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Employment type</span>
-              <select v-model="profileForm.employmentType" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+              <select v-model="profileForm.employmentType" :class="canEditEmployment ? 'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500' : 'w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 cursor-not-allowed'" :disabled="!canEditEmployment">
                 <option>Full-time</option>
                 <option>Part-time</option>
                 <option>Contract</option>
@@ -490,7 +590,7 @@ onMounted(async () => {
             <div>
               <label class="block">
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Probation status</span>
-              <select v-model="profileForm.probationStatus" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+              <select v-model="profileForm.probationStatus" :class="canEditEmployment ? 'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500' : 'w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 cursor-not-allowed'" :disabled="!canEditEmployment">
                 <option>Confirmed</option>
                 <option>On probation</option>
                 <option>Extended probation</option>
@@ -678,7 +778,7 @@ onMounted(async () => {
               <div class="text-lg font-bold text-slate-900">Security</div>
               <div class="text-sm text-slate-600 mt-1">Update your password for account access.</div>
             </div>
-            <button @click="updatePassword" class="bg-slate-950 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-black transition-colors">
+            <button @click="updatePassword" :disabled="changingPassword" class="bg-slate-950 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-black transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
               Update password
             </button>
           </div>
@@ -716,7 +816,10 @@ onMounted(async () => {
               </label>
             </div>
           </div>
-          <div v-if="passwordMessage" class="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
+          <div v-if="passwordError" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+            {{ passwordError }}
+          </div>
+          <div v-if="passwordMessage" class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
             {{ passwordMessage }}
           </div>
         </section>

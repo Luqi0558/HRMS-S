@@ -31,7 +31,10 @@ const routes = [
   // module (profile) are open to every signed-in user.
   { path: '/dashboard', name: 'dashboard', component: () => import('../views/Dashboard.vue'), meta: { module: 'Dashboard' } },
   { path: '/employees', name: 'employees', component: () => import('../views/Employees.vue'), meta: { module: 'Employees' } },
-  { path: '/attendance', name: 'attendance', component: () => import('../views/Attendance.vue'), meta: { module: 'Attendance' } },
+  // Oversight page: the company's punch ledger and its export. A manager or
+  // lead may read their own people's attendance through the API, but this page
+  // is not the way they do it.
+  { path: '/attendance', name: 'attendance', component: () => import('../views/Attendance.vue'), meta: { module: 'Attendance', scope: 'all' } },
   // Employees reach this page to file a claim; reviewers to approve one.
   { path: '/medical-claims', name: 'medical-claims', component: () => import('../views/MedicalClaims.vue'), meta: { module: 'Medical Request' } },
   { path: '/leave-requests', name: 'leave-requests', component: () => import('../views/LeaveRequests.vue'), meta: { module: 'Leave Request' } },
@@ -81,7 +84,24 @@ const router = createRouter({
 // editing localStorage. The Laravel API enforces the same rules server-side;
 // this exists so the UI does not show a page the API would refuse.
 router.beforeEach(to => {
-  const { can, isAuthenticated } = useStore()
+  const { can, isAuthenticated, scopeFor, permissionsLoaded } = useStore()
+
+  /** Whether this role holds the module across the whole company. */
+  const hasCompanyWideScope = module => scopeFor(module) === 'all'
+
+  /**
+   * Somewhere they are allowed to be, rather than a dead end.
+   *
+   * Returning `true` when the destination IS the fallback is what stops the
+   * loop: a role that may not open Profile would otherwise be redirected to
+   * Profile, refused again, and redirected again until the router gave up.
+   */
+  const fallbackFrom = to => {
+    if (can('Dashboard', 'view')) {
+      return to.name === 'dashboard' ? true : { name: 'dashboard' }
+    }
+    return to.name === 'profile' ? true : { name: 'profile' }
+  }
 
   // Blank routes (login, accept-invite) are the way IN, so they must stay
   // reachable while signed out — but a signed-in user landing on /login has no
@@ -106,9 +126,27 @@ router.beforeEach(to => {
   const module = to.meta.module
   if (!module) return true
 
+  // Until the API's grid arrives, can() is answering from the seeded fallback.
+  // Refusing a page on a guess is bad enough; the guess also decides where to
+  // send them instead, so a role the seed does not cover was bounced to a page
+  // the same guess refused — a redirect loop the router then aborted.
+  //
+  // Letting navigation through here costs nothing: every endpoint behind the
+  // page enforces the real permissions, and the guard re-runs once the grid
+  // loads.
+  if (!permissionsLoaded.value) return true
+
+  // Some pages are company-wide oversight rather than a view of your own
+  // corner: /attendance is the whole punch ledger with an export. Holding the
+  // module at a narrower scope is enough to read your own team through the
+  // API, but not enough to be handed the register for everybody — so those
+  // routes ask for scope 'all' explicitly.
+  if (to.meta.scope === 'all' && !hasCompanyWideScope(module)) {
+    return fallbackFrom(to)
+  }
+
   if (!can(module, to.meta.action || 'view')) {
-    // Send them somewhere they are allowed to be rather than a dead end.
-    return can('Dashboard', 'view') ? { name: 'dashboard' } : { name: 'profile' }
+    return fallbackFrom(to)
   }
   return true
 })

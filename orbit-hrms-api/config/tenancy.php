@@ -41,7 +41,12 @@ return [
      * Database tenancy config. Used by DatabaseTenancyBootstrapper.
      */
     'database' => [
-        'central_connection' => env('DB_CONNECTION', 'central'),
+        // Falls back to 'mysql' to match config/database.php's own default.
+        // The package ships 'central' here, but nothing defines a connection by
+        // that name in this app — so if DB_CONNECTION were ever missing, the
+        // fallback could only ever raise "Database connection [central] not
+        // configured" rather than degrade to something usable.
+        'central_connection' => env('DB_CONNECTION', 'mysql'),
 
         /**
          * Connection used as a "template" for the dynamically created tenant database connection.

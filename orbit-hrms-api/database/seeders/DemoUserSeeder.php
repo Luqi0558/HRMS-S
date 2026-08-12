@@ -33,8 +33,9 @@ class DemoUserSeeder extends Seeder
         ['Hina Malik',   'hina.malik@company.com',   'employee',    'Engineering',     'invited', '2000-08-09', null],
         ['Sara Ahmed',   'sara.ahmed@company.com',   'hr',          'Human Resources', 'active',  '1996-07-31', '2023-09-01'],
         ['Imran Shah',   'imran.shah@company.com',   'team_lead',   'Team Lead',       'active',  '1994-05-12', '2022-03-14'],
-        // Was id 99 in the frontend's login dropdown rather than an employee.
         ['Admin User',   'admin@company.com',        'super_admin', 'Administration',  'active',  null,         '2021-01-04'],
+        ['Fatima Iqbal', 'fatima.iqbal@company.com', 'qa',          'QA',              'active',  '1997-03-11', '2023-11-06'],
+        ['Hamza Sheikh', 'hamza.sheikh@company.com', 'intern',      'Engineering',     'active',  '2003-09-27', '2026-06-01'],
     ];
 
     public function run(): void

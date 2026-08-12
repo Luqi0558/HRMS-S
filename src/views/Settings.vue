@@ -19,7 +19,8 @@ const SERVER_SECTIONS = {
   // The API has accepted this group since petty cash was built; the mapping
   // was missing, so the approval threshold appeared to save and reverted on
   // refresh — while the API went on enforcing the old value.
-  'Petty cash': 'pettyCash'
+  'Petty cash': 'pettyCash',
+  Integrations: 'integrations'
 }
 
 const saving = ref('')
@@ -53,9 +54,14 @@ const settingsSaved = ref('')
 // designations and stacks are not in this response, and a replace would erase
 // them.
 onMounted(async () => {
-  const [groups, lists] = await Promise.allSettled([
+  // Integrations is a third call because it is not in /settings: that endpoint
+  // is readable by everyone and the Teams webhook URL is a credential, so the
+  // API serves it only behind the Settings permission. allSettled keeps the
+  // page working for anyone who cannot read it.
+  const [groups, lists, integrations] = await Promise.allSettled([
     settingsService.all(),
-    settingsService.lists()
+    settingsService.lists(),
+    settingsService.integrations()
   ])
 
   if (groups.status === 'fulfilled') setServerSettings(groups.value)
@@ -65,6 +71,10 @@ onMounted(async () => {
   // start but never served, so this page carried hardcoded copies and every
   // add or removal was lost on refresh.
   if (lists.status === 'fulfilled') setServerSettings(lists.value)
+
+  if (integrations.status === 'fulfilled') {
+    setServerSettings({ integrations: integrations.value })
+  }
 })
 
 function nonNegative(value) {
@@ -408,6 +418,33 @@ function addPresetStack(value) {
           </div>
         </div>
         <button @click="saveSettings('Petty cash')" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Save petty cash</button>
+      </div>
+
+      <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm mt-6">
+        <div class="text-lg font-bold text-slate-900">Integrations</div>
+        <div class="text-sm text-slate-600 mt-1">Post to Microsoft Teams channels.</div>
+        <div class="text-xs text-slate-500 mt-2">
+          Each URL comes from the channel it posts to: in Teams, channel &hellip; &rarr; Workflows &rarr;
+          &ldquo;Post to a channel when a webhook request is received&rdquo;. A workflow is tied to the channel it was
+          created in, so the two need separate URLs. Leave either blank to switch that one off.
+        </div>
+        <div class="grid grid-cols-1 gap-4 mt-4">
+          <div>
+            <label class="block">
+              <span class="text-sm font-medium text-slate-700 block mb-1.5">Attendance channel</span>
+              <input v-model="state.settings.integrations.teamsAttendanceWebhookUrl" type="url" placeholder="https://prod-00.westus.logic.azure.com/workflows/..." class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+            </label>
+            <div class="text-xs text-slate-500 mt-1">Check-outs, with work duration and effected hours.</div>
+          </div>
+          <div>
+            <label class="block">
+              <span class="text-sm font-medium text-slate-700 block mb-1.5">Announcements channel</span>
+              <input v-model="state.settings.integrations.teamsAnnouncementsWebhookUrl" type="url" placeholder="https://prod-00.westus.logic.azure.com/workflows/..." class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+            </label>
+            <div class="text-xs text-slate-500 mt-1">Anything published from Company Hub.</div>
+          </div>
+        </div>
+        <button @click="saveSettings('Integrations')" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Save integrations</button>
       </div>
     </section>
 

@@ -1,4 +1,4 @@
-import { reactive, computed } from 'vue'
+import { reactive, computed, ref } from 'vue'
 
 const currentUserStorageKey = 'orbit-current-user'
 
@@ -6,6 +6,16 @@ const currentUserStorageKey = 'orbit-current-user'
 // ("Zara Nadeem"), which meant anyone opening the app was silently logged in —
 // the router guard checked permissions but never authentication.
 const guestUser = { id: null, name: '', role: 'guest', email: '', employeeId: null }
+
+/**
+ * Whether the permission grid has been replaced by the API's copy.
+ *
+ * The router guard runs on the first navigation, which happens before App.vue
+ * has fetched anything — so until this flips, `can()` is answering from the
+ * seeded fallback below. Refusing a page on that basis is guesswork, and
+ * guessing wrong sends people to a page the same guess also refuses.
+ */
+const permissionsLoaded = ref(false)
 
 function loadStoredCurrentUser() {
   if (typeof window === 'undefined') return { ...guestUser }
@@ -123,6 +133,29 @@ const state = reactive({
     { role: 'employee', module: 'Company Hub', view: true, create: false, approve: false, finance: false, scope: 'all' },
     { role: 'employee', module: 'Profile', view: true, create: false, approve: false, finance: false, scope: 'self' },
 
+    // QA owns the Review column; an intern is an employee minus medical
+    // claims. Both must appear here even though the API is authoritative: the
+    // router guard runs before that fetch lands, and a role missing from this
+    // grid is denied every page, including the one it gets redirected to.
+    { role: 'qa', module: 'Dashboard', view: true, create: false, approve: false, finance: false, scope: 'team' },
+    { role: 'qa', module: 'Projects', view: true, create: false, approve: false, finance: false, scope: 'team' },
+    { role: 'qa', module: 'Tickets', view: true, create: true, approve: true, finance: false, scope: 'team' },
+    { role: 'qa', module: 'Leave Request', view: true, create: true, approve: false, finance: false, scope: 'self' },
+    { role: 'qa', module: 'Medical Request', view: true, create: true, approve: false, finance: false, scope: 'self' },
+    { role: 'qa', module: 'Payroll', view: true, create: false, approve: false, finance: false, scope: 'self' },
+    { role: 'qa', module: 'Messages', view: true, create: true, approve: false, finance: false, scope: 'self' },
+    { role: 'qa', module: 'Company Hub', view: true, create: false, approve: false, finance: false, scope: 'all' },
+    { role: 'qa', module: 'Profile', view: true, create: false, approve: false, finance: false, scope: 'self' },
+
+    { role: 'intern', module: 'Dashboard', view: true, create: false, approve: false, finance: false, scope: 'self' },
+    { role: 'intern', module: 'Projects', view: true, create: false, approve: false, finance: false, scope: 'team' },
+    { role: 'intern', module: 'Tickets', view: true, create: true, approve: false, finance: false, scope: 'team' },
+    { role: 'intern', module: 'Leave Request', view: true, create: true, approve: false, finance: false, scope: 'self' },
+    { role: 'intern', module: 'Payroll', view: true, create: false, approve: false, finance: false, scope: 'self' },
+    { role: 'intern', module: 'Messages', view: true, create: true, approve: false, finance: false, scope: 'self' },
+    { role: 'intern', module: 'Company Hub', view: true, create: false, approve: false, finance: false, scope: 'all' },
+    { role: 'intern', module: 'Profile', view: true, create: false, approve: false, finance: false, scope: 'self' },
+
     // Manager
     { role: 'manager', module: 'Dashboard', view: true, create: false, approve: false, finance: false, scope: 'owned' },
     { role: 'manager', module: 'Employees', view: true, create: false, approve: false, finance: false, scope: 'owned' },
@@ -162,7 +195,7 @@ const state = reactive({
     // change anywhere. Sees its own projects/tickets like a manager, but holds
     // no finance access and cannot approve leave.
     { role: 'team_lead', module: 'Dashboard', view: true, create: false, approve: false, finance: false, scope: 'owned' },
-    { role: 'team_lead', module: 'Projects', view: true, create: false, approve: true, finance: false, scope: 'owned' },
+    { role: 'team_lead', module: 'Projects', view: true, create: true, approve: true, finance: false, scope: 'owned' },
     // Leads sign off their squad's tickets — the core of the role.
     { role: 'team_lead', module: 'Tickets', view: true, create: true, approve: true, finance: false, scope: 'owned' },
     // Leads own the FIRST approval stage for their squad's leave: they know
@@ -234,6 +267,14 @@ const state = reactive({
       lowBalanceThreshold: 10000,
       categories: ['Office supplies', 'Refreshments', 'Travel', 'Courier', 'Repairs', 'Utilities', 'Miscellaneous']
     },
+    // Outbound integrations. Not part of the settings the API serves to every
+    // signed-in user — a webhook URL is a credential — so this stays empty
+    // until someone who may edit Settings loads it. One URL per Teams channel:
+    // a workflow is bound to the channel it was created in.
+    integrations: {
+      teamsAttendanceWebhookUrl: '',
+      teamsAnnouncementsWebhookUrl: ''
+    },
     // Job titles offered in the designation dropdowns. Named for what the UI
     // calls them; `employee.department` is a separate per-record field.
     designations: [
@@ -277,24 +318,40 @@ function isToday(isoString) {
 }
 
 function ticketSeconds(ticket) {
-  let total = 0
-  for (const log of ticket.timeLogs) {
-    const start = new Date(log.start).getTime()
-    const end = log.end ? new Date(log.end).getTime() : Date.now()
-    total += Math.max(0, (end - start) / 1000)
-  }
-  return total
+  // The board is sent `loggedSeconds` (every finished log, summed in SQL) plus
+  // only the still-running log, because shipping a ticket's whole history to
+  // render one number does not scale. The detail endpoint sends the sum too,
+  // since it loads at most 50 logs — so both shapes have to work here.
+  //
+  // Previously this summed `timeLogs` alone, which the list endpoint never
+  // sent, so every card read 0m no matter how much time had been logged.
+  const finished = typeof ticket.loggedSeconds === 'number'
+    ? ticket.loggedSeconds
+    : (ticket.timeLogs || [])
+      .filter(log => log.end)
+      .reduce((sum, log) => sum + elapsedOf(log), 0)
+
+  const running = (ticket.timeLogs || [])
+    .filter(log => !log.end)
+    .reduce((sum, log) => sum + elapsedOf(log), 0)
+
+  return finished + running
+}
+
+/** Seconds a single log covers; an open log runs up to now. */
+function elapsedOf(log) {
+  const start = new Date(log.start).getTime()
+  const end = log.end ? new Date(log.end).getTime() : Date.now()
+  return Math.max(0, (end - start) / 1000)
 }
 
 function ticketSecondsToday(ticket) {
-  let total = 0
-  for (const log of ticket.timeLogs) {
-    if (!isToday(log.start)) continue
-    const start = new Date(log.start).getTime()
-    const end = log.end ? new Date(log.end).getTime() : Date.now()
-    total += Math.max(0, (end - start) / 1000)
-  }
-  return total
+  // Safe against the trimmed payload above: the list deliberately loads today's
+  // logs and any running one, which is exactly the set this needs. The summed
+  // column is not usable here because it covers all time, not just today.
+  return (ticket.timeLogs || [])
+    .filter(log => isToday(log.start))
+    .reduce((sum, log) => sum + elapsedOf(log), 0)
 }
 
 function formatDuration(totalSeconds) {
@@ -344,25 +401,49 @@ function permissionRow(module, user = state.currentUser) {
 
 // Does the user own / belong to this record? Kept in one place so the
 // ownership rules stop being copy-pasted across views.
+/**
+ * The id every record refers to.
+ *
+ * managerId, leadId, teamMembers and assigneeId all hold EMPLOYEE ids, while
+ * currentUser.id is the user id. They coincide only when the two tables happen
+ * to have been filled in step, so every comparison below goes through this.
+ */
+function selfEmployeeId(user) {
+  return user.employeeId ?? user.id
+}
+
 function matchesScope(scope, resource, user = state.currentUser) {
   if (scope === 'all') return true
   if (!resource) return true // page-level check, no record to test
 
+  const me = selfEmployeeId(user)
+
   switch (scope) {
     case 'owned':
-      // A module is owned by its Team Lead, a project by its manager.
-      if (resource.leadId !== undefined && resource.leadId === user.id) return true
-      if (resource.managerId !== undefined) return resource.managerId === user.id
-      // Fall back to team membership for records without an explicit owner.
-      return (resource.teamMembers || []).includes(user.id)
+      // A module is owned by its Team Lead.
+      if (resource.leadId !== undefined && resource.leadId === me) return true
+
+      if (resource.managerId !== undefined) {
+        if (resource.managerId === me) return true
+        // A project is also owned by anyone leading one of its modules — a team
+        // lead needs their project's context without managing it. This mirrors
+        // ScopeResolver::managedProjectIds on the API, which returns exactly
+        // that set; without it the API sent the project and the client then
+        // filtered it straight back out, so a lead saw "no project sections
+        // assigned" while leading two of them.
+        return (resource.modules || []).some(module => module.leadId === me)
+      }
+
+      // Records with no explicit owner fall back to team membership.
+      return (resource.teamMembers || []).includes(me)
     case 'team':
-      if ((resource.teamMembers || []).includes(user.id)) return true
+      if ((resource.teamMembers || []).includes(me)) return true
       // Tickets belong to their assignee.
-      if (resource.assigneeId !== undefined) return resource.assigneeId === user.id
+      if (resource.assigneeId !== undefined) return resource.assigneeId === me
       return false
     case 'self': {
       const ownerId = resource.employeeId ?? resource.userId ?? resource.id
-      return ownerId === user.id
+      return ownerId === me
     }
     default:
       return false
@@ -379,6 +460,31 @@ function can(module, action = 'view', resource = null, user = state.currentUser)
 // Filters a list down to the records the user may act on. Replaces the
 // hand-rolled `if (role === 'super_admin') ... else if (role === 'manager')`
 // filters that were duplicated across Projects, Reports, and Finance.
+/**
+ * The scope this role holds on a module, or null when it holds none.
+ *
+ * Exposed because "may see something here" and "may see the whole company" are
+ * different questions, and can() only answers the first. The attendance ledger
+ * is the case in point: a lead reading their own squad through the API is fine,
+ * being handed everyone's punches and an export is not.
+ */
+/**
+ * Whether this role may mark work done, mirroring TicketService: a supervisor
+ * by scope, or a reviewer by the approve flag (QA's scope is only 'team').
+ *
+ * Kept in step with the API so the board does not offer a move that comes back
+ * as a 403.
+ */
+function canSignOffTickets(user = state.currentUser) {
+  const row = permissionRow('Tickets', user)
+  if (!row) return false
+  return ['owned', 'all'].includes(row.scope) || Boolean(row.approve)
+}
+
+function scopeFor(module, user = state.currentUser) {
+  return permissionRow(module, user)?.scope ?? null
+}
+
 function scopedList(module, list, action = 'view', user = state.currentUser) {
   const row = permissionRow(module, user)
   if (!row || !row[action]) return []
@@ -528,23 +634,101 @@ function pettyCashByCategory() {
 // tickets — these helpers deliberately separate "my work" from "squad work".
 // ---------------------------------------------------------------------------
 
-function ledModules(userId = state.currentUser.id) {
+// Defaults to the EMPLOYEE id throughout: leadId and teamMembers reference the
+// employees table, while currentUser.id is the user id.
+function ledModules(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
   return state.projects.flatMap(project =>
     (project.modules || [])
-      .filter(module => module.leadId === userId)
+      .filter(module => module.leadId === employeeId)
       .map(module => ({ ...module, projectId: project.id, projectName: project.name }))
   )
 }
 
-function squadMemberIds(userId = state.currentUser.id) {
+function squadMemberIds(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
   const ids = new Set()
-  ledModules(userId).forEach(module => (module.teamMembers || []).forEach(id => ids.add(id)))
-  ids.delete(userId) // the lead is not their own report
+  ledModules(employeeId).forEach(module => (module.teamMembers || []).forEach(id => ids.add(id)))
+  ids.delete(employeeId) // the lead is not their own report
   return Array.from(ids)
 }
 
-function squadTickets(userId = state.currentUser.id) {
-  const moduleIds = new Set(ledModules(userId).map(module => module.id))
+/**
+ * Squad member names, taken from the module payload.
+ *
+ * Each module embeds its `members` with names, which matters because
+ * state.employees is populated from /employees — a route a team lead may not
+ * call. Resolving through the roster left every squad row reading "Unknown".
+ */
+function squadMemberNames(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  const names = new Map()
+  ledModules(employeeId).forEach(module =>
+    (module.members || []).forEach(member => names.set(member.id, member.name))
+  )
+  return names
+}
+
+/**
+ * Tickets waiting on QA.
+ *
+ * The Review column is the handover: a developer moves work there and it stays
+ * until QA either passes it to Done or sends it back.
+ */
+function reviewQueue() {
+  return scopedList('Tickets', state.tickets).filter(ticket => ticket.status === 'review')
+}
+
+/**
+ * How overdue a ticket sitting in Review is, in days. Derived from the deadline
+ * rather than a status-change timestamp, which the schema does not record.
+ */
+function daysInReview(ticket) {
+  if (!ticket?.deadline) return null
+  const days = Math.floor((Date.now() - new Date(ticket.deadline).getTime()) / 86400000)
+  return days > 0 ? days : 0
+}
+
+/**
+ * The people responsible for whoever is signed in: the leads of the modules
+ * they are a member of. Read from the module payload, since an intern cannot
+ * call /employees.
+ */
+function mySupervisors(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  const supervisors = new Map()
+
+  state.projects.forEach(project => {
+    (project.modules || []).forEach(module => {
+      const isMine = (module.teamMembers || []).includes(employeeId)
+      if (!isMine || !module.leadId || module.leadId === employeeId) return
+
+      const lead = (module.members || []).find(member => member.id === module.leadId)
+      supervisors.set(module.leadId, {
+        id: module.leadId,
+        name: module.lead?.name ?? lead?.name ?? 'Your supervisor',
+        moduleName: module.name,
+        projectName: project.name
+      })
+    })
+  })
+
+  return Array.from(supervisors.values())
+}
+
+/**
+ * The modules the signed-in person works on.
+ *
+ * Carries the project's slug as well as its name, because the board's route
+ * needs both — without it a dashboard can count someone's modules but cannot
+ * link to one.
+ */
+function myModules(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  return state.projects.flatMap(project =>
+    (project.modules || [])
+      .filter(module => (module.teamMembers || []).includes(employeeId))
+      .map(module => ({ ...module, projectName: project.name, projectSlug: project.slug }))
+  )
+}
+
+function squadTickets(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  const moduleIds = new Set(ledModules(employeeId).map(module => module.id))
   return state.tickets.filter(ticket => moduleIds.has(ticket.moduleId))
 }
 
@@ -554,17 +738,19 @@ function isTicketOverdue(ticket) {
 }
 
 // Tickets the squad has finished and handed back for the lead to sign off.
-function squadReviewQueue(userId = state.currentUser.id) {
-  return squadTickets(userId).filter(ticket => ticket.status === 'review')
+function squadReviewQueue(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  return squadTickets(employeeId).filter(ticket => ticket.status === 'review')
 }
 
-function squadOverdueTickets(userId = state.currentUser.id) {
-  return squadTickets(userId).filter(isTicketOverdue)
+function squadOverdueTickets(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  return squadTickets(employeeId).filter(isTicketOverdue)
 }
 
 // Hours logged today per squad member, for the capacity widget.
-function squadCapacityToday(userId = state.currentUser.id) {
-  return squadMemberIds(userId).map(id => {
+function squadCapacityToday(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  const names = squadMemberNames(employeeId)
+
+  return squadMemberIds(employeeId).map(id => {
     const employee = state.employees.find(item => item.id === id)
     const attendanceRow = state.attendance.find(row => row.employeeId === id && row.date === todayKey())
     const activeTicket = state.tickets.find(ticket =>
@@ -572,7 +758,7 @@ function squadCapacityToday(userId = state.currentUser.id) {
     )
     return {
       id,
-      name: employee?.name || 'Unknown',
+      name: names.get(id) ?? employee?.name ?? 'Unknown',
       checkIn: attendanceRow?.checkIn || null,
       status: attendanceRow?.status || 'absent',
       seconds: employeeSecondsToday(id),
@@ -583,8 +769,8 @@ function squadCapacityToday(userId = state.currentUser.id) {
 
 // Leave requests from this lead's squad that still need their stage-one
 // approval. Surfaced on the Team Lead dashboard.
-function squadLeaveAwaitingLead(userId = state.currentUser.id) {
-  const memberIds = new Set(squadMemberIds(userId))
+function squadLeaveAwaitingLead(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
+  const memberIds = new Set(squadMemberIds(employeeId))
   return state.leaveRequests.filter(request =>
     memberIds.has(request.employeeId)
     && request.status !== 'rejected'
@@ -618,8 +804,38 @@ function setCurrentUserRole(role) {
  * reloading, since a timer that appears to run but was never recorded is worse
  * than one that visibly failed to start.
  */
+/**
+ * Re-derives which timer is running from the tickets themselves.
+ *
+ * state.activeTimer is client-side only and starts as null on every page load,
+ * so before this a running timer looked stopped after any refresh — the log was
+ * still open in the database, but nothing on the client knew it. The list
+ * endpoint sends any still-open log, which makes the server the source of truth
+ * rather than a flag a reload wipes.
+ *
+ * Filtered by employee: an open log belonging to a colleague working the same
+ * ticket is somebody else's timer, not yours.
+ */
+function syncActiveTimer() {
+  const employeeId = state.currentUser.employeeId
+  if (employeeId == null) {
+    state.activeTimer = null
+    return
+  }
+
+  const running = state.tickets.find(ticket =>
+    (ticket.timeLogs || []).some(log => !log.end && log.employeeId === employeeId)
+  )
+
+  state.activeTimer = running ? { ticketId: running.id } : null
+}
+
 async function startTicketTimer(ticketId) {
-  if (state.currentUser.role !== 'employee') return
+  // Anyone who works tickets logs time against them. This was role === 'employee',
+  // which silently did nothing for QA and interns — both work the board, and the
+  // API has never restricted the timer by role, only by whether you can see the
+  // ticket.
+  if (!can('Tickets', 'create')) return
   // Stop any timer currently running for this user before starting a new one.
   if (state.activeTimer) {
     stopTicketTimer(state.activeTimer.ticketId)
@@ -627,7 +843,7 @@ async function startTicketTimer(ticketId) {
   const ticket = state.tickets.find(t => t.id === ticketId)
   if (!ticket) return
   if (!ticket.timeLogs) ticket.timeLogs = []
-  ticket.timeLogs.push({ start: new Date().toISOString(), end: null })
+  ticket.timeLogs.push({ start: new Date().toISOString(), end: null, employeeId: state.currentUser.employeeId })
   if (ticket.status === 'todo') ticket.status = 'in_progress'
   state.activeTimer = { ticketId }
 
@@ -653,7 +869,11 @@ async function stopTicketTimer(ticketId) {
 
   try {
     const { ticketService } = await import('../services/ticketService.js')
-    await ticketService.stopTimer()
+    // Upserted rather than discarded: the response carries the recomputed
+    // total, and without it the board would drop the session that just ended
+    // until the next full load.
+    const stopped = await ticketService.stopTimer()
+    if (stopped) upsertTicket(stopped)
   } catch {
     /* the log is closed locally; a reload will reconcile from the server */
   }
@@ -928,6 +1148,9 @@ function setCurrentUser(id, name, role, email = '', employeeId = null) {
 function setRolePermissions(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return
 
+  // From here on the grid is the API's answer for this user, not the seed.
+  permissionsLoaded.value = true
+
   const role = state.currentUser.role
   state.rolePermissions = rows.map(row => ({
     role,
@@ -978,6 +1201,10 @@ function setTickets(rows) {
     comments: ticket.comments || [],
     timeLogs: ticket.timeLogs || []
   }))
+
+  // A page load lands here, which is where a timer left running in a previous
+  // session gets picked back up.
+  syncActiveTimer()
 }
 
 function setEmployees(rows) {
@@ -1460,6 +1687,11 @@ function upsertTicket(ticket) {
   }
   if (index === -1) state.tickets.push(mapped)
   else state.tickets[index] = { ...state.tickets[index], ...mapped }
+
+  // The start/stop endpoints return the ticket, so this keeps the running flag
+  // agreeing with what the server just recorded rather than with what the
+  // optimistic update assumed.
+  syncActiveTimer()
 }
 
 /**
@@ -1541,10 +1773,17 @@ export function useStore() {
     squadReviewQueue,
     squadOverdueTickets,
     squadCapacityToday,
+    reviewQueue,
+    daysInReview,
+    mySupervisors,
+    myModules,
     squadLeaveAwaitingLead,
     isTicketOverdue,
     can,
     scopedList,
+    scopeFor,
+    canSignOffTickets,
+    permissionsLoaded,
     permissionRow,
     setCurrentUserRole,
     setCurrentUser,

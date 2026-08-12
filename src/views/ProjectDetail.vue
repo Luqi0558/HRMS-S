@@ -22,6 +22,7 @@ const {
   formatDateTime,
   projectSecondsToday,
   can,
+  canSignOffTickets,
   pushNotification,
   logActivity,
   setProjects,
@@ -47,26 +48,40 @@ const projectSlug = computed(() => String(route.params.projectSlug || ''))
 async function loadData() {
   if (!projectSlug.value) return
 
-  isLoading.value = true
+  // Only blank the page when there is nothing to show. Clicking through from
+  // the projects list, the store already holds this project, and swapping it
+  // for a spinner to re-fetch the same record looks like a step backwards.
+  isLoading.value = !state.projects.some(item => item.slug === projectSlug.value)
   loadError.value = ''
 
   try {
-    const projectRecord = await projectService.find(projectSlug.value)
+    // The roster does not depend on the project, so it rides along with it
+    // rather than waiting for the tickets to come back first. Only the tickets
+    // genuinely have to wait, since the endpoint filters by project id and the
+    // id is not known until the project has been fetched.
+    //
+    // Non-fatal on its own: an employee holds no Employees permission, and the
+    // board still renders without the roster — only assignee pickers are
+    // affected, which fall back to module members.
+    const [project, employees] = await Promise.allSettled([
+      projectService.find(projectSlug.value),
+      employeeService.list()
+    ])
+
+    if (employees.status === 'fulfilled') {
+      setEmployees(employees.value.data)
+    }
+
+    if (project.status === 'rejected') {
+      throw project.reason
+    }
+
     // Replaces the whole collection: this view is reachable directly by URL,
     // so it cannot assume Projects.vue has already populated the store.
-    setProjects([projectRecord])
+    setProjects([project.value])
 
-    const tickets = await ticketService.list({ project_id: projectRecord.id })
+    const tickets = await ticketService.list({ project_id: project.value.id })
     setTickets(tickets.data)
-
-    // Non-fatal: an employee holds no Employees permission, and the board
-    // still renders without the roster — only assignee pickers are affected.
-    try {
-      const employees = await employeeService.list()
-      setEmployees(employees.data)
-    } catch {
-      /* assignee dropdowns fall back to module members */
-    }
   } catch (error) {
     loadError.value = error instanceof ApiError
       ? error.message
@@ -92,21 +107,21 @@ const isHR = computed(() => !can('Projects', 'view'))
 // module scoped to 'team' is exactly the employee role today.
 const isEmployee = computed(() => state.currentUser.role === 'employee')
 const canEditTicketFields = computed(() => can('Tickets', 'create'))
-const canUpdateTicketStatus = computed(() => can('Tickets', 'create') && isEmployee.value)
-const canUseTicketTimer = computed(() => can('Tickets', 'create') && isEmployee.value)
+// Permission-based, not role-based. These were `&& isEmployee`, which left QA
+// and interns unable to move their own work or run a timer — both work the
+// board, and the API gates on permission rather than on which role you are.
+const canUpdateTicketStatus = computed(() => can('Tickets', 'create'))
+const canUseTicketTimer = computed(() => can('Tickets', 'create'))
+
+// 'done' is a sign-off, so the board only offers it to someone the API would
+// accept it from — otherwise the move comes straight back as a 403.
+const canSignOff = computed(() => canSignOffTickets())
+const availableStatuses = computed(() =>
+  canSignOff.value ? columns : columns.filter(status => status !== 'done')
+)
 const canManageProjectMembers = computed(() => can('Projects', 'approve', project.value))
 const canViewModuleFinance = computed(() => can('Finance', 'finance'))
 const assignableEmployees = computed(() => state.employees.filter(e => e.role === 'employee'))
-const assignedByOptions = computed(() => {
-  const ids = new Set()
-  if (project.value?.managerId) ids.add(project.value.managerId)
-  state.employees
-    .filter(employee => employee.role === 'manager' || employee.role === 'super_admin')
-    .forEach(employee => ids.add(employee.id))
-  return Array.from(ids)
-    .map(id => state.employees.find(employee => employee.id === id))
-    .filter(Boolean)
-})
 const availableProjectEmployees = computed(() => {
   const teamIds = project.value?.teamMembers || []
   return assignableEmployees.value.filter(employee => !teamIds.includes(employee.id))
@@ -115,7 +130,17 @@ const availableProjectEmployees = computed(() => {
 const columns = ['todo', 'in_progress', 'review', 'done']
 const draggingTicketId = ref(null)
 const activeDropColumn = ref(null)
-const selectedTicket = ref(null)
+// Held as an id, not as the object. upsertTicket() replaces the entry in
+// state.tickets rather than mutating it, so a stored reference goes stale the
+// moment anything writes to the ticket — which is why a posted comment only
+// appeared after a page refresh. Resolving through the store on every read
+// means the modal always shows current data, whatever caused the change.
+const selectedTicketId = ref(null)
+const selectedTicket = computed(() =>
+  selectedTicketId.value == null
+    ? null
+    : state.tickets.find(ticket => ticket.id === selectedTicketId.value) ?? null
+)
 const ticketDraft = ref(null)
 const newComment = ref('')
 const newAttachmentName = ref('')
@@ -127,6 +152,8 @@ const showAddModule = ref(false)
 const editingModule = ref(null)
 const ticketError = ref('')
 const moduleError = ref('')
+// In-flight guard, so a double-click cannot create the module twice.
+const savingModule = ref(false)
 const moduleEditError = ref('')
 const moduleEditForm = ref({
   name: '',
@@ -147,7 +174,6 @@ const newTicketForm = ref({
   description: '',
   priority: 'medium',
   assigneeId: assignableEmployees.value[0]?.id ?? null,
-  assignedById: assignedByOptions.value[0]?.id ?? null,
   deadline: ''
 })
 
@@ -195,7 +221,9 @@ const isModuleBoard = computed(() => Boolean(activeModule.value))
 const isModuleCompleted = computed(() => activeModule.value?.status === 'completed')
 const kanbanTicketFilter = computed(() => {
   const value = String(route.query.tickets || 'all')
-  return ['all', 'open', 'completed', 'overdue'].includes(value) ? value : 'all'
+  // 'review' is here because QA and the intern dashboard link to it — a tile
+  // that opened an unfiltered board would be a link that quietly lied.
+  return ['all', 'open', 'completed', 'overdue', 'review'].includes(value) ? value : 'all'
 })
 const kanbanTicketFilterModel = computed({
   get: () => kanbanTicketFilter.value,
@@ -206,7 +234,8 @@ const kanbanTicketFilterLabel = computed(() => {
     all: 'All tickets',
     open: 'Open tickets',
     completed: 'Completed tickets',
-    overdue: 'Overdue tickets'
+    overdue: 'Overdue tickets',
+    review: 'In review'
   }
   return labels[kanbanTicketFilter.value] || labels.all
 })
@@ -225,7 +254,19 @@ const canAccessActiveModule = computed(() => {
   return can('Projects', 'approve', project.value) || can('Projects', 'view', activeModule.value)
 })
 const canCreateTickets = computed(() => !isModuleCompleted.value && canAccessActiveModule.value && can('Tickets', 'create'))
+/**
+ * The squad on the active module, for the assignee picker.
+ *
+ * Taken from the module payload, which already embeds its members with names.
+ * Resolving teamMembers through state.employees instead meant this was empty
+ * for anyone without the Employees permission — a team lead has no such row, so
+ * the picker offered nobody and they could not hand work to their own squad.
+ * The roster is kept as a fallback for payloads that predate `members`.
+ */
 const moduleAssignedEmployees = computed(() => {
+  const embedded = activeModule.value?.members
+  if (Array.isArray(embedded) && embedded.length > 0) return embedded
+
   const ids = activeModule.value?.teamMembers || []
   return ids.map(id => state.employees.find(employee => employee.id === id)).filter(Boolean)
 })
@@ -244,6 +285,7 @@ function matchesKanbanTicketFilter(ticket) {
   if (kanbanTicketFilter.value === 'open') return ticket.status !== 'done'
   if (kanbanTicketFilter.value === 'completed') return ticket.status === 'done'
   if (kanbanTicketFilter.value === 'overdue') return isTicketOverdue(ticket)
+  if (kanbanTicketFilter.value === 'review') return ticket.status === 'review'
   return true
 }
 
@@ -383,15 +425,51 @@ function assignee(id) {
   return state.employees.find(e => e.id === id)?.name ?? '—'
 }
 
+/**
+ * Prefer the name the API embeds on the ticket over a roster lookup.
+ *
+ * state.employees is populated from /employees, which an ordinary employee is
+ * forbidden to call — so for them that lookup always missed and every card read
+ * "—". The ticket payload has carried `assignee` all along and now carries
+ * `assignedBy` too; both are eager-loaded, so this costs no extra request.
+ *
+ * The roster lookup stays as a fallback for tickets cached from before the
+ * embedded fields existed.
+ */
+function ticketAssigneeName(ticket) {
+  return ticket.assignee?.name ?? assignee(ticket.assigneeId)
+}
+
+/**
+ * Whether this ticket is assigned to whoever is looking at it.
+ *
+ * Compared against employeeId, not currentUser.id — tickets reference the
+ * employees table while currentUser.id is the user id, and the two only line up
+ * by coincidence.
+ */
+/** Whether the viewer is the person who raised this ticket. */
+function isOwnAssignment(ticket) {
+  return state.currentUser.employeeId != null
+    && ticket?.assignedById === state.currentUser.employeeId
+}
+
+function isOwnTicket(ticket) {
+  return state.currentUser.employeeId != null
+    && ticket.assigneeId === state.currentUser.employeeId
+}
+
+function ticketAssignedByName(ticket) {
+  return ticket.assignedBy?.name ?? assignee(ticket.assignedById)
+}
+
 async function openTicket(ticket) {
-  selectedTicket.value = ticket
+  selectedTicketId.value = ticket.id
   ticketDraft.value = {
     title: ticket.title,
     description: ticket.description || '',
     status: ticket.status,
     priority: ticket.priority,
     assigneeId: ticket.assigneeId,
-    assignedById: ticket.assignedById || null,
     deadline: ticket.deadline || ''
   }
   newComment.value = ''
@@ -403,17 +481,15 @@ async function openTicket(ticket) {
   // response fills in rather than blocking.
   try {
     const full = await ticketService.find(ticket.id)
+    // No re-pointing needed: selectedTicket resolves through the store.
     upsertTicket(full)
-    // Re-point at the store's copy: upsertTicket replaced the object, so the
-    // original reference would no longer receive updates.
-    selectedTicket.value = state.tickets.find(t => t.id === ticket.id) || selectedTicket.value
   } catch {
     /* comments simply stay empty; the rest of the modal is already usable */
   }
 }
 
 function closeTicket() {
-  selectedTicket.value = null
+  selectedTicketId.value = null
   ticketDraft.value = null
   newComment.value = ''
   newAttachmentName.value = ''
@@ -469,14 +545,20 @@ function ticketComments(ticket) {
   return ticket.comments || []
 }
 
-function commentAuthorName(authorId) {
-  return assignee(authorId)
+/**
+ * Takes the comment, not just its id: the API sends `authorName` alongside
+ * (the author relation is eager-loaded on the detail endpoint). Resolving the
+ * id through state.employees instead showed "—" for everyone without the
+ * Employees permission, since that roster is empty for them.
+ */
+function commentAuthorName(comment) {
+  return comment.authorName ?? assignee(comment.authorId)
 }
 
 function ticketActivity(ticket) {
   const comments = ticketComments(ticket).map(comment => ({
     id: `comment-${comment.id}`,
-    title: `Comment by ${commentAuthorName(comment.authorId)}`,
+    title: `Comment by ${commentAuthorName(comment)}`,
     detail: comment.text,
     at: comment.createdAt
   }))
@@ -557,7 +639,19 @@ function updateSelectedTicketStatus(status) {
 
 async function saveTicketChanges() {
   if (!canEditTicketFields.value || !selectedTicket.value || !ticketDraft.value) return
-  if (!moduleAssignedEmployees.value.some(employee => employee.id === ticketDraft.value.assigneeId)) return
+
+  // Only checked when the roster is actually available. moduleAssignedEmployees
+  // resolves module member ids through state.employees, which is empty for
+  // anyone without the Employees permission — so this rejected every save, and
+  // rejected it silently, because it returned without setting ticketError. The
+  // server enforces the same rule regardless of what the client can see.
+  const roster = moduleAssignedEmployees.value
+  if (roster.length > 0 && !roster.some(employee => employee.id === ticketDraft.value.assigneeId)) {
+    ticketError.value = 'Choose an assignee who is assigned to this module.'
+    return
+  }
+
+  ticketError.value = ''
 
   const changes = {
     title: ticketDraft.value.title.trim() || selectedTicket.value.title,
@@ -615,6 +709,15 @@ function highlightColumn(column) {
 
 async function moveTicket(ticketId, status) {
   if (!canUpdateTicketStatus.value) return
+
+  // Refused here rather than optimistically applied and rolled back: dropping
+  // a card into Done only to watch it jump out again reads as a broken board,
+  // and the API refuses it for anyone who is not a reviewer.
+  if (status === 'done' && !canSignOff.value) {
+    ticketError.value = 'Only a reviewer can mark work done. Move it to review instead.'
+    return
+  }
+
   const ticket = state.tickets.find(t => t.id === ticketId)
   if (!ticket) return
 
@@ -745,34 +848,48 @@ function openAddModule() {
   showAddModule.value = true
 }
 
-function addModule() {
+async function addModule() {
   moduleError.value = ''
-  if (!canManageModules() || !project.value) return
+  if (!canManageModules() || !project.value || savingModule.value) return
+
   const name = newModuleForm.value.name.trim()
   if (!name) {
     moduleError.value = 'Please enter a module name.'
     return
   }
+
   const clash = (project.value.modules || []).find(m => (m.name || '').trim().toLowerCase() === name.toLowerCase())
   if (clash) {
     moduleError.value = `This section already has a module named "${clash.name}".`
     return
   }
-  if (!project.value.modules) project.value.modules = []
-  const module = {
-    id: Date.now(),
-    name: newModuleForm.value.name.trim(),
-    slug: uniqueModuleSlug(newModuleForm.value.name.trim()),
-    description: newModuleForm.value.description.trim(),
-    budget: Number(newModuleForm.value.budget || 0),
-    commission: {
-      type: newModuleForm.value.commissionType,
-      value: Number(newModuleForm.value.commissionValue || 0),
-      status: 'pending'
-    },
-    payments: []
+
+  savingModule.value = true
+
+  // Saved through the API rather than pushed into local state with a
+  // `Date.now()` id, which is what this used to do — the module looked created,
+  // logged an activity, and was gone on the next refresh.
+  let module
+  try {
+    module = await projectService.createModule(project.value.slug, {
+      name,
+      description: newModuleForm.value.description.trim() || null,
+      budget: Number(newModuleForm.value.budget || 0),
+      commissionType: newModuleForm.value.commissionType,
+      commissionValue: Number(newModuleForm.value.commissionValue || 0)
+    })
+  } catch (error) {
+    moduleError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not create the module. Please try again.'
+    return
+  } finally {
+    savingModule.value = false
   }
+
+  if (!project.value.modules) project.value.modules = []
   project.value.modules.push(module)
+
   logActivity({
     module: 'project',
     action: 'module created',
@@ -780,6 +897,7 @@ function addModule() {
     targetId: project.value.id,
     targetType: 'project'
   })
+
   showAddModule.value = false
   selectModule(module.id)
 }
@@ -797,7 +915,7 @@ function openEditModule(module) {
   }
 }
 
-function saveModuleEdit() {
+async function saveModuleEdit() {
   moduleEditError.value = ''
   if (!canManageModules() || !project.value || !editingModule.value) return
   const editedName = moduleEditForm.value.name.trim()
@@ -843,15 +961,25 @@ function saveModuleEdit() {
     return
   }
 
-  module.name = next.name
-  module.description = next.description
-  module.budget = next.budget
-  module.commission = {
-    ...(module.commission || {}),
-    type: next.commissionType,
-    value: next.commissionValue,
-    status: module.commission?.status || 'pending'
+  // Saved first, then reflected — this used to mutate the module in place and
+  // never call the API, so an edit looked applied and reverted on refresh.
+  let saved
+  try {
+    saved = await projectService.updateModule(module.id, {
+      name: next.name,
+      description: next.description || null,
+      budget: next.budget,
+      commissionType: next.commissionType,
+      commissionValue: next.commissionValue
+    })
+  } catch (error) {
+    moduleEditError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not save the module. Please try again.'
+    return
   }
+
+  Object.assign(module, saved)
 
   const details = `${state.currentUser.name} updated module "${module.name}" in ${project.value.name}: ${changes.join(', ')}.`
   logActivity({
@@ -943,11 +1071,10 @@ async function addTicket() {
   })
   newTicketForm.value = {
     title: '',
-    description: '',
+      description: '',
     priority: 'medium',
     assigneeId: moduleAssignedEmployees.value[0]?.id ?? null,
-    assignedById: assignedByOptions.value[0]?.id ?? null,
-    deadline: ''
+      deadline: ''
   }
   showAdd.value = false
 }
@@ -1095,6 +1222,7 @@ async function addTicket() {
           <option value="all">All tickets</option>
           <option value="open">Open tickets</option>
           <option value="completed">Completed tickets</option>
+          <option value="review">In review</option>
           <option value="overdue">Overdue tickets</option>
         </select>
         <span v-if="kanbanTicketFilter !== 'all'" class="company-hub-badge company-hub-badge-info">{{ kanbanTicketFilterLabel }}</span>
@@ -1143,29 +1271,47 @@ async function addTicket() {
                 canUpdateTicketStatus ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
                 isTicketOverdue(t) ? 'overdue-ticket-card' : 'bg-white border-slate-200'
               ]"
-              class="border rounded-lg p-3 shadow-sm transition-all hover:border-emerald-300 hover:shadow-md"
+              class="border rounded-xl p-3.5 shadow-sm transition-all hover:border-emerald-300 hover:shadow-md hover:-translate-y-px"
             >
+              <!-- No status pill: ticketsIn() filters each column on that exact
+                   status, so a card can only ever be sitting under its own label
+                   and the pill just repeated the column header. The overdue flag
+                   takes the space instead — it is the one thing about a card that
+                   its column cannot tell you. -->
               <div class="flex items-start justify-between gap-2 mb-2">
-                <div class="text-sm text-slate-900 leading-snug font-medium">{{ t.title }}</div>
-                <span class="ticket-status-pill shrink-0 text-[11px] font-semibold capitalize px-2 py-1 rounded-full" :class="[statusMeta[t.status].bg, statusMeta[t.status].text]">
-                  {{ statusMeta[t.status].label }}
+                <div class="min-w-0">
+                  <!-- The identifier people quote in Teams and in conversation, so
+                       it sits above the title rather than being buried in the modal. -->
+                  <div v-if="t.reference" class="text-[10px] font-mono text-slate-500 mb-0.5 truncate">{{ t.reference }}</div>
+                  <div class="text-sm text-slate-900 leading-snug font-semibold">{{ t.title }}</div>
+                </div>
+                <span v-if="isTicketOverdue(t)" class="overdue-badge shrink-0 text-[10px]">Overdue</span>
+              </div>
+
+              <div class="flex items-center gap-2 flex-wrap mb-2.5">
+                <!-- The dot carries the priority colour so the word itself does
+                     not have to shout. -->
+                <span class="inline-flex items-center gap-1.5 text-[11px] font-semibold capitalize" :class="priorityTone[t.priority]">
+                  <span class="w-1.5 h-1.5 rounded-full bg-current shrink-0"></span>{{ t.priority }}
                 </span>
               </div>
-              <div v-if="isTicketOverdue(t)" class="overdue-badge mb-2 text-[10px]">
-                Overdue
+
+              <div class="space-y-1 text-[11px] text-slate-500">
+                <!-- Hidden when the ticket is your own: on a personal board every
+                     card would repeat your own name. A lead or manager looking at
+                     the same board still needs it, so it is not removed outright. -->
+                <div v-if="!isOwnTicket(t)" class="truncate">
+                  For <span class="text-slate-700 font-medium">{{ ticketAssigneeName(t) }}</span>
+                </div>
+                <div v-if="t.assignedById && !isOwnAssignment(t)" class="truncate">
+                  Assigned by <span class="text-slate-700 font-medium">{{ ticketAssignedByName(t) }}</span>
+                </div>
+                <div class="truncate">
+                  Due <span class="font-medium" :class="isTicketOverdue(t) ? 'overdue-date-text' : 'text-slate-700'">{{ dueDateLabel(t.deadline) }}</span>
+                </div>
               </div>
-              <div class="flex items-center justify-between mb-2.5">
-                <span class="text-[11px] text-slate-600 truncate pr-2">{{ assignee(t.assigneeId) }}</span>
-                <span class="text-[11px] font-medium capitalize" :class="priorityTone[t.priority]">{{ t.priority }}</span>
-              </div>
-              <div v-if="t.assignedById" class="mb-2 text-[11px] text-slate-500">
-                Assigned by: <span class="text-slate-700 font-medium">{{ assignee(t.assignedById) }}</span>
-              </div>
-              <div class="mb-2 text-[11px] text-slate-500">
-                Due: <span class="font-medium" :class="isTicketOverdue(t) ? 'overdue-date-text' : 'text-slate-700'">{{ dueDateLabel(t.deadline) }}</span>
-              </div>
-              <div class="flex items-center justify-between pt-2 border-t border-slate-200">
-                <span class="text-[10px] text-slate-600 uppercase tracking-wide">Total logged</span>
+              <div class="flex items-center justify-between gap-2 pt-2.5 mt-3 border-t border-slate-200">
+                <span class="text-[10px] text-slate-600 uppercase tracking-wide font-semibold">Total logged</span>
                 <TicketTimer :ticket="t" :readonly="!canUseTicketTimer" />
               </div>
             </div>
@@ -1213,7 +1359,11 @@ async function addTicket() {
                     :disabled="!canUpdateTicketStatus"
                     class="text-[11px] font-medium capitalize px-2 py-1 rounded-full border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-500"
                   >
-                    <option v-for="col in columns" :key="col" :value="col">{{ statusMeta[col].label }}</option>
+                    <!-- availableStatuses, not columns: 'done' is a sign-off and is
+                         hidden from anyone the API would refuse it from. The current
+                         status is kept so an already-done ticket still shows its own. -->
+                    <option v-for="col in availableStatuses" :key="col" :value="col">{{ statusMeta[col].label }}</option>
+                    <option v-if="!availableStatuses.includes(ticketDraft.status)" :value="ticketDraft.status">{{ statusMeta[ticketDraft.status].label }}</option>
                   </select>
                 </div>
                 <div class="flex items-center justify-between gap-3">
@@ -1224,18 +1374,40 @@ async function addTicket() {
                     <option value="high">high</option>
                   </select>
                 </div>
-                <div class="flex items-center justify-between gap-3">
+                <!-- The dropdown's options come from state.employees, which is empty
+                     for anyone without the Employees permission — an employee holds
+                     Tickets:create but no roster, so the control rendered with zero
+                     options and showed an empty box instead of the name. It is only
+                     used when there is something to choose from; otherwise the
+                     current assignee is shown as text, read from the ticket itself.
+
+                     The row is dropped entirely on your own ticket — it would only
+                     ever say "you". -->
+                <div v-if="canEditTicketFields || !isOwnTicket(selectedTicket)" class="flex items-center justify-between gap-3">
                   <span class="text-sm text-slate-600">Assignee</span>
-                  <select v-model="ticketDraft.assigneeId" :disabled="!canEditTicketFields" class="text-sm font-medium rounded-lg border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500 max-w-[180px] disabled:bg-slate-100 disabled:text-slate-500">
+                  <select v-if="canEditTicketFields && moduleAssignedEmployees.length > 0" v-model="ticketDraft.assigneeId" class="text-sm font-medium rounded-lg border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500 max-w-[180px]">
                     <option v-for="emp in moduleAssignedEmployees" :key="emp.id" :value="emp.id">{{ emp.name }}</option>
                   </select>
+                  <span v-else class="text-sm font-medium text-slate-900 max-w-[180px] truncate">{{ ticketAssigneeName(selectedTicket) }}</span>
+                </div>
+                <!-- Never editable, for anyone. This is `created_by` — a record of
+                     who raised the ticket, not a setting. It was a dropdown that
+                     could not work: saveTicketChanges never sent the field, and
+                     UpdateTicketRequest would have rejected it anyway. Editing it
+                     would mean rewriting the ticket's own history.
+
+                     Hidden from whoever raised it: telling someone they assigned
+                     the ticket they are looking at is not information. A manager
+                     or lead reading somebody else's ticket still sees it. -->
+                <div v-if="!isOwnAssignment(selectedTicket)" class="flex items-center justify-between gap-3">
+                  <span class="text-sm text-slate-600">Reference</span>
+                  <!-- Never editable. It is derived from the company, project and
+                       module at creation and quoted elsewhere, so it must not drift. -->
+                  <span class="text-sm font-mono font-medium text-slate-900 max-w-[180px] truncate">{{ selectedTicket.reference || '—' }}</span>
                 </div>
                 <div class="flex items-center justify-between gap-3">
                   <span class="text-sm text-slate-600">Assigned by</span>
-                  <select v-model="ticketDraft.assignedById" :disabled="!canEditTicketFields" class="text-sm font-medium rounded-lg border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500 max-w-[180px] disabled:bg-slate-100 disabled:text-slate-500">
-                    <option :value="null">Not specified</option>
-                    <option v-for="emp in assignedByOptions" :key="emp.id" :value="emp.id">{{ emp.name }}</option>
-                  </select>
+                  <span class="text-sm font-medium text-slate-900 max-w-[180px] truncate">{{ ticketAssignedByName(selectedTicket) }}</span>
                 </div>
                 <div class="flex items-center justify-between gap-3">
                   <span class="text-sm text-slate-600">Due date</span>
@@ -1329,7 +1501,7 @@ async function addTicket() {
                 <div v-if="ticketComments(selectedTicket).length === 0" class="text-sm text-slate-500 italic">No comments yet. Add the first update below.</div>
                 <div v-for="comment in ticketComments(selectedTicket)" :key="comment.id" class="rounded-xl border border-slate-200 bg-white p-3">
                   <div class="flex items-center justify-between gap-3 mb-2">
-                    <div class="text-sm font-semibold text-slate-900">{{ commentAuthorName(comment.authorId) }}</div>
+                    <div class="text-sm font-semibold text-slate-900">{{ commentAuthorName(comment) }}</div>
                     <div class="text-[11px] text-slate-500">{{ formatDateTime(comment.createdAt) }}</div>
                   </div>
                   <div class="text-sm text-slate-700 leading-relaxed">{{ comment.text }}</div>
@@ -1369,6 +1541,8 @@ async function addTicket() {
           <div class="text-sm text-slate-600 mb-4">Creating inside {{ activeModule?.name }}.</div>
           <div class="space-y-3">
             <input v-model="newTicketForm.title" type="text" placeholder="Ticket title" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700" />
+            <!-- No reference input: the server derives it from the company name,
+                 project and module (LPS-Internal-AS-1) and returns it on create. -->
             <textarea v-model="newTicketForm.description" rows="3" placeholder="Description" class="w-full resize-none text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700"></textarea>
             <div class="grid grid-cols-2 gap-3">
               <select v-model="newTicketForm.priority" class="text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700">
@@ -1381,9 +1555,9 @@ async function addTicket() {
             <select v-model="newTicketForm.assigneeId" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700">
               <option v-for="emp in moduleAssignedEmployees" :key="emp.id" :value="emp.id">Assign to: {{ emp.name }}</option>
             </select>
-            <select v-if="isEmployee" v-model="newTicketForm.assignedById" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700">
-              <option v-for="emp in assignedByOptions" :key="emp.id" :value="emp.id">Assigned by: {{ emp.name }}</option>
-            </select>
+            <!-- No "assigned by" picker: the server stamps created_by with whoever
+                 is authenticated, and StoreTicketRequest does not accept the field.
+                 Offering a choice here only implied one existed. -->
           </div>
           <div v-if="ticketError" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-semibold text-rose-700">
             {{ ticketError }}

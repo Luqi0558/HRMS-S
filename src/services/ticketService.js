@@ -55,7 +55,13 @@ export const ticketService = {
     return data.ticket
   },
 
+  /**
+   * Returns the refreshed ticket so the caller can show the session that just
+   * ended, or null when no timer was running.
+   */
   async stopTimer() {
-    return apiClient.post('/tickets/stop-timer')
+    const data = await apiClient.post('/tickets/stop-timer')
+
+    return data.ticket ?? null
   }
 }

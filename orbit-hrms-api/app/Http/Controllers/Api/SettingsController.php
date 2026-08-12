@@ -72,10 +72,25 @@ class SettingsController extends Controller
         ]);
     }
 
+    /**
+     * Outbound integration credentials.
+     *
+     * Deliberately not part of index(), which any signed-in user may read. The
+     * Teams webhook URL is a credential in its own right — anyone holding it
+     * can post into the channel — so it is served only to whoever may edit
+     * Settings, behind the same guard as the write.
+     */
+    public function integrations(): JsonResponse
+    {
+        return response()->json([
+            'integrations' => $this->settings->group('integrations'),
+        ]);
+    }
+
     public function update(Request $request, string $group): JsonResponse
     {
         abort_unless(
-            in_array($group, ['company', 'attendance', 'leave', 'claims', 'pettyCash'], true),
+            in_array($group, ['company', 'attendance', 'leave', 'claims', 'pettyCash', 'integrations'], true),
             404,
             'Unknown settings group.',
         );

@@ -37,12 +37,44 @@ export const attendanceService = {
   /**
    * @param {object} options
    * @param {string} [options.device] how they punched in — 'camera', 'laptop'
-   * @param {string} [options.photoPath] stored check-in photo, when required
+   * @param {Blob} [options.photo] the captured JPEG, when the camera was used
+   *
+   * Sent as multipart when there is a photo: the API stores the file itself and
+   * derives the path. It previously took a `photoPath` string, which the client
+   * had no way to produce — the camera yields an image, not a storage location.
    */
-  async checkIn({ device = 'camera', photoPath } = {}) {
-    const data = await apiClient.post('/attendance/check-in', { device, photoPath })
+  async checkIn({ device = 'camera', photo } = {}) {
+    if (!photo) {
+      const data = await apiClient.post('/attendance/check-in', { device })
+
+      return data.attendance
+    }
+
+    const form = new FormData()
+    form.append('device', device)
+    form.append('photo', photo, 'check-in.jpg')
+
+    const data = await apiClient.post('/attendance/check-in', form)
 
     return data.attendance
+  },
+
+  /**
+   * An object URL for a check-in photo, or null if there is none.
+   *
+   * Fetched rather than linked: the file sits on a private disk behind the same
+   * permission and scope checks as the attendance row, so a plain <img src>
+   * would arrive without the bearer token and get a 401. Callers must
+   * URL.revokeObjectURL() what they receive.
+   */
+  async photoUrl(attendanceId) {
+    try {
+      return URL.createObjectURL(await apiClient.blob(`/attendance/${attendanceId}/photo`))
+    } catch {
+      // 404 for a row without a photo, or one this user may not see. Either way
+      // there is nothing to show, and it is not worth an error state.
+      return null
+    }
   },
 
   async checkOut() {

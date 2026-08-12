@@ -9,17 +9,22 @@ class SettingsService
 {
     private const CACHE_KEY = 'company_settings';
     private const DEFAULTS = [
-        // Locale drives every currency and date format in the app, so these
-        // are not cosmetic: changing the currency here changes what every
-        // payroll and petty-cash figure reads as.
         'company' => [
             'name' => 'Orbit HRMS',
             'timezone' => 'Asia/Karachi',
             'workWeek' => 'Monday - Friday',
             'locale' => 'en-US',
             'currency' => 'PKR',
-            // 'code' renders "PKR 1,200"; 'symbol' renders the currency glyph.
             'currencyDisplay' => 'code',
+        ],
+        // Outbound integrations. The Teams URL comes from the channel's
+        // Workflows menu ("Post to a channel when a webhook request is
+        // received"); leaving it blank switches the announcements off.
+        'integrations' => [
+            // One URL per Teams channel: a workflow is bound to the channel it
+            // was created in, so the destination cannot be chosen per message.
+            'teamsAttendanceWebhookUrl' => '',
+            'teamsAnnouncementsWebhookUrl' => '',
         ],
         'attendance' => [
             'startTime' => '09:30',
@@ -39,9 +44,6 @@ class SettingsService
             'receiptRequiredAbove' => 5000,
             'approvalFlow' => 'HR + Super Admin',
         ],
-        // Spend at or below approvalThreshold is recorded directly; above it
-        // the entry waits for sign-off. lowBalanceThreshold drives the warning
-        // that a top-up is due before the tin runs dry.
         'pettyCash' => [
             'approvalThreshold' => 5000,
             'lowBalanceThreshold' => 10000,

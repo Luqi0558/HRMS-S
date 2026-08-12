@@ -25,6 +25,15 @@ class CompanySettingSeeder extends Seeder
             // 'code' renders "PKR 1,200"; 'symbol' renders the currency glyph.
             'currencyDisplay' => 'code',
         ],
+        // Outbound integrations. The Teams URL comes from the channel's
+        // Workflows menu ("Post to a channel when a webhook request is
+        // received"); leaving it blank switches the announcements off.
+        'integrations' => [
+            // One URL per Teams channel: a workflow is bound to the channel it
+            // was created in, so the destination cannot be chosen per message.
+            'teamsAttendanceWebhookUrl' => '',
+            'teamsAnnouncementsWebhookUrl' => '',
+        ],
         'attendance' => [
             'startTime' => '09:30',
             'endTime' => '18:00',

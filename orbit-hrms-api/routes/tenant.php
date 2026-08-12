@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\PettyCashController;
+use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\TicketController;
@@ -72,6 +73,25 @@ Route::middleware([
 
         Route::get('/me/permissions', [PermissionController::class, 'mine'])
             ->name('api.me.permissions');
+
+        /*
+         * Own profile. No module guard: the subject is the bearer token, not a
+         * route parameter, so there is no other record these can reach. The
+         * Employees routes below cannot serve this — they are gated on a module
+         * ordinary employees do not hold, which would 403 exactly the people
+         * who need to edit their own details.
+         */
+        Route::get('/profile', [ProfileController::class, 'show'])
+            ->name('api.profile.show');
+        Route::patch('/profile', [ProfileController::class, 'update'])
+            ->name('api.profile.update');
+
+        // Throttled harder than the rest: this endpoint verifies a password, so
+        // it is worth guessing against.
+        Route::post('/profile/password', [ProfileController::class, 'changePassword'])
+            ->middleware('throttle:6,1')
+            ->name('api.profile.password');
+
         Route::get('/employees', [EmployeeController::class, 'index'])
             ->middleware('can.module:Employees,view')
             ->name('api.employees.index');
@@ -106,6 +126,24 @@ Route::middleware([
             ->middleware('can.module:Projects,create')
             ->name('api.projects.members');
 
+
+        /*
+         * Modules. These did not exist: the client created and edited modules
+         * in local state only, so every one of them vanished on refresh.
+         */
+        Route::post('/projects/{project}/modules', [ProjectController::class, 'storeModule'])
+            ->middleware('can.module:Projects,create')
+            ->name('api.modules.store');
+
+        Route::patch('/modules/{module}', [ProjectController::class, 'updateModule'])
+            ->whereNumber('module')
+            ->middleware('can.module:Projects,create')
+            ->name('api.modules.update');
+
+        Route::put('/modules/{module}/members', [ProjectController::class, 'syncModuleMembers'])
+            ->whereNumber('module')
+            ->middleware('can.module:Projects,create')
+            ->name('api.modules.members');
 
         Route::patch('/modules/{module}/delivery', [ProjectController::class, 'setModuleDelivered'])
             ->whereNumber('module')
@@ -156,10 +194,6 @@ Route::middleware([
          */
         Route::get('/settings', [SettingsController::class, 'index'])
             ->name('api.settings.index');
-        // Dropdown options. Readable by anyone signed in — onboarding needs
-        // them before the user has any permissions at all — but only writable
-        // with Settings.create. Fixed segments precede /settings/{group} so
-        // 'lists' is not parsed as a group name.
         Route::get('/settings/lists', [SettingsController::class, 'lists'])
             ->name('api.settings.lists');
         Route::post('/settings/lists/{type}', [SettingsController::class, 'addListItem'])
@@ -170,6 +204,11 @@ Route::middleware([
             ->whereIn('type', ['designations', 'stacks'])
             ->middleware('can.module:Settings,create')
             ->name('api.settings.lists.remove');
+
+        // Above the {group} route so "integrations" is not swallowed by it.
+        Route::get('/settings/integrations', [SettingsController::class, 'integrations'])
+            ->middleware('can.module:Settings,create')
+            ->name('api.settings.integrations');
 
         Route::put('/settings/{group}', [SettingsController::class, 'update'])
             ->middleware('can.module:Settings,create')
@@ -187,6 +226,11 @@ Route::middleware([
             ->name('api.attendance.check-in');
         Route::post('/attendance/check-out', [AttendanceController::class, 'checkOut'])
             ->name('api.attendance.check-out');
+        // Below check-in/check-out so those literal segments are never mistaken
+        // for an {attendance} id.
+        Route::get('/attendance/{attendance}/photo', [AttendanceController::class, 'photo'])
+            ->whereNumber('attendance')
+            ->name('api.attendance.photo');
 
         /*
          * Leave. Fixed segments precede the wildcard so /leave-requests/balance
@@ -200,9 +244,6 @@ Route::middleware([
         Route::post('/leave-requests', [LeaveRequestController::class, 'store'])
             ->middleware('can.module:Leave Request,create')
             ->name('api.leave.store');
-        // Ungated at the route: approval is held on either 'Leave Request'
-        // (HR stage) or 'Team Leaves' (lead stage), and middleware can only
-        // test one module. LeaveService checks both and picks the stage.
         Route::post('/leave-requests/{leaveRequest}/decision', [LeaveRequestController::class, 'decide'])
             ->whereNumber('leaveRequest')
             ->name('api.leave.decide');
@@ -222,8 +263,6 @@ Route::middleware([
             ->middleware('can.module:Medical Request,create')
             ->name('api.claims.store');
 
-        // Ungated at the route: an employee may always read their own receipt
-        // even though their scope is 'self'. The service decides.
         Route::get('/medical-claims/{claim}/receipt', [MedicalClaimController::class, 'receipt'])
             ->whereNumber('claim')
             ->name('api.claims.receipt');
@@ -258,9 +297,6 @@ Route::middleware([
             ->whereNumber('slip')
             ->name('api.payroll.slips.show');
 
-        // Releasing needs 'Payroll Approval'; recording payment needs
-        // Payroll.create. Two different rights, so neither is gated here —
-        // PayrollService checks the one that applies.
         Route::post('/salary-slips/{slip}/approve', [PayrollController::class, 'approveSlip'])
             ->whereNumber('slip')
             ->name('api.payroll.slips.approve');
@@ -332,12 +368,15 @@ Route::middleware([
         Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request))
             ->name('api.broadcasting.auth');
 
+        // Above /messages/{...} routes so "audiences" is not read as an id.
+        Route::get('/messages/audiences', [MessageController::class, 'audiences'])
+            ->middleware('can.module:Messages,view')
+            ->name('api.messages.audiences');
+
         Route::get('/messages', [MessageController::class, 'index'])
             ->middleware('can.module:Messages,view')
             ->name('api.messages.index');
-        // Throttled like every other write. Generous enough for real typing —
-        // 30 messages a minute is faster than anyone converses — but it stops
-        // a stuck retry loop or a script from flooding the table.
+       
         Route::post('/messages', [MessageController::class, 'store'])
             ->middleware(['can.module:Messages,create', 'throttle:30,1'])
             ->name('api.messages.store');
@@ -393,12 +432,6 @@ Route::middleware([
             ->middleware('can.module:Assets,create')
             ->name('api.assets.retire');
 
-        /*
-         * Company Hub. Everyone reads announcements and policies; only HR and
-         * super admin publish. Acknowledging is ungated — it is the employee
-         * asserting something about themselves, and the badge on the policy
-         * promises they can.
-         */
         Route::get('/company-hub', [CompanyHubController::class, 'index'])
             ->name('api.company-hub.index');
         Route::post('/company-hub/announcements', [CompanyHubController::class, 'publish'])
@@ -419,13 +452,6 @@ Route::middleware([
             ->middleware('can.module:Company Hub,create')
             ->name('api.company-hub.policies.acknowledgements');
 
-        /*
-         * Audit trail. Reading it is administrative — no grid row names
-         * 'Activity Log', so only super admin reaches it via the blanket
-         * grant. Writing is open to anyone signed in: the caller has already
-         * done the thing being logged, and the actor comes from their token
-         * rather than the request body, so it cannot be forged.
-         */
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])
             ->name('api.activity-logs.index');
         Route::post('/activity-logs', [ActivityLogController::class, 'store'])

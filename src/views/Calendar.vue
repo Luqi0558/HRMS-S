@@ -62,7 +62,7 @@ const events = computed(() => {
       date: ticket.deadline,
       type: 'ticket',
       label: 'Deadline',
-      meta: `${ticket.status.replace('_', ' ')} - ${employeeName(ticket.assigneeId)}`
+      meta: `${ticket.status.replace('_', ' ')} - ${ticket.assignee?.name ?? employeeName(ticket.assigneeId)}`
     }))
 
   return [...birthdayEvents, ...anniversaryEvents, ...leaveEvents, ...ticketEvents]

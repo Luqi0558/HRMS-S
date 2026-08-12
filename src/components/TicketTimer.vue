@@ -41,9 +41,12 @@ function toggle() {
       Running
     </span>
     <span class="font-mono font-tabular text-[12px]" :class="isRunning ? 'text-emerald-600 font-semibold' : 'text-slate-600'">{{ elapsedLabel }}</span>
+    <!-- .stop because this timer sits inside the kanban card, which opens the
+         ticket modal on click. Without it the click reached both handlers and
+         the modal swallowed the interaction, so the button looked dead. -->
     <button
       v-if="!readonly"
-      @click="toggle"
+      @click.stop="toggle"
       class="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors"
       :class="isRunning ? 'bg-coral-bg text-coral hover:bg-coral hover:text-white' : 'bg-teal-bg text-teal hover:bg-teal hover:text-white'"
       :title="isRunning ? 'Stop timer' : 'Start timer'"

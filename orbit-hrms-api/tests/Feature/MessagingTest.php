@@ -1043,4 +1043,127 @@ class MessagingTest extends TenantTestCase
             ->assertOk()
             ->assertJsonPath('unread.messages', 0);
     }
+
+    /**
+     * The guard that would have caught the qa/intern gap.
+     *
+     * A role in the permission grid that belongs to no audience is a role whose
+     * holders every broadcast silently skips — the announcement still sends and
+     * still reports success. This fails instead.
+     */
+    public function test_every_role_belongs_to_a_broadcast_audience(): void
+    {
+        $unassigned = app(\App\Services\BroadcastAudiences::class)->unassignedRoles();
+
+        $this->assertSame(
+            [],
+            $unassigned,
+            'These roles receive no broadcast: '.implode(', ', $unassigned)
+                .'. Add them to an audience in BroadcastAudiences.'
+        );
+    }
+
+    public function test_the_audience_list_is_served_with_recipient_counts(): void
+    {
+        // worker@test.com (employee) already exists from setUp.
+        $this->makeEmployee('boss@test.com', 'super_admin');
+        $this->makeEmployee('tester@test.com', 'qa');
+
+        $audiences = $this->getJson('/api/messages/audiences', $this->auth('boss@test.com'))
+            ->assertOk()
+            ->json('audiences');
+
+        $byId = collect($audiences)->keyBy('id');
+
+        // QA counts as an employee for announcements, which is the whole point
+        // of the grouping living in one place.
+        $this->assertSame(2, $byId['employees']['reaches']);
+        $this->assertSame('All employees', $byId['employees']['label']);
+    }
+
+    /**
+     * Broadcasting is reaching the whole company, which is what scope 'all'
+     * means — so anyone narrower is offered nothing rather than a list that
+     * would be refused on send.
+     */
+    public function test_someone_who_may_not_broadcast_is_offered_no_audiences(): void
+    {
+        $this->getJson('/api/messages/audiences', $this->auth('worker@test.com'))
+            ->assertOk()
+            ->assertJsonPath('audiences', []);
+    }
+
+    /**
+     * Being messaged is permission to answer.
+     *
+     * An employee's reachable set is supervisors plus HR, so a broadcast from
+     * the super admin — neither of those — could be read but not replied to.
+     * The reply came back "You may not message those people", which makes an
+     * announcement a dead end.
+     *
+     * Driven through the service rather than two authenticated requests: the
+     * guard caches the first user it resolves, so a second HTTP call with a
+     * different token still answers as the first.
+     */
+    public function test_an_employee_may_reply_to_someone_who_messaged_them(): void
+    {
+        $admin = $this->makeEmployee('boss@test.com', 'super_admin');
+        $service = app(MessageService::class);
+        $adminUser = User::where('email', 'boss@test.com')->firstOrFail();
+        $workerUser = User::where('email', 'worker@test.com')->firstOrFail();
+
+        // Before the broadcast the admin is unreachable, as designed: this
+        // opens a reply channel, it does not let anyone start a conversation.
+        try {
+            $service->send($workerUser, [
+                'body' => 'Unsolicited',
+                'audience' => 'Direct message',
+                'recipientIds' => [$admin->id],
+            ]);
+            $this->fail('An employee should not be able to open a conversation with the admin.');
+        } catch (AccessDeniedHttpException) {
+            // expected
+        }
+
+        $service->send($adminUser, [
+            'body' => 'Company announcement',
+            'audience' => 'employees',
+            'recipientIds' => [],
+        ]);
+
+        // Having received it, the employee can now answer.
+        $sent = $service->send($workerUser, [
+            'body' => 'Understood',
+            'audience' => 'Direct message',
+            'recipientIds' => [$admin->id],
+        ]);
+
+        // send() returns the Message, so the delivery rows are what to check.
+        $this->assertSame(
+            [$admin->id],
+            $sent->recipients()->pluck('employee_id')->map(fn ($id) => (int) $id)->all()
+        );
+    }
+
+    /**
+     * And the composer can name them: contacts is what the reply hint reads,
+     * and an unreachable sender rendered as "Unknown user".
+     */
+    public function test_a_broadcast_sender_appears_in_the_recipients_contacts(): void
+    {
+        $admin = $this->makeEmployee('boss@test.com', 'super_admin');
+        $service = app(MessageService::class);
+
+        $service->send(User::where('email', 'boss@test.com')->firstOrFail(), [
+            'body' => 'Company announcement',
+            'audience' => 'employees',
+            'recipientIds' => [],
+        ]);
+
+        $contacts = $this->getJson('/api/messages', $this->auth('worker@test.com'))
+            ->assertOk()
+            ->json('contacts');
+
+        $this->assertContains($admin->id, array_column($contacts, 'id'));
+    }
 }

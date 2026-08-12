@@ -11,6 +11,7 @@ const {
   cameraError,
   cameraLoading,
   closeCamera,
+  checkingIn,
   dashboardCheckInWithPhoto
 } = useDashboard()
 </script>
@@ -38,7 +39,7 @@ const {
           <div v-if="cameraError" class="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{{ cameraError }}</div>
           <div class="flex items-center justify-end gap-2">
             <button @click="closeCamera" class="text-sm border border-slate-200 rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
-            <button @click="dashboardCheckInWithPhoto" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Capture &amp; check in</button>
+            <button @click="dashboardCheckInWithPhoto" :disabled="checkingIn" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ checkingIn ? 'Checking in...' : 'Capture &amp; check in' }}</button>
           </div>
         </div>
       </div>

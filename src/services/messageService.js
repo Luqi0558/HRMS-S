@@ -39,6 +39,22 @@ export const messageService = {
    * @param {string} [audience] 'Direct message', 'role:<name>', or a
    *   company-wide label
    */
+  /**
+   * Audiences this user may broadcast to, each with how many people it reaches.
+   *
+   * Fetched rather than hardcoded: the client used to keep its own list of
+   * audiences AND its own idea of which roles may broadcast, both of which
+   * drifted from the API the moment a role was added — "All employees" quietly
+   * stopped reaching QA and interns, with no error anywhere.
+   *
+   * @returns {Promise<Array<{id: string, label: string, reaches: number}>>}
+   */
+  async audiences() {
+    const data = await apiClient.get('/messages/audiences')
+
+    return data.audiences || []
+  },
+
   async send({ body, subject, audience = 'Direct message', recipientIds = [] }) {
     const data = await apiClient.post('/messages', { body, subject, audience, recipientIds })
 

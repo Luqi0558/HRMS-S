@@ -26,6 +26,14 @@ interface ProjectRepositoryInterface
     /** Eager-loads modules, members and ticket counts for the detail screen. */
     public function loadDetail(Project $project): Project;
 
+    public function createModule(array $attributes): \App\Models\ProjectModule;
+
+    /** Whether a module slug is already used within the given project. */
+    public function moduleSlugExists(int $projectId, string $slug, ?int $ignoreId = null): bool;
+
+    /** @param array<int, int> $employeeIds */
+    public function syncModuleMembers(\App\Models\ProjectModule $module, array $employeeIds): \App\Models\ProjectModule;
+
     public function findModule(int $moduleId): ?\App\Models\ProjectModule;
 
     public function updateModule(\App\Models\ProjectModule $module, array $attributes): \App\Models\ProjectModule;

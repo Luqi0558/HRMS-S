@@ -16,6 +16,7 @@ const {
   statusBadgeClass,
   goToRoute,
   timesheetTitle,
+  timesheetPeriod,
   dailyTimesheet,
   weeklyTimesheetMaxHours,
   daysUntilMonthDay,
@@ -59,7 +60,10 @@ const hrUpcomingAnniversaries = computed(() =>
 )
 
 const hrPendingLeaves = computed(() =>
-  state.leaveRequests.filter(leave => leave.status === 'pending' && leave.employeeId !== state.currentUser.id)
+  // employeeId, not currentUser.id: leave rows reference the employees table.
+  // The intent is "not my own request", which only held when the two id spaces
+  // happened to line up.
+  state.leaveRequests.filter(leave => leave.status === 'pending' && leave.employeeId !== (state.currentUser.employeeId ?? state.currentUser.id))
 )
 const hrPendingClaims = computed(() =>
   state.medicalClaims.filter(claim => claim.status === 'pending')
@@ -380,13 +384,21 @@ function markOnboardingReviewed(employee) {
             <div class="flex flex-wrap items-center justify-end gap-3">
               <div class="flex items-center gap-2 text-[11px] font-bold text-slate-600">
                 <span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
-                <span>Attendance</span>
+                <span>At desk</span>
               </div>
               <div class="flex items-center gap-2 text-[11px] font-bold text-slate-600">
                 <span class="h-2.5 w-2.5 rounded-full bg-blue-500"></span>
-                <span>Work logged</span>
+                <span>On tickets</span>
               </div>
-              <span class="company-hub-badge company-hub-badge-info">Weekly</span>
+              <div class="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
+            <button
+            v-for="period in ['weekly', 'monthly']"
+            :key="period"
+            @click="timesheetPeriod = period"
+            class="rounded-md px-2.5 py-1 text-[11px] font-bold capitalize transition-colors"
+            :class="timesheetPeriod === period ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+            >{{ period }}</button>
+            </div>
             </div>
           </div>
           <TimesheetChart :days="dailyTimesheet" :max-hours="weeklyTimesheetMaxHours" :format-duration="formatDuration" />
@@ -456,12 +468,18 @@ function markOnboardingReviewed(employee) {
           <div class="flex items-center justify-between gap-3 mb-4">
             <div>
               <h2 class="text-lg font-bold text-slate-900">Medical Claim Queue</h2>
-              <div class="text-xs text-slate-600 mt-1">Review receipts, provider details, status, and HR notes.</div>
+              <div class="text-xs text-slate-600 mt-1">Claims awaiting a decision. Review receipts, provider details, and notes.</div>
             </div>
             <RouterLink to="/medical-claims" class="text-xs font-bold rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-slate-50">View all</RouterLink>
           </div>
-          <div v-if="state.medicalClaims.length" class="space-y-3 max-h-[360px] overflow-y-auto pr-1">
-            <div v-for="claim in state.medicalClaims" :key="claim.id" class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <!-- hrPendingClaims, not every claim. This card is a queue: it lists
+               what is waiting on a decision. Rendering the full list kept
+               settled claims here for good, so a claim the super admin had
+               already approved still looked like HR's to action. The same
+               computed already feeds the KPI count above, and the Leave queue
+               beside it was always filtered this way. -->
+          <div v-if="hrPendingClaims.length" class="space-y-3 max-h-[360px] overflow-y-auto pr-1">
+            <div v-for="claim in hrPendingClaims" :key="claim.id" class="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div class="flex items-start justify-between gap-3">
                 <div>
                   <div class="text-sm font-extrabold text-slate-900">{{ employeeName(claim.employeeId) }}</div>
@@ -476,7 +494,7 @@ function markOnboardingReviewed(employee) {
               </div>
             </div>
           </div>
-          <div v-else class="text-sm font-semibold text-slate-500 py-4">No medical claims submitted.</div>
+          <div v-else class="text-sm font-semibold text-slate-500 py-4">No claims waiting on a decision.</div>
         </section>
       </div>
 

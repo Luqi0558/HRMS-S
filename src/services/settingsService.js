@@ -28,6 +28,19 @@ export const settingsService = {
    * @param {'attendance'|'leave'|'claims'|'pettyCash'} group
    * @returns {Promise<object>} the group as stored
    */
+  /**
+   * Outbound integration credentials.
+   *
+   * A separate call from all(), which every signed-in user may make: the Teams
+   * webhook URL is a credential — whoever holds it can post into the channel —
+   * so the API serves it only to those who may edit Settings.
+   */
+  async integrations() {
+    const data = await apiClient.get('/settings/integrations')
+
+    return data.integrations || {}
+  },
+
   async putGroup(group, values) {
     const data = await apiClient.put(`/settings/${group}`, { values })
 

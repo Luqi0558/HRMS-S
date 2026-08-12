@@ -30,7 +30,8 @@ interface TicketRepositoryInterface
 
     public function startTimer(Ticket $ticket, int $employeeId): void;
 
-    public function stopTimer(int $employeeId): void;
+    /** @return array<int> ids of the tickets whose timers were stopped */
+    public function stopTimer(int $employeeId): array;
 
     public function loadDetail(Ticket $ticket): Ticket;
 

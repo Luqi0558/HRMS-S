@@ -108,8 +108,11 @@ function ticketLoggedTime(ticket) {
 }
 
 const dashboardCanEditTicketFields = computed(() => can('Tickets', 'create'))
-const dashboardCanUpdateTicketStatus = computed(() => can('Tickets', 'create') && isEmployee.value)
-const dashboardCanUseTicketTimer = computed(() => can('Tickets', 'create') && isEmployee.value)
+// Permission-based, not role-based. `&& isEmployee` left QA and interns with
+// dead controls in this modal — both work the board, and the API gates on
+// permission rather than on which role you happen to be.
+const dashboardCanUpdateTicketStatus = computed(() => can('Tickets', 'create'))
+const dashboardCanUseTicketTimer = computed(() => can('Tickets', 'create'))
 
 function dashboardModuleAssignedEmployees(ticket = dashboardTicket.value) {
   const module = ticketModule(ticket)

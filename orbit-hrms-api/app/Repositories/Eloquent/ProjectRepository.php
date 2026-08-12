@@ -19,6 +19,10 @@ class ProjectRepository implements ProjectRepositoryInterface
             ->with([
                 'manager:id,name',
                 'modules:id,project_id,name,slug,status,lead_id',
+                // The lead by name, not just an id: an intern cannot call
+                // /employees, so their dashboard has no other way to say who
+                // is responsible for them.
+                'modules.lead:id,name',
                 // Ids only — the list renders "assigned to me" and the
                 // add-member modal from these, neither of which needs the
                 // full employee record.
@@ -77,6 +81,30 @@ class ProjectRepository implements ProjectRepositoryInterface
     public function syncMembers(Project $project, array $employeeIds): void
     {
         $project->members()->sync($employeeIds);
+    }
+
+    public function createModule(array $attributes): ProjectModule
+    {
+        return ProjectModule::create($attributes);
+    }
+
+    /**
+     * Whether a slug is taken within one project. Scoped to the project, since
+     * that is the uniqueness the URL actually needs.
+     */
+    public function moduleSlugExists(int $projectId, string $slug, ?int $ignoreId = null): bool
+    {
+        return ProjectModule::where('project_id', $projectId)
+            ->where('slug', $slug)
+            ->when($ignoreId, fn ($query) => $query->whereKeyNot($ignoreId))
+            ->exists();
+    }
+
+    public function syncModuleMembers(ProjectModule $module, array $employeeIds): ProjectModule
+    {
+        $module->members()->sync($employeeIds);
+
+        return $module->load('members:id,name,email,designation');
     }
 
     public function findModule(int $moduleId): ?ProjectModule

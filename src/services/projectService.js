@@ -39,6 +39,31 @@ export const projectService = {
   },
 
   /**
+   * Creates a module inside a project.
+   *
+   * There was no endpoint for this: the view built a module locally with
+   * `id: Date.now()` and never sent it, so every module anyone created was
+   * gone on the next refresh.
+   */
+  async createModule(projectSlug, attributes) {
+    const data = await apiClient.post(`/projects/${projectSlug}/modules`, attributes)
+
+    return data.module
+  },
+
+  async updateModule(moduleId, attributes) {
+    const data = await apiClient.patch(`/modules/${moduleId}`, attributes)
+
+    return data.module
+  },
+
+  async syncModuleMembers(moduleId, employeeIds) {
+    const data = await apiClient.put(`/modules/${moduleId}/members`, { employeeIds })
+
+    return data.module
+  },
+
+  /**
    * Marks a module delivered, or reopens it.
    *
    * Requires `approve` on Projects rather than `create`, so a team lead can

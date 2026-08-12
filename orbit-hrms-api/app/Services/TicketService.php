@@ -18,6 +18,7 @@ class TicketService
         private readonly TicketRepositoryInterface $tickets,
         private readonly PermissionService $permissions,
         private readonly ScopeResolver $scopes,
+        private readonly TicketReferenceGenerator $references,
     ) {
     }
 
@@ -71,6 +72,9 @@ class TicketService
             'project_id' => $module->project_id,
             'project_module_id' => $module->id,
             'title' => $attributes['title'],
+            // Derived from the company, project and module rather than typed:
+            // see TicketReferenceGenerator.
+            'reference' => $this->references->for($module),
             'description' => $attributes['description'] ?? null,
             'status' => $attributes['status'] ?? 'todo',
             'priority' => $attributes['priority'] ?? 'medium',
@@ -103,6 +107,8 @@ class TicketService
         $payload = [];
         foreach ([
             'title' => 'title',
+            // reference is deliberately absent: it is assigned once at creation
+            // and quoted elsewhere, so it must not drift.
             'description' => 'description',
             'status' => 'status',
             'priority' => 'priority',
@@ -127,7 +133,26 @@ class TicketService
             unset($payload['assignee_id']);
         }
 
-        return $this->tickets->update($ticket, $payload);
+        // Signing work off is the same kind of act as reassigning it, so it
+        // takes the same test. Without this the QA gate was decorative: every
+        // role holds create on Tickets — that is how an employee raises their
+        // own — so anyone on the board could mark anything done, QA included or
+        // not.
+        //
+        // 'approve' rather than scope alone is what admits QA, whose scope is
+        // 'team'; managers and leads qualify on scope. An assignee moves work
+        // to 'review' and stops there, which is the handover.
+        if (($payload['status'] ?? null) === 'done' && ! $maySupervise) {
+            throw new AccessDeniedHttpException(
+                'Only a reviewer can mark work done. Move it to review instead.'
+            );
+        }
+
+        // Reloaded with its relations: reassigning changes who the ticket belongs
+        // to, and the client merges this response into what it already holds.
+        // Returning the bare row left the previous assignee's name on screen
+        // until the next full load.
+        return $this->tickets->loadDetail($this->tickets->update($ticket, $payload));
     }
 
     public function comment(User $user, int $id, string $body): Ticket
@@ -176,14 +201,29 @@ class TicketService
         return $this->tickets->loadDetail($ticket->refresh());
     }
 
-    public function stopTimer(User $user): void
+    /**
+     * Returns the ticket whose timer was stopped, so the caller can send the
+     * refreshed totals back. Null when nothing was running — stopping an
+     * already-stopped timer is not an error.
+     */
+    public function stopTimer(User $user): ?Ticket
     {
         $employee = $this->employeeFor($user);
         if (! $employee) {
             throw new AccessDeniedHttpException('Only employees can log time.');
         }
 
-        $this->tickets->stopTimer($employee->id);
+        $ticketIds = $this->tickets->stopTimer($employee->id);
+
+        if ($ticketIds === []) {
+            return null;
+        }
+
+        // At most one timer runs per employee — startTimer stops any other
+        // first — so the first id is the one that matters.
+        $ticket = $this->tickets->findById($ticketIds[0]);
+
+        return $ticket ? $this->tickets->loadDetail($ticket) : null;
     }
 
     private function canSee(User $user, Ticket $ticket): bool

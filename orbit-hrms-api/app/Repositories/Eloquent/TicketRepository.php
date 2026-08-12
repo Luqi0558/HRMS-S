@@ -22,7 +22,27 @@ class TicketRepository implements TicketRepositoryInterface
         int $perPage = 50
     ): LengthAwarePaginator {
         $query = $this->model->newQuery()
-            ->with(['assignee:id,name', 'module:id,name,slug', 'project:id,name,slug']);
+            ->with([
+                'assignee:id,name',
+                // Same two columns as the assignee: the board labels who raised
+                // each ticket, and an employee has no access to /employees to
+                // look the id up.
+                'assignedBy:id,name',
+                'module:id,name,slug',
+                'project:id,name,slug',
+                // Not every log — a ticket worked on for months would drag its
+                // whole history onto the board. Only the two the UI actually
+                // needs per row: any still-running log (to drive the live
+                // counter) and today's (to total "logged today"). Everything
+                // finished before today is covered by the summed column below.
+                'timeLogs' => fn ($q) => $q
+                    ->whereNull('ended_at')
+                    ->orWhere('started_at', '>=', now()->startOfDay()),
+            ])
+            // Summed in SQL rather than by loading rows and adding them up in
+            // PHP. Running logs have a null duration and are excluded, which is
+            // correct: the frontend adds their live elapsed time on top.
+            ->withSum('timeLogs as logged_seconds', 'duration_seconds');
 
         if ($visibleProjectIds !== null) {
             $query->whereIn('project_id', $visibleProjectIds);
@@ -105,7 +125,10 @@ class TicketRepository implements TicketRepositoryInterface
         ]);
     }
 
-    public function stopTimer(int $employeeId): void
+    /**
+     * @return array<int> ids of the tickets whose timers were stopped
+     */
+    public function stopTimer(int $employeeId): array
     {
         $running = TicketTimeLog::where('employee_id', $employeeId)
             ->whereNull('ended_at')
@@ -120,17 +143,27 @@ class TicketRepository implements TicketRepositoryInterface
                 'duration_seconds' => $endedAt->diffInSeconds($log->started_at),
             ]);
         }
+
+        // Returned so the caller can hand the updated ticket back to the client.
+        // Without it the board keeps the total it was last sent, which no longer
+        // includes the session that just ended.
+        return $running->pluck('ticket_id')->unique()->values()->all();
     }
 
     public function loadDetail(Ticket $ticket): Ticket
     {
         return $ticket->load([
             'assignee:id,name,email',
+            'assignedBy:id,name',
             'module:id,name,slug,project_id',
             'project:id,name,slug',
             'comments.author:id,name',
             'timeLogs' => fn ($q) => $q->latest('started_at')->limit(50),
-        ]);
+        ])
+            // Summed separately from the loaded rows, which stop at 50: a ticket
+            // with more sessions than that would otherwise show a total short of
+            // the truth. Same column the list sends, so both endpoints agree.
+            ->loadSum('timeLogs as logged_seconds', 'duration_seconds');
     }
 
     public function statsByModule(array $moduleIds): Collection

@@ -47,13 +47,9 @@ class MessageService
      */
     private const PRESENCE_TTL_HOURS = 12;
 
-    private const BROADCAST_AUDIENCES = [
-        'employees' => ['employee'],
-        'managers' => ['manager', 'team_lead'],
-        'hr' => ['hr'],
-    ];
 
     public function __construct(
+        private readonly BroadcastAudiences $audiences,
         private readonly PermissionService $permissions,
         private readonly ScopeResolver $scopes,
     ) {
@@ -599,7 +595,7 @@ class MessageService
         // not the id list the client sent. Trusting that list would let a
         // "broadcast to HR" quietly deliver to anyone the sender chose to
         // enumerate.
-        $roles = self::BROADCAST_AUDIENCES[$audience] ?? null;
+        $roles = $this->audiences->rolesFor($audience);
 
         if ($roles !== null) {
             return array_values(array_intersect($reachable, $this->employeeIdsForRoles($roles)));
@@ -608,6 +604,50 @@ class MessageService
         // 'all_company' and anything unrecognised fall back to everyone the
         // sender may reach, which their scope has already bounded.
         return $reachable;
+    }
+
+    /**
+     * The audiences the signed-in user may broadcast to, each with how many
+     * people it currently reaches.
+     *
+     * Served rather than hardcoded in the client, which is what let the two
+     * definitions drift. The count is the safeguard: a wrong audience is
+     * visible before sending rather than after nobody replies.
+     *
+     * @return array<int, array{id: string, label: string, reaches: int}>
+     */
+    public function audiencesFor(User $user): array
+    {
+        $sender = $this->employeeFor($user);
+        $row = collect($this->permissions->forUser($user))->firstWhere('module', 'Messages');
+
+        // Broadcasting is reaching the whole company, which is what scope 'all'
+        // already means. The client used to test the role name instead — a
+        // second, weaker answer to a question the grid answers.
+        if (! $sender || ($row['scope'] ?? null) !== 'all' || ! ($row['create'] ?? false)) {
+            return [];
+        }
+
+        $reachable = $this->reachableEmployeeIds($user, $sender, $row['scope']);
+
+        return collect($this->audiences->ids())
+            ->map(function (string $id) use ($reachable) {
+                $roles = $this->audiences->rolesFor($id);
+
+                $recipients = $roles === null
+                    ? $reachable
+                    : array_intersect($reachable, $this->employeeIdsForRoles($roles));
+
+                return [
+                    'id' => $id,
+                    'label' => $this->audiences->label($id),
+                    'reaches' => count($recipients),
+                ];
+            })
+            // An audience nobody is in is noise in the picker.
+            ->filter(fn (array $audience) => $audience['reaches'] > 0)
+            ->values()
+            ->all();
     }
 
     /**
@@ -631,7 +671,8 @@ class MessageService
     {
         if ($scope === 'self') {
             $ids = collect($this->scopes->supervisorIds($sender))
-                ->merge($this->employeeIdsForRoles(['hr']));
+                ->merge($this->employeeIdsForRoles(['hr']))
+                ->merge($this->correspondentIds($sender));
 
             return array_values(array_diff($ids->unique()->all(), [$sender->id]));
         }
@@ -646,7 +687,11 @@ class MessageService
         // Anyone below 'all' still needs a route upward: a lead with scope
         // 'owned' sees their squad but must be able to reach HR too.
         if ($allowed !== null) {
-            $reachable = array_merge($reachable, $this->employeeIdsForRoles(['hr']));
+            $reachable = array_merge(
+                $reachable,
+                $this->employeeIdsForRoles(['hr']),
+                $this->correspondentIds($sender)
+            );
         }
 
         $reachable = array_values(array_diff(array_unique($reachable), [$sender->id]));
@@ -657,6 +702,32 @@ class MessageService
         return Employee::whereIn('id', $reachable)
             ->where('status', 'active')
             ->pluck('id')
+            ->all();
+    }
+
+    /**
+     * People who have written to this employee.
+     *
+     * Being messaged is itself permission to answer. Without this an employee's
+     * reachable set is supervisors plus HR, so a company announcement from the
+     * super admin — who is neither — could be read but not replied to: the
+     * reply was refused with "You may not message those people", and the
+     * composer could not even name the person it was addressing.
+     *
+     * Deliberately one-directional. It opens a reply channel to someone who
+     * started a conversation; it does not let anyone start one.
+     *
+     * @return array<int, int>
+     */
+    private function correspondentIds(Employee $employee): array
+    {
+        return DB::table('message_recipients')
+            ->join('messages', 'messages.id', '=', 'message_recipients.message_id')
+            ->where('message_recipients.employee_id', $employee->id)
+            ->distinct()
+            ->pluck('messages.sender_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
             ->all();
     }
 

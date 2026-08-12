@@ -90,8 +90,14 @@ class TicketController extends Controller
 
     public function stopTimer(Request $request): JsonResponse
     {
-        $this->tickets->stopTimer($request->user());
+        $ticket = $this->tickets->stopTimer($request->user());
 
-        return response()->json(['message' => 'Timer stopped.']);
+        return response()->json([
+            'message' => 'Timer stopped.',
+            // The refreshed ticket, so the board can show the session that just
+            // ended rather than the total it was last sent. Null when no timer
+            // was running.
+            'ticket' => $ticket ? new TicketResource($ticket) : null,
+        ]);
     }
 }

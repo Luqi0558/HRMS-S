@@ -2,12 +2,17 @@
 
 namespace App\Services;
 
+use App\Jobs\AnnounceCheckOutToTeams;
 use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 class AttendanceService
 {
@@ -16,6 +21,26 @@ class AttendanceService
         private readonly ScopeResolver $scopes,
         private readonly SettingsService $settings,
     ) {
+    }
+
+    /**
+     * The current moment in the company's own timezone.
+     *
+     * check_in and check_out are TIME columns — a wall clock with no zone
+     * attached — and settings.attendance.startTime ("09:30") is a wall clock in
+     * the office's timezone too. Stamping them from now() meant writing UTC and
+     * comparing it against a local start time: on Asia/Karachi (UTC+5) a 09:00
+     * arrival stored as 04:00 and someone strolling in at 14:00 was recorded
+     * "present", five hours late, because 09:00 UTC is before 09:30.
+     *
+     * The date is taken from here too, so the working day rolls over at local
+     * midnight rather than at 05:00.
+     */
+    private function companyNow(): Carbon
+    {
+        return now()->setTimezone(
+            (string) $this->settings->get('company', 'timezone', config('app.timezone'))
+        );
     }
 
     /**
@@ -29,61 +54,180 @@ class AttendanceService
             return null;
         }
 
-        return Attendance::where('employee_id', $employee->id)
-            ->whereDate('date', now()->toDateString())
+        return Attendance::with('sessions')
+            ->where('employee_id', $employee->id)
+            ->whereDate('date', $this->companyNow()->toDateString())
             ->first();
+    }
+
+    /**
+     * An attendance row whose check-in photo the caller is allowed to see.
+     *
+     * Mirrors MedicalClaimService::findForReceipt: your own row always, anyone
+     * else's only through the Attendance module and only within your scope. A
+     * 404 rather than a 403 throughout — whether a given employee photographed
+     * themselves this morning is itself information.
+     */
+    public function findForPhoto(User $user, int $attendanceId): Attendance
+    {
+        $row = Attendance::find($attendanceId);
+
+        if (! $row || blank($row->photo_path)) {
+            throw new NotFoundHttpException('Photo not found.');
+        }
+
+        $employee = $this->employeeFor($user);
+
+        if ($employee && $row->employee_id === $employee->id) {
+            return $row;
+        }
+
+        $permission = collect($this->permissions->forUser($user))->firstWhere('module', 'Attendance');
+
+        if (! $permission || ! ($permission['view'] ?? false)) {
+            throw new NotFoundHttpException('Photo not found.');
+        }
+
+        $visibleIds = $this->scopes->visibleEmployeeIds($user, $permission['scope']);
+        if ($visibleIds !== null && ! in_array($row->employee_id, $visibleIds, true)) {
+            throw new NotFoundHttpException('Photo not found.');
+        }
+
+        return $row;
+    }
+
+    /**
+     * Removes a superseded check-in photo from disk.
+     *
+     * Quiet about failures: a missing file means the job is already done, and a
+     * punch must not fail because an old image could not be tidied away.
+     */
+    private function forgetPhoto(Attendance $record, ?string $path): void
+    {
+        if (blank($path)) {
+            return;
+        }
+
+        try {
+            Storage::disk('local')->delete($path);
+        } catch (\Throwable) {
+            // Nothing to do — the row is about to stop pointing at it anyway.
+        }
+
+        // The session that captured it holds the same path, so it is cleared
+        // too — otherwise the database would go on referencing a file that is
+        // no longer on disk.
+        if ($record->exists) {
+            $record->sessions()->where('photo_path', $path)->update(['photo_path' => null]);
+        }
     }
 
     public function checkIn(User $user, array $attributes = []): Attendance
     {
         $employee = $this->requireEmployee($user);
-        $today = now()->toDateString();
+        $today = $this->companyNow()->toDateString();
 
-        $existing = Attendance::where('employee_id', $employee->id)
-            ->whereDate('date', $today)
-            ->first();
+        $now = $this->companyNow()->format('H:i');
 
-        // 409 rather than silently returning the existing row: a second
-        // check-in usually means a double-tap, and overwriting check_in would
-        // erase the real arrival time.
-        if ($existing && $existing->check_in) {
-            throw new ConflictHttpException('You have already checked in today.');
-        }
+        return DB::transaction(function () use ($employee, $today, $now, $attributes) {
+            $record = Attendance::where('employee_id', $employee->id)
+                ->whereDate('date', $today)
+                ->lockForUpdate()
+                ->first();
 
-        $now = now()->format('H:i');
+            // Only an open session blocks a new one. Checking in again after
+            // checking out is legitimate — an appointment, or simply correcting
+            // a mistaken punch — and used to be refused outright, which left
+            // people unable to record the rest of their day.
+            if ($record?->sessions()->whereNull('check_out')->exists()) {
+                throw new ConflictHttpException('You are already checked in. Check out first.');
+            }
 
-        return Attendance::updateOrCreate(
-            ['employee_id' => $employee->id, 'date' => $today],
-            [
+            $record ??= new Attendance([
+                'employee_id' => $employee->id,
+                'date' => $today,
+            ]);
+
+            // Status and the day's check_in are stamped from the FIRST session
+            // only. Recomputing either on a later check-in would relabel a
+            // punctual morning as late because somebody punched back in later
+            // in the day.
+            if (blank($record->check_in)) {
+                $record->check_in = $now;
+                $record->status = $this->statusFor($now);
+            }
+
+            // Unlike check_in and status, these track the MOST RECENT session.
+            // The row's photo is what the ledger shows, and showing this
+            // morning's photo against an afternoon check-in makes it look like
+            // nobody photographed the return — the point of the camera is to
+            // evidence the punch that just happened.
+            //
+            // Only overwritten when the new punch actually carries a photo, so
+            // a check-in with the camera turned off does not blank the evidence
+            // already gathered.
+            $record->device = $attributes['device'] ?? $record->device ?? 'laptop';
+            if (filled($attributes['photoPath'] ?? null)) {
+                // The previous shot is deleted rather than kept: the ledger only
+                // ever shows the latest, so older files would accumulate on disk
+                // unseen. Requested deliberately — the trade is that the earlier
+                // arrivals of a multi-session day are no longer evidenced.
+                $this->forgetPhoto($record, $record->photo_path);
+                $record->photo_path = $attributes['photoPath'];
+            }
+
+            // Reopened: the day has no last-out again until they check out.
+            $record->check_out = null;
+            $record->save();
+
+            $record->sessions()->create([
                 'check_in' => $now,
-                // Computed once, at write time. Recomputing on read would
-                // rewrite history the moment HR changed the grace period.
-                'status' => $this->statusFor($now),
                 'device' => $attributes['device'] ?? 'laptop',
                 'photo_path' => $attributes['photoPath'] ?? null,
-            ],
-        );
+            ]);
+
+            return $record->refresh()->load('sessions');
+        });
     }
 
     public function checkOut(User $user): Attendance
     {
         $employee = $this->requireEmployee($user);
 
-        $record = Attendance::where('employee_id', $employee->id)
-            ->whereDate('date', now()->toDateString())
-            ->first();
+        $now = $this->companyNow()->format('H:i');
 
-        if (! $record || ! $record->check_in) {
-            throw new ConflictHttpException('You have not checked in today.');
-        }
+        $record = DB::transaction(function () use ($employee, $now) {
+            $record = Attendance::where('employee_id', $employee->id)
+                ->whereDate('date', $this->companyNow()->toDateString())
+                ->lockForUpdate()
+                ->first();
 
-        if ($record->check_out) {
-            throw new ConflictHttpException('You have already checked out today.');
-        }
+            if (! $record || ! $record->check_in) {
+                throw new ConflictHttpException('You have not checked in today.');
+            }
 
-        $record->update(['check_out' => now()->format('H:i')]);
+            $open = $record->sessions()->whereNull('check_out')->orderBy('check_in')->first();
 
-        return $record->refresh();
+            if (! $open) {
+                throw new ConflictHttpException('You are not currently checked in.');
+            }
+
+            $open->update(['check_out' => $now]);
+
+            // The day's check_out is the last one, so reports and exports that
+            // read the parent row keep working unchanged.
+            $record->update(['check_out' => $now]);
+
+            return $record->refresh()->load('sessions');
+        });
+
+        // Outside the transaction on purpose. On the sync queue the job runs
+        // immediately, and dispatching from inside would announce a check-out
+        // that had not committed yet — and could still roll back. The job
+        // no-ops when no Teams webhook is configured.
+        AnnounceCheckOutToTeams::dispatch($record->id);
+
+        return $record;
     }
 
     /**
@@ -106,7 +250,12 @@ class AttendanceService
             $visibleIds = $this->scopes->visibleEmployeeIds($user, $row['scope']);
         }
 
-        $query = Attendance::with('employee:id,name,department,designation');
+        $query = Attendance::with([
+            'employee:id,name,department,designation',
+            // workedSeconds() and breakSeconds() sum these, so loading them here
+            // is what keeps the ledger from firing a query per row.
+            'sessions',
+        ]);
 
         if ($visibleIds !== null) {
             $query->whereIn('employee_id', $visibleIds);

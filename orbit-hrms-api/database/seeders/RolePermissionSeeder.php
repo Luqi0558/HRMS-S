@@ -54,8 +54,43 @@ class RolePermissionSeeder extends Seeder
             ['employee', 'Messages', true, true, false, false, 'self'],
             ['employee', 'Company Hub', true, false, false, false, 'all'],
             ['employee', 'Profile', true, false, false, false, 'self'],
+            /*
+             * QA owns the Review column: developers hand work over, QA either
+             * passes it to Done or sends it back. 'approve' is what marks them
+             * as a reviewer rather than someone who merely works the board —
+             * TicketService reads it as supervisory, which is what lets them
+             * act on a ticket that is not assigned to them.
+             */
+            ['qa', 'Dashboard', true, false, false, false, 'team'],
+            ['qa', 'Projects', true, false, false, false, 'team'],
+            ['qa', 'Tickets', true, true, true, false, 'team'],
+            ['qa', 'Leave Request', true, true, false, false, 'self'],
+            ['qa', 'Medical Request', true, true, false, false, 'self'],
+            ['qa', 'Payroll', true, false, false, false, 'self'],
+            ['qa', 'Messages', true, true, false, false, 'self'],
+            ['qa', 'Company Hub', true, false, false, false, 'all'],
+            ['qa', 'Profile', true, false, false, false, 'self'],
+
+            /*
+             * An intern is an employee with a narrower remit: no medical claims
+             * and no petty cash, since neither applies to them. Everything else
+             * — their tickets, leave, messages, own payslip — is unchanged.
+             */
+            ['intern', 'Dashboard', true, false, false, false, 'self'],
+            ['intern', 'Projects', true, false, false, false, 'team'],
+            ['intern', 'Tickets', true, true, false, false, 'team'],
+            ['intern', 'Leave Request', true, true, false, false, 'self'],
+            ['intern', 'Payroll', true, false, false, false, 'self'],
+            ['intern', 'Messages', true, true, false, false, 'self'],
+            ['intern', 'Company Hub', true, false, false, false, 'all'],
+            ['intern', 'Profile', true, false, false, false, 'self'],
+
             ['manager', 'Dashboard', true, false, false, false, 'owned'],
             ['manager', 'Employees', true, false, false, false, 'owned'],
+            // Their own people's punches. Without this the dashboard's team
+            // attendance list showed only the viewer's own row — the API scoped
+            // it to 'self' because the role held no Attendance permission at all.
+            ['manager', 'Attendance', true, false, false, false, 'owned'],
             ['manager', 'Projects', true, true, true, false, 'owned'],
             ['manager', 'Tickets', true, true, false, false, 'owned'],
             ['manager', 'Team Leaves', true, false, false, false, 'owned'],
@@ -81,7 +116,16 @@ class RolePermissionSeeder extends Seeder
             ['hr', 'Company Hub', true, true, false, false, 'all'],
             ['hr', 'Profile', true, false, false, false, 'self'],
             ['team_lead', 'Dashboard', true, false, false, false, 'owned'],
-            ['team_lead', 'Projects', true, false, true, false, 'owned'],
+            // 'create' so a lead can set up modules — training work for an
+            // intern, or a new workstream in a project they already run. Scope
+            // 'owned' bounds it to projects they lead; they cannot touch
+            // anybody else's.
+            ['team_lead', 'Projects', true, true, true, false, 'owned'],
+            // Their squad's punches, for the Squad Today card. This is not a
+            // route to the attendance ledger: /attendance is gated on
+            // company-wide scope, which 'owned' is not — a lead reads their own
+            // people through the API and nothing more.
+            ['team_lead', 'Attendance', true, false, false, false, 'owned'],
             ['team_lead', 'Tickets', true, true, true, false, 'owned'],
             ['team_lead', 'Team Leaves', true, false, true, false, 'owned'],
             ['team_lead', 'Leave Request', true, true, false, false, 'self'],

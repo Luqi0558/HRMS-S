@@ -62,6 +62,57 @@ class ProjectController extends Controller
      * is gated on `approve` rather than `create` — signing off a deliverable
      * is a different act from editing one.
      */
+    public function storeModule(Request $request, string $project): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'description' => ['nullable', 'string', 'max:2000'],
+            'leadId' => ['nullable', 'integer', 'exists:employees,id'],
+            'budget' => ['nullable', 'numeric', 'min:0'],
+            'commissionType' => ['nullable', 'in:percent,fixed'],
+            'commissionValue' => ['nullable', 'numeric', 'min:0'],
+        ]);
+
+        return response()->json([
+            'message' => 'Module created.',
+            'module' => new ProjectModuleResource(
+                $this->projects->createModule($request->user(), $project, $validated)
+            ),
+        ], 201);
+    }
+
+    public function updateModule(Request $request, int $module): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['sometimes', 'string', 'max:255'],
+            'description' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'leadId' => ['sometimes', 'nullable', 'integer', 'exists:employees,id'],
+            'budget' => ['sometimes', 'numeric', 'min:0'],
+            'commissionType' => ['sometimes', 'in:percent,fixed'],
+            'commissionValue' => ['sometimes', 'numeric', 'min:0'],
+        ]);
+
+        return response()->json([
+            'module' => new ProjectModuleResource(
+                $this->projects->updateModule($request->user(), $module, $validated)
+            ),
+        ]);
+    }
+
+    public function syncModuleMembers(Request $request, int $module): JsonResponse
+    {
+        $validated = $request->validate([
+            'employeeIds' => ['present', 'array'],
+            'employeeIds.*' => ['integer', 'exists:employees,id'],
+        ]);
+
+        return response()->json([
+            'module' => new ProjectModuleResource(
+                $this->projects->syncModuleMembers($request->user(), $module, $validated['employeeIds'])
+            ),
+        ]);
+    }
+
     public function setModuleDelivered(Request $request, int $module): JsonResponse
     {
         $validated = $request->validate([

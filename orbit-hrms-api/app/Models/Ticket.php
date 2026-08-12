@@ -13,7 +13,8 @@ class Ticket extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
-        'project_id', 'project_module_id', 'title', 'description',
+        'project_id', 'project_module_id', 'title',
+        'reference', 'description',
         'status', 'priority', 'assignee_id', 'created_by', 'deadline',
         'completed_at',
     ];
@@ -36,6 +37,16 @@ class Ticket extends Model
     public function assignee(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'assignee_id');
+    }
+
+    /**
+     * Whoever raised the ticket. The board shows "Assigned by", and employees
+     * cannot read the employee roster to resolve created_by themselves — so the
+     * name has to travel with the ticket.
+     */
+    public function assignedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'created_by');
     }
 
     public function comments(): HasMany

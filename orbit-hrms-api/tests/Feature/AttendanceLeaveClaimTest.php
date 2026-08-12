@@ -150,6 +150,12 @@ class AttendanceLeaveClaimTest extends TenantTestCase
 
     public function test_arrival_within_grace_is_present(): void
     {
+        // Pinned so the frozen clock below is also the office clock. Punches are
+        // stamped in the company's timezone, which defaults to Asia/Karachi —
+        // without this, 09:38 UTC arrives as 14:38 locally and is late, which
+        // would fail this test for a reason that has nothing to do with grace.
+        app(SettingsService::class)->putGroup('company', ['timezone' => 'UTC']);
+
         Carbon::setTestNow(Carbon::parse(now()->toDateString().' 09:38:00'));
 
         $this->postJson('/api/attendance/check-in', [], $this->auth('worker@test.com'))

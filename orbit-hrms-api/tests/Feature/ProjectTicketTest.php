@@ -225,16 +225,19 @@ class ProjectTicketTest extends TenantTestCase
             'assignee_id' => $this->member->id,
         ]);
 
+        // Signed off by the manager, not the assignee: marking work done is a
+        // review, and an assignee moves their own work to 'review' and stops
+        // there. QaReviewTest covers the refusal side of that rule.
         $this->patchJson("/api/tickets/{$ticket->id}", [
             'status' => 'done',
-        ], $this->auth('member@test.com'))->assertOk();
+        ], $this->auth('manager@test.com'))->assertOk();
 
         $this->assertNotNull($ticket->fresh()->completed_at);
 
         // ...and reopening clears it, so the two never disagree.
         $this->patchJson("/api/tickets/{$ticket->id}", [
             'status' => 'in_progress',
-        ], $this->auth('member@test.com'))->assertOk();
+        ], $this->auth('manager@test.com'))->assertOk();
 
         $this->assertNull($ticket->fresh()->completed_at);
     }

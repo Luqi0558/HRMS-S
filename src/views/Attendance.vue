@@ -9,7 +9,7 @@ import { employeeService } from '../services/employeeService.js'
 
 const route = useRoute()
 const {
-  state, can, todayKey, formatDate, formatTime,
+  state, can, scopeFor, todayKey, formatDate, formatTime,
   setAttendance, upsertAttendance, setServerSettings, setEmployees
 } = useStore()
 const loadError = ref('')
@@ -35,7 +35,55 @@ async function loadAttendance() {
   if (employees.status === 'fulfilled') setEmployees(employees.value.data)
 }
 
-onMounted(loadAttendance)
+/**
+ * Object URLs for check-in photos, keyed by attendance id.
+ *
+ * The images cannot be linked directly: they live on a private disk and are
+ * served through the same permission checks as the row, so an <img src> would
+ * arrive without the bearer token. Each is fetched once and cached here.
+ */
+const photoUrls = ref({})
+
+// The row whose photo is open full size, or null. Only rows the API already
+// served a photo for can get here, so no extra permission check is needed —
+// the thumbnail existing is itself the proof this user may see it.
+const viewingPhoto = ref(null)
+
+function onPhotoKeydown(event) {
+  if (event.key === 'Escape') viewingPhoto.value = null
+}
+
+function openPhoto(row) {
+  if (!photoUrls.value[row.id]) return
+  viewingPhoto.value = row
+}
+
+async function loadPhotos() {
+  const pending = state.attendance.filter(
+    row => row.hasCheckInPhoto && !photoUrls.value[row.id]
+  )
+
+  await Promise.all(pending.map(async row => {
+    const url = await attendanceService.photoUrl(row.id)
+    if (url) photoUrls.value[row.id] = url
+  }))
+}
+
+// Runs whenever the ledger changes, so a fresh punch or a filter that pulls in
+// new rows gets its thumbnails without a reload.
+watch(() => state.attendance.map(row => row.id).join(','), loadPhotos, { immediate: true })
+
+// Object URLs are held by the browser until explicitly released.
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onPhotoKeydown)
+  Object.values(photoUrls.value).forEach(URL.revokeObjectURL)
+  photoUrls.value = {}
+})
+
+onMounted(() => {
+  loadAttendance()
+  window.addEventListener('keydown', onPhotoKeydown)
+})
 const videoRef = ref(null)
 const showCameraModal = ref(false)
 const cameraError = ref('')
@@ -46,11 +94,24 @@ const attendanceEmployeeFilter = ref('all')
 const attendancePresenceFilter = ref('all')
 let cameraStream = null
 
-const canAccessAttendance = computed(() => can('Attendance', 'view'))
+// Company-wide scope, not merely 'view'. This page is the whole punch ledger
+// with an export; a manager or team lead holds Attendance at 'owned' so they
+// can read their own people through the API, which is not the same as being
+// handed the register for everybody.
+const canAccessAttendance = computed(() => scopeFor('Attendance') === 'all')
 const cameraRequired = computed(() => state.settings.attendance.cameraCheckinRequired !== false)
 const canViewTeam = computed(() => canAccessAttendance.value)
-const todayAttendance = computed(() => state.attendance.find(a => a.employeeId === state.currentUser.id && a.date === todayKey()))
-const checkedIn = computed(() => Boolean(todayAttendance.value && !todayAttendance.value.checkOut))
+// employeeId, not currentUser.id. Attendance rows reference the employees
+// table; currentUser.id is the user id. They only agree by coincidence, and
+// when they did not this found nothing — so `checkedIn` stayed false, the
+// Check out button never appeared, and nothing stopped a second check-in.
+const todayAttendance = computed(() =>
+  state.attendance.find(a => a.employeeId === state.currentUser.employeeId && a.date === todayKey())
+)
+// From the server's open-session flag, not from check_out being empty. A day
+// can now hold several sessions, so "has a last check-out" no longer means the
+// day is finished — you are checked in only while a session is still open.
+const checkedIn = computed(() => Boolean(todayAttendance.value?.isCheckedIn))
 const checkInTime = computed(() => todayAttendance.value?.checkIn ?? null)
 
 function formatNow() {
@@ -100,29 +161,33 @@ function closeCamera() {
   cameraLoading.value = false
 }
 
+/** The frame as a JPEG Blob, ready to upload. */
 function capturePhoto() {
-  if (!videoRef.value || !videoRef.value.videoWidth || !videoRef.value.videoHeight) return ''
+  if (!videoRef.value || !videoRef.value.videoWidth || !videoRef.value.videoHeight) {
+    return Promise.resolve(null)
+  }
   const canvas = document.createElement('canvas')
   canvas.width = videoRef.value.videoWidth
   canvas.height = videoRef.value.videoHeight
   const context = canvas.getContext('2d')
-  if (!context) return ''
+  if (!context) return Promise.resolve(null)
   context.drawImage(videoRef.value, 0, 0, canvas.width, canvas.height)
-  return canvas.toDataURL('image/jpeg', 0.88)
+
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88))
 }
 
 async function checkInWithPhoto() {
   if (checkedIn.value) return
 
   // When camera check-in is switched off in Settings, skip capture entirely.
-  let photo = ''
+  let photo = null
   if (cameraRequired.value) {
     if (!showCameraModal.value) {
       await openCamera()
     }
     if (cameraError.value || !videoRef.value) return
 
-    photo = capturePhoto()
+    photo = await capturePhoto()
     if (!photo) {
       cameraError.value = 'Unable to capture the photo. Please try again.'
       return
@@ -135,12 +200,15 @@ async function checkInWithPhoto() {
   punchError.value = ''
   punching.value = true
   try {
+    // The photo is uploaded with the punch. It used to be kept in this tab
+    // only — the API stored that a check-in happened but not the image — so
+    // HR opening the same record saw "No photo" for a check-in that was
+    // photographed, and the evidence vanished on refresh.
     const record = await attendanceService.checkIn({
-      device: cameraRequired.value ? 'camera' : 'laptop'
+      device: cameraRequired.value ? 'camera' : 'laptop',
+      photo
     })
-    // The photo stays client-side for this session: the API records that a
-    // check-in happened, not the image itself.
-    upsertAttendance({ ...record, checkInPhoto: photo || null })
+    upsertAttendance(record)
     closeCamera()
   } catch (error) {
     punchError.value = error?.message || 'Unable to check in.'
@@ -166,16 +234,17 @@ async function checkOut() {
 const ledgerRows = computed(() =>
   state.attendance.map(a => {
     const emp = state.employees.find(e => e.id === a.employeeId)
-    let hours = 'â€”'
+    // Taken from the API, which differences the two stored times. The old
+    // version assumed a 15:30 finish for anyone who had not checked out yet,
+    // so a row that was still open reported a worked total that nobody had
+    // worked. Still open now reads as a dash and a status of 'active'.
+    let hours = '—'
     let status = a.status
-    if (a.checkIn) {
-      const [h1, m1] = a.checkIn.split(':').map(Number)
-      const end = a.checkOut ? a.checkOut.split(':').map(Number) : [15, 30]
-      const mins = (end[0] * 60 + end[1]) - (h1 * 60 + m1)
-      hours = `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`
-      if (!a.checkOut) status = 'active'
+    if (a.checkIn && typeof a.workedSeconds === 'number') {
+      hours = `${Math.floor(a.workedSeconds / 3600)}h ${String(Math.floor((a.workedSeconds % 3600) / 60)).padStart(2, '0')}m`
     }
-    return { name: emp?.name ?? 'â€”', checkIn: a.checkIn, checkOut: a.checkOut, status, hours, photo: a.checkInPhoto || null }
+    if (a.checkIn && !a.checkOut) status = 'active'
+    return { id: a.id, name: a.employeeName ?? emp?.name ?? '—', checkIn: a.checkIn, checkOut: a.checkOut, status, hours, photo: photoUrls.value[a.id] ?? null }
   })
 )
 const filteredAttendanceRows = computed(() =>
@@ -224,10 +293,12 @@ watch(
 
 const myAttendanceRows = computed(() =>
   state.attendance
-    .filter(a => a.employeeId === state.currentUser.id)
+    // employeeId, not currentUser.id: attendance rows reference the employees
+    // table while currentUser.id is the user id.
+    .filter(a => a.employeeId === state.currentUser.employeeId)
     .map(a => ({
       ...a,
-      photo: a.checkInPhoto || null
+      photo: photoUrls.value[a.id] ?? null
     }))
 )
 
@@ -332,7 +403,7 @@ function exportAttendanceReport() {
           <div class="flex items-center gap-3 min-w-0">
             <div class="w-12 h-12 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
               <img v-if="row.photo" :src="row.photo" alt="Check-in photo" class="w-full h-full object-cover" />
-              <span v-else class="text-[10px] text-slate-500">No photo</span>
+              <span v-else class="text-[10px] text-slate-500">{{ a.hasCheckInPhoto ? 'Loading...' : 'No photo' }}</span>
             </div>
             <div class="min-w-0">
               <div class="text-sm font-semibold text-slate-900">{{ row.checkOut ? 'Checked out' : 'Checked in' }}</div>
@@ -388,11 +459,11 @@ function exportAttendanceReport() {
           <tr v-for="a in attendanceTable.visibleRows.value" :key="a.id" class="border-b border-slate-200 last:border-0 hover:bg-slate-50/60 transition-colors">
             <td class="px-4 py-3 text-slate-900 font-medium">{{ state.employees.find(e => e.id === a.employeeId)?.name }}</td>
             <td class="px-4 py-3 font-mono text-xs text-slate-700">{{ a.checkIn }}</td>
-            <td class="px-4 py-3 font-mono text-xs text-slate-700">{{ a.checkOut ?? 'â€”' }}</td>
+            <td class="px-4 py-3 font-mono text-xs text-slate-700">{{ a.checkOut ?? '—' }}</td>
             <td class="px-4 py-3 text-slate-900 capitalize">{{ a.device }}</td>
             <td class="px-4 py-2.5">
               <div class="w-10 h-10 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center">
-                <img v-if="a.checkInPhoto" :src="a.checkInPhoto" alt="check-in photo" class="w-full h-full object-cover" />
+                <img v-if="photoUrls[a.id]" :src="photoUrls[a.id]" alt="check-in photo" class="w-full h-full object-cover cursor-zoom-in hover:opacity-80 transition-opacity" @click="openPhoto(a)" />
                 <span v-else class="text-[10px] text-slate-500">No photo</span>
               </div>
             </td>
@@ -431,6 +502,30 @@ function exportAttendanceReport() {
               <button @click="checkInWithPhoto" :disabled="punching" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ punching ? 'Checking in...' : 'Capture &amp; check in' }}</button>
             </div>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Full-size check-in photo. Teleported so the backdrop is not clipped by
+         the table's overflow, and closed on backdrop click or Escape. -->
+    <Teleport to="body">
+      <div
+        v-if="viewingPhoto"
+        class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+        @click.self="viewingPhoto = null"
+      >
+        <div class="max-w-lg w-full rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden">
+          <div class="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-200">
+            <div class="min-w-0">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-slate-500 font-semibold">Check-in photo</div>
+              <div class="text-lg font-bold text-slate-900 truncate">{{ viewingPhoto.employeeName ?? employeeName(viewingPhoto.employeeId) }}</div>
+              <div class="text-xs text-slate-600 mt-0.5">
+                {{ formatDate(viewingPhoto.date) }} &middot; checked in {{ viewingPhoto.checkIn }}
+              </div>
+            </div>
+            <button @click="viewingPhoto = null" class="text-slate-500 hover:text-slate-900 text-xl leading-none shrink-0">&times;</button>
+          </div>
+          <img :src="photoUrls[viewingPhoto.id]" alt="Check-in photo" class="w-full max-h-[70vh] object-contain bg-slate-900" />
         </div>
       </div>
     </Teleport>

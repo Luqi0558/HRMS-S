@@ -34,7 +34,14 @@ const currentProject = computed(() => {
 
 const currentProjectManager = computed(() => {
   if (!currentProject.value) return null
-  return state.employees.find(employee => employee.id === currentProject.value.managerId) || null
+
+  // The project payload already embeds its manager (eager-loaded as
+  // `manager:id,name`). Resolving through state.employees instead meant this
+  // read "-" for every ordinary employee, since /employees 403s for them and
+  // the roster is therefore empty. The lookup remains as a fallback.
+  return currentProject.value.manager
+    ?? state.employees.find(employee => employee.id === currentProject.value.managerId)
+    ?? null
 })
 
 const currentProjectTotal = computed(() => {

@@ -4,9 +4,10 @@ import { useStore } from '../store/index.js'
 import { messageService } from '../services/messageService.js'
 
 const {
-  state, can, permissionRow, formatDateTime, formatTime: formatCompanyTime,
+  state, can, formatDateTime, formatTime: formatCompanyTime,
   logActivity, pushNotification, setMessages, markMessageReadLocally,
   addOptimisticMessage, confirmOptimisticMessage, failOptimisticMessage, removeMessage,
+  prependMessages,
   presenceFor
 } = useStore()
 
@@ -78,7 +79,31 @@ async function loadOlder() {
   }
 }
 
-onMounted(loadMessages)
+/**
+ * The audiences this user may broadcast to.
+ *
+ * allSettled-style: a failure leaves the list empty, which hides the broadcast
+ * button rather than offering one that cannot work.
+ */
+async function loadAudiences() {
+  try {
+    broadcastOptions.value = await messageService.audiences()
+  } catch {
+    broadcastOptions.value = []
+    return
+  }
+
+  // Default to the first audience the API offered rather than a hardcoded id,
+  // which may not be one this user actually has.
+  if (!broadcastOptions.value.some(option => option.id === broadcastAudience.value)) {
+    broadcastAudience.value = broadcastOptions.value[0]?.id ?? ''
+  }
+}
+
+onMounted(() => {
+  loadMessages()
+  loadAudiences()
+})
 
 const messageMode = ref('direct')
 const selectedRecipientId = ref('')
@@ -86,7 +111,10 @@ const broadcastAudience = ref('employees')
 const messageText = ref('')
 const selectedConversationKey = ref('')
 
-const currentUserId = computed(() => state.currentUser.id)
+// Messages reference the employees table — senderId and recipientIds are
+// employee ids — while currentUser.id is the user id. They coincide only when
+// the two tables were filled in step.
+const currentUserId = computed(() => state.currentUser.employeeId ?? state.currentUser.id)
 
 // People the current user manages: their own projects' members, plus the
 // members of any module they lead. Covers managers and team leads alike.
@@ -120,25 +148,19 @@ const myTeamIds = computed(() => {
 const directRecipients = computed(() => contacts.value)
 
 // Broadcasting is company-wide messaging: the 'all' scope on Messages.
-const canBroadcast = computed(() => can('Messages', 'create') && permissionRow('Messages')?.scope === 'all')
+// Non-empty only for someone the API will accept a broadcast from, so the
+// button appears exactly when it will work.
+const canBroadcast = computed(() => broadcastOptions.value.length > 0)
 
-const broadcastOptions = computed(() => {
-  if (state.currentUser.role === 'super_admin') {
-    return [
-      { id: 'all_company', label: 'All company' },
-      { id: 'employees', label: 'All employees' },
-      { id: 'managers', label: 'All managers' },
-      { id: 'hr', label: 'HR team' }
-    ]
-  }
-  if (state.currentUser.role === 'hr') {
-    return [
-      { id: 'employees', label: 'All employees' },
-      { id: 'managers', label: 'All managers' }
-    ]
-  }
-  return []
-})
+/**
+ * Audiences from the API, each with a live recipient count.
+ *
+ * Both halves of this used to be hardcoded here — which roles may broadcast,
+ * and which audiences they may pick — and both drifted from the server the
+ * moment the qa and intern roles were added. The API is now the only place
+ * that knows, so a new role cannot be missed by this file.
+ */
+const broadcastOptions = ref([])
 
 const relatedMessages = computed(() =>
   state.messages
@@ -247,9 +269,43 @@ const conversationList = computed(() => {
 
 const unreadCount = computed(() => conversations.value.reduce((total, conversation) => total + conversation.unread, 0))
 
+/**
+ * Who a message typed in the open thread is addressed to.
+ *
+ * A broadcast has no single recipient, so this used to return null for one —
+ * and sendMessage falls back to the compose dropdown, which defaults to the
+ * first contact in the list. Replying to a company announcement therefore sent
+ * the reply to whoever happened to be selected there, silently.
+ *
+ * A broadcast is answered privately to whoever sent it, which is what the key
+ * carries: broadcast:<senderId>:<audience>. Null when you sent it yourself,
+ * since there is no one person to answer.
+ */
 const activeRecipientId = computed(() => {
-  if (!selectedConversation.value || selectedConversation.value.type !== 'direct') return null
-  return Number(selectedConversation.value.key.replace('direct:', ''))
+  const conversation = selectedConversation.value
+  if (!conversation) return null
+
+  if (conversation.type === 'direct') {
+    return Number(conversation.key.replace('direct:', ''))
+  }
+
+  const senderId = Number(conversation.key.split(':')[1])
+  return senderId && senderId !== currentUserId.value ? senderId : null
+})
+
+/** The name a broadcast reply will go to, for the hint under the composer. */
+const broadcastReplyTo = computed(() => {
+  const conversation = selectedConversation.value
+  if (!conversation || conversation.type === 'direct' || !activeRecipientId.value) return null
+
+  // The sender's name off the message itself, falling back to the contact
+  // list. Resolving through contacts alone rendered "Unknown user" whenever the
+  // broadcaster was not somebody this person may normally write to — which was
+  // the visible half of a deeper problem: the reply was not deliverable either.
+  const fromMessage = (conversation.messages || [])
+    .find(message => message.senderId === activeRecipientId.value)?.senderName
+
+  return fromMessage || employeeName(activeRecipientId.value)
 })
 
 watch(conversations, items => {
@@ -419,7 +475,12 @@ function recipientIdsForBroadcast() {
 }
 
 function audienceLabel() {
-  return broadcastOptions.value.find(option => option.id === broadcastAudience.value)?.label || 'Broadcast'
+  const option = broadcastOptions.value.find(item => item.id === broadcastAudience.value)
+  if (!option) return 'Broadcast'
+
+  // The count is the safeguard: a wrong audience shows itself before sending,
+  // rather than after nobody answers.
+  return `${option.label} (${option.reaches} ${option.reaches === 1 ? 'person' : 'people'})`
 }
 
 function openDirectConversation(employeeId) {
@@ -453,7 +514,14 @@ async function sendMessage() {
       recipientIds: []
     }
   } else {
-    const recipientId = activeRecipientId.value || Number(selectedRecipientId.value)
+    // The open thread decides the recipient; the compose dropdown is only
+    // consulted when no thread is open. Falling back to the dropdown while a
+    // conversation was on screen is what sent broadcast replies to whoever it
+    // happened to be defaulted to.
+    const recipientId = selectedConversation.value
+      ? activeRecipientId.value
+      : Number(selectedRecipientId.value)
+
     if (!recipientId || recipientId === state.currentUser.id) return
 
     payload = {
@@ -481,6 +549,10 @@ async function sendMessage() {
 async function deliver(payload) {
   const tempId = `pending:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
 
+  // The button renders "Sending..." off this and it was never assigned, so the
+  // state was unreachable and a double-tap could send twice.
+  sending.value = true
+
   addOptimisticMessage({ tempId, ...payload })
   loadError.value = ''
   selectedConversationKey.value = conversationKey(state.messages[0])
@@ -503,6 +575,8 @@ async function deliver(payload) {
     // losing what someone typed is worse than showing it did not send.
     failOptimisticMessage(tempId)
     loadError.value = error?.message || 'Unable to send that message.'
+  } finally {
+    sending.value = false
   }
 }
 
@@ -664,7 +738,7 @@ async function retryMessage(message) {
         <div v-if="canBroadcast" class="px-4 py-3 border-b border-slate-200 flex-shrink-0">
           <div class="grid grid-cols-[1fr_auto] gap-2">
             <select v-model="broadcastAudience" class="rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
-              <option v-for="option in broadcastOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
+              <option v-for="option in broadcastOptions" :key="option.id" :value="option.id">{{ option.label }} ({{ option.reaches }})</option>
             </select>
             <button @click="messageMode = 'broadcast'; selectedConversationKey = ''" class="rounded-lg bg-slate-950 px-3 py-2 text-sm font-bold text-white">
               Broadcast
@@ -838,6 +912,12 @@ async function retryMessage(message) {
             <button @click="sendMessage" :disabled="sending" class="self-end rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
               {{ sending ? 'Sending...' : 'Send' }}
             </button>
+          </div>
+          <!-- An announcement cannot be answered to everyone who received it, so
+               the reply is a direct message to whoever sent it. Said out loud
+               because the answer then appears in a different thread. -->
+          <div v-if="broadcastReplyTo" class="px-1 pb-1 text-[11px] text-slate-500">
+            Your reply goes privately to <span class="font-semibold text-slate-700">{{ broadcastReplyTo }}</span>.
           </div>
           <div v-if="loadError" class="mt-2 text-xs text-rose-600">{{ loadError }}</div>
         </div>

@@ -496,14 +496,20 @@ th,
   stroke: rgba(148, 163, 184, 0.24);
 }
 
+/* Stacked: work logged at the bottom, the rest of the desk time above it. Both
+   are solid so the split reads as two segments of one column rather than as a
+   bar with something drawn over it. */
 .timesheet-bar.attendance {
-  fill: #10b981;
-  filter: drop-shadow(0 6px 10px rgba(16, 185, 129, 0.18));
+  fill: #34d399;
 }
 
 .timesheet-bar.logged {
   fill: #3b82f6;
-  filter: drop-shadow(0 6px 10px rgba(59, 130, 246, 0.18));
+  filter: drop-shadow(0 4px 8px rgba(59, 130, 246, 0.22));
+}
+
+.app-shell.night-mode .timesheet-bar.attendance {
+  fill: #10b981;
 }
 
 .timesheet-value {
@@ -641,6 +647,43 @@ th,
 .night-mode .bg-teal-bg,
 .night-mode .bg-coral-bg {
   background-color: rgba(51, 65, 85, 0.8) !important;
+}
+
+/* Slate chips. text-slate-600 is lightened below, so a pale chip behind it
+   reads as blank — which is what the "TODAY" divider in Messages looked like
+   in dark mode. The escaped selector matches Tailwind's opacity variant. */
+.night-mode .bg-slate-200,
+.night-mode .bg-slate-200\/70,
+.night-mode .bg-slate-100 {
+  background-color: rgba(51, 65, 85, 0.75) !important;
+}
+
+/* The -100 pills. Their text is lightened by the rule below, so leaving their
+   background pale made light-on-light: the "Broadcast" badge on Messages was a
+   blank capsule in dark mode. Each keeps a tint of its own hue so the badges
+   stay distinguishable from one another. */
+.night-mode .bg-blue-100 {
+  background-color: rgba(59, 130, 246, 0.22) !important;
+}
+
+.night-mode .bg-rose-100 {
+  background-color: rgba(244, 63, 94, 0.22) !important;
+}
+
+.night-mode .bg-amber-100 {
+  background-color: rgba(245, 158, 11, 0.22) !important;
+}
+
+/* Rose and amber text are not covered by the lightening rule below, so they are
+   set here alongside their backgrounds. */
+.night-mode .text-rose-700,
+.night-mode .text-rose-800 {
+  color: #fecdd3 !important;
+}
+
+.night-mode .text-amber-700,
+.night-mode .text-amber-800 {
+  color: #fde68a !important;
 }
 
 .night-mode .text-blue-700,
@@ -2601,4 +2644,48 @@ body.night-mode .fixed.inset-0 .company-hub-badge-muted {
 .app-shell.night-mode .sidebar-signout:hover {
   background-color: rgba(185, 54, 54, 0.16) !important;
   color: #F3C0B4;
+}
+
+/* Weekend columns on the timesheet. A band rather than the word "OFF", which
+   on the month view replaced the date and left three anonymous Saturdays. */
+.timesheet-weekend-band {
+  fill: #0f172a;
+  opacity: 0.035;
+}
+
+.app-shell.night-mode .timesheet-weekend-band {
+  fill: #ffffff;
+  opacity: 0.05;
+}
+
+/* The logged figure printed inside its own fill, so it is white on blue rather
+   than dark text on a dark bar. */
+.timesheet-value.logged-inline,
+.timesheet-value.attendance-inline {
+  fill: #ffffff;
+  font-weight: 700;
+  /* Smaller than the total above the bar, and unstroked: the white halo that
+     lifts text off the plot background turns into a smear on a coloured
+     segment. */
+  font-size: 10px;
+  stroke: none;
+  paint-order: normal;
+}
+
+.timesheet-value.total-value {
+  fill: #0f172a;
+  font-weight: 700;
+}
+
+.app-shell.night-mode .timesheet-value.total-value {
+  fill: #e2e8f0;
+}
+
+/* `.app-shell.night-mode .timesheet-value` re-applies a stroke at higher
+   specificity, which would put a dark halo around white text sitting on a
+   coloured segment. Segment labels never want one in either theme. */
+.app-shell.night-mode .timesheet-value.logged-inline,
+.app-shell.night-mode .timesheet-value.attendance-inline {
+  stroke: none;
+  fill: #ffffff;
 }

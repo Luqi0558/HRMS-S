@@ -34,34 +34,43 @@ const loadError = ref('')
  * empty list for the first frame.
  */
 async function loadData() {
-  isLoading.value = true
+  // The skeleton belongs to a genuinely empty page. Arriving from the dashboard
+  // the store already holds projects, and replacing them with a spinner to
+  // fetch what is already on screen reads as slower than doing nothing — so
+  // that case refreshes quietly underneath instead.
+  isLoading.value = state.projects.length === 0
   loadError.value = ''
 
-  try {
-    const [projects, tickets] = await Promise.all([
-      projectService.list(),
-      ticketService.list()
-    ])
+  // All three are independent, so they go out in one wave. The roster used to
+  // be awaited after the other two had resolved, which cost a second full
+  // round trip and — because isLoading was only cleared at the very end — held
+  // "Loading projects..." on screen long after the projects themselves had
+  // arrived.
+  //
+  // allSettled rather than all: the roster is allowed to fail on its own. An
+  // employee has no Employees permission and 403s here, but they cannot add
+  // members anyway, so only the modal is poorer for it.
+  const [projects, tickets, employees] = await Promise.allSettled([
+    projectService.list(),
+    ticketService.list(),
+    employeeService.list()
+  ])
 
-    setProjects(projects)
-    setTickets(tickets.data)
-
-    // Separate and non-fatal: an employee has no Employees permission, so this
-    // 403s for them. They cannot add members anyway, and the rest of the page
-    // must still render.
-    try {
-      const employees = await employeeService.list()
-      setEmployees(employees.data)
-    } catch {
-      /* modal will simply have no one to offer */
-    }
-  } catch (error) {
+  if (projects.status === 'fulfilled' && tickets.status === 'fulfilled') {
+    setProjects(projects.value)
+    setTickets(tickets.value.data)
+  } else {
+    const error = projects.reason ?? tickets.reason
     loadError.value = error instanceof ApiError
       ? error.message
       : 'Could not load projects. Please check your connection and try again.'
-  } finally {
-    isLoading.value = false
   }
+
+  if (employees.status === 'fulfilled') {
+    setEmployees(employees.value.data)
+  }
+
+  isLoading.value = false
 }
 
 onMounted(loadData)

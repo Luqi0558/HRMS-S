@@ -12,6 +12,7 @@ const {
   goToRoute,
   projectDetailRoute,
   timesheetTitle,
+  timesheetPeriod,
   dailyTimesheet,
   weeklyTimesheetMaxHours,
   ledgerRowsFor,
@@ -123,13 +124,21 @@ function managerTicketScope() {
             <div class="flex flex-wrap items-center justify-end gap-3">
               <div class="flex items-center gap-2 text-[11px] font-bold text-slate-600">
                 <span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
-                <span>Attendance</span>
+                <span>At desk</span>
               </div>
               <div class="flex items-center gap-2 text-[11px] font-bold text-slate-600">
                 <span class="h-2.5 w-2.5 rounded-full bg-blue-500"></span>
-                <span>Work logged</span>
+                <span>On tickets</span>
               </div>
-              <span class="company-hub-badge company-hub-badge-info">Weekly</span>
+              <div class="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
+            <button
+            v-for="period in ['weekly', 'monthly']"
+            :key="period"
+            @click="timesheetPeriod = period"
+            class="rounded-md px-2.5 py-1 text-[11px] font-bold capitalize transition-colors"
+            :class="timesheetPeriod === period ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+            >{{ period }}</button>
+            </div>
             </div>
           </div>
           <TimesheetChart :days="dailyTimesheet" :max-hours="weeklyTimesheetMaxHours" :format-duration="formatDuration" />

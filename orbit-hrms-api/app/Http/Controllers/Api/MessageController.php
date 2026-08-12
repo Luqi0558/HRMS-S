@@ -13,6 +13,19 @@ use Illuminate\Validation\Rule;
 
 class MessageController extends Controller
 {
+    /**
+     * Audiences this user may broadcast to, with live recipient counts.
+     *
+     * Empty for anyone who may not broadcast, so the client renders whatever it
+     * is given rather than deciding for itself which roles qualify.
+     */
+    public function audiences(Request $request): JsonResponse
+    {
+        return response()->json([
+            'audiences' => $this->messages->audiencesFor($request->user()),
+        ]);
+    }
+
     public function __construct(private readonly MessageService $messages)
     {
     }
