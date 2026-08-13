@@ -19,7 +19,23 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['*'],
+    /*
+     * The sites allowed to call this API, as a comma-separated list in
+     * FRONTEND_URLS. Set it to the deployed frontend, e.g.
+     *
+     *     FRONTEND_URLS=https://orbit-hrms.vercel.app
+     *
+     * Several are allowed so a preview deployment can be added without a code
+     * change. Falls back to '*' only when the variable is unset, which keeps
+     * local development working — on a public host, leaving it unset means any
+     * website on the internet can call this API with a token it has obtained.
+     *
+     * Note the port counts: https://lpsapps.com and https://lpsapps.com:7567
+     * are different origins to a browser.
+     */
+    'allowed_origins' => array_filter(
+        array_map('trim', explode(',', (string) env('FRONTEND_URLS', '*')))
+    ),
 
     'allowed_origins_patterns' => [],
 
