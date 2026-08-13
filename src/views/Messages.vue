@@ -259,12 +259,113 @@ function dayLabel(value) {
   })
 }
 
+/**
+ * Search runs on the API, not over state.messages.
+ *
+ * The inbox is paged at 100, so filtering what is loaded would answer "no
+ * matches" for anything older — indistinguishable from "it was never said".
+ * Results are merged into the store instead of held separately, so the
+ * conversation list and the thread pick them up through the paths they already
+ * use, and a matched message stays readable in its own thread.
+ */
+const searchTerm = ref('')
+const searching = ref(false)
+let searchToken = 0
+
+watch(searchTerm, term => {
+  const trimmed = term.trim()
+  /*
+   * Every keystroke supersedes the last. A token rather than a debounce alone:
+   * debouncing still allows a slow early request to land after a fast later
+   * one, leaving results on screen for a term the user has since changed.
+   */
+  const token = ++searchToken
+
+  // One character matches nearly everything and costs a full-table LIKE.
+  if (trimmed.length < 2) {
+    searching.value = false
+    return
+  }
+
+  searching.value = true
+
+  window.setTimeout(async () => {
+    if (token !== searchToken) return
+
+    try {
+      const { messages } = await messageService.list(null, trimmed)
+      if (token === searchToken) prependMessages(messages)
+    } catch (error) {
+      loadError.value = error?.message || 'Unable to search messages.'
+    } finally {
+      if (token === searchToken) searching.value = false
+    }
+  }, 300)
+})
+
+/** Matches the term against who the conversation is with, and what was said. */
+function conversationMatches(conversation, term) {
+  if ((conversation.title || '').toLowerCase().includes(term)) return true
+  if ((conversation.subtitle || '').toLowerCase().includes(term)) return true
+
+  return (conversation.messages || []).some(message =>
+    (message.body || '').toLowerCase().includes(term)
+    || (message.senderName || '').toLowerCase().includes(term)
+  )
+}
+
 const conversationList = computed(() => {
+  const term = searchTerm.value.trim().toLowerCase()
+
+  if (term) {
+    // The open conversation is deliberately not pinned to the top while
+    // searching: a thread that does not match the term is noise in a result
+    // list, however recently it was read.
+    return conversations.value.filter(conversation => conversationMatches(conversation, term))
+  }
+
   const items = [...conversations.value]
   if (selectedConversation.value && !items.some(item => item.key === selectedConversation.value.key)) {
     items.unshift(selectedConversation.value)
   }
   return items
+})
+
+/**
+ * People matching the term who there is no conversation with yet.
+ *
+ * Without this, searching for somebody you have never written to returns
+ * nothing — which is the wrong answer for "find my conversation with X", where
+ * the useful outcome is being able to start one.
+ */
+const matchingNewContacts = computed(() => {
+  const term = searchTerm.value.trim().toLowerCase()
+  if (!term) return []
+
+  const alreadyListed = new Set(conversationList.value.map(conversation => conversation.key))
+
+  return contacts.value.filter(contact =>
+    (contact.name || '').toLowerCase().includes(term)
+    && !alreadyListed.has(`direct:${contact.id}`)
+  )
+})
+
+/** Nothing found says why: still looking, or genuinely no match. */
+const emptyListMessage = computed(() => {
+  const term = searchTerm.value.trim()
+
+  if (!term) return 'No conversations yet.'
+  if (searching.value) return 'Searching…'
+
+  return `Nothing matches “${term}”.`
+})
+
+const listCountLabel = computed(() => {
+  const count = conversationList.value.length
+
+  if (!searchTerm.value.trim()) return `${count} chats`
+
+  return `${count} ${count === 1 ? 'result' : 'results'}`
 })
 
 const unreadCount = computed(() => conversations.value.reduce((total, conversation) => total + conversation.unread, 0))
@@ -322,23 +423,38 @@ watch(conversations, items => {
   }
 }, { immediate: true })
 
-watch(directRecipients, recipients => {
-  if (!selectedRecipientId.value && recipients[0]) selectedRecipientId.value = String(recipients[0].id)
-}, { immediate: true })
+/*
+ * selectedRecipientId used to be seeded with the first contact so the compose
+ * dropdown had something shown in it. With the dropdown gone it is set only by
+ * picking a person, which is the safer default: sendMessage falls back to it
+ * when no thread is open, and a pre-seeded value there means a message typed
+ * with nothing selected silently goes to whoever happened to sort first.
+ */
 
-// Opening a conversation reads it. Marked locally first so the badge responds
-// immediately, then persisted — a failed write is corrected by the next poll
-// rather than blocking the click.
+/*
+ * Opening a conversation reads it. Marked locally first so the badge responds
+ * immediately, then persisted — a failed write is corrected by the next poll
+ * rather than blocking the click.
+ *
+ * The store owns the readBy write for server-backed rows. This used to push
+ * first and call markMessageReadLocally afterwards, which left that helper's
+ * "not already read" guard satisfied and its unread decrement dead. It only
+ * ever ran because the two were comparing different ids — a user id against an
+ * employee id — so aligning them would have silently stopped the badge from
+ * clearing. Optimistic rows are not the store's to mark, so they are still
+ * handled here.
+ */
 watch(selectedConversation, conversation => {
   if (!conversation) return
   conversation.messages.forEach(message => {
-    if (message.recipientIds.includes(currentUserId.value) && !message.readBy.includes(currentUserId.value)) {
-      message.readBy.push(currentUserId.value)
+    if (!message.recipientIds.includes(currentUserId.value)) return
+    if (message.readBy.includes(currentUserId.value)) return
 
-      if (message.fromServer) {
-        markMessageReadLocally(message.id)
-        messageService.markRead(message.id).catch(() => {})
-      }
+    if (message.fromServer) {
+      markMessageReadLocally(message.id)
+      messageService.markRead(message.id).catch(() => {})
+    } else {
+      message.readBy.push(currentUserId.value)
     }
   })
 }, { immediate: true })
@@ -487,6 +603,64 @@ function openDirectConversation(employeeId) {
   selectedConversationKey.value = `direct:${employeeId}`
   messageMode.value = 'direct'
   selectedRecipientId.value = String(employeeId)
+}
+
+/**
+ * Opening a brand new chat from a search result clears the term.
+ *
+ * The thread has no messages yet, so it cannot match what was typed — leaving
+ * the filter on would hide the very conversation the click just opened, and
+ * read as the click having done nothing.
+ */
+function startChatWith(employeeId) {
+  openDirectConversation(employeeId)
+  searchTerm.value = ''
+  showNewChat.value = false
+}
+
+/**
+ * The "new chat" panel.
+ *
+ * Replaces a pair of <select> dropdowns. A dropdown shows one contact at a
+ * time, cannot be searched, and puts starting a conversation behind the same
+ * control that picks who an already-open thread is with — which is how a
+ * broadcast reply once went to whoever the dropdown happened to be defaulted
+ * to. A panel lists everyone reachable, filters as you type, and is dismissed
+ * without choosing anybody.
+ */
+const showNewChat = ref(false)
+const newChatSearch = ref('')
+
+function openNewChat() {
+  newChatSearch.value = ''
+  showNewChat.value = true
+}
+
+function closeNewChat() {
+  showNewChat.value = false
+}
+
+/** Name or role: "qa" should find the QA engineers without knowing a name. */
+const newChatContacts = computed(() => {
+  const term = newChatSearch.value.trim().toLowerCase()
+  if (!term) return contacts.value
+
+  return contacts.value.filter(contact =>
+    (contact.name || '').toLowerCase().includes(term)
+    || (contact.role || '').toLowerCase().includes(term)
+  )
+})
+
+/**
+ * Audiences live in this panel too, as the counterpart to WhatsApp's "New
+ * group": a broadcast is the other kind of conversation you can start, and it
+ * was previously a separate dropdown competing for the same vertical space.
+ */
+function startBroadcast(audienceId) {
+  broadcastAudience.value = audienceId
+  messageMode.value = 'broadcast'
+  selectedConversationKey.value = ''
+  closeNewChat()
 }
 
 /**
@@ -707,7 +881,7 @@ async function retryMessage(message) {
     <div class="flex items-center justify-between gap-3">
       <div class="text-sm text-slate-600">Direct messages and admin broadcasts.</div>
       <div class="flex flex-wrap items-center gap-2 flex-shrink-0">
-        <span class="rounded-full bg-white border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700">{{ conversationList.length }} chats</span>
+        <span class="rounded-full bg-white border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700">{{ listCountLabel }}</span>
         <span v-if="unreadCount" class="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">{{ unreadCount }} unread</span>
       </div>
     </div>
@@ -717,33 +891,48 @@ async function retryMessage(message) {
          redundant panel header is gone — message previews truncate, so the
          extra width shows more of each one. -->
     <section class="grid grid-cols-1 xl:grid-cols-[380px_1fr] gap-4 h-[calc(100vh-10.5rem)] min-h-[420px]">
-      <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm h-full min-h-0 flex flex-col">
+      <div class="relative bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm h-full min-h-0 flex flex-col">
         <!-- The "Chats" heading duplicated the page title above and cost the
              list ~52px of height; the count moved into the page header. -->
-        <div class="px-4 py-3 border-b border-slate-200 flex-shrink-0">
-          <label class="block">
-          <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Start direct chat</span>
-          <select
-            v-model="selectedRecipientId"
-            @change="openDirectConversation(selectedRecipientId)"
-            class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-          >
-            <option v-for="employee in directRecipients" :key="employee.id" :value="employee.id">
-              {{ employee.name }} - {{ employee.role }}
-            </option>
-          </select>
+        <!-- Search sits above the composer controls: it is how you find an
+             existing conversation, which is the more common errand. -->
+        <!-- Search and "new chat" share one row. The list is the tallest thing
+             on the page and every strip above it costs conversations on
+             screen — the two dropdowns that used to sit here cost about 110px
+             and showed one contact at a time. -->
+        <div class="px-4 py-3 border-b border-slate-200 flex-shrink-0 flex items-center gap-2">
+          <label class="relative flex-1 min-w-0">
+            <span class="sr-only">Search messages and people</span>
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" class="w-4 h-4">
+                <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+              </svg>
+            </span>
+            <input
+              v-model="searchTerm"
+              type="text"
+              placeholder="Search or start a new chat"
+              class="w-full rounded-lg border border-slate-200 pl-9 pr-9 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            />
+            <button
+              v-if="searchTerm"
+              @click="searchTerm = ''"
+              type="button"
+              title="Clear search"
+              class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center text-base leading-none"
+            >&times;</button>
           </label>
-        </div>
-
-        <div v-if="canBroadcast" class="px-4 py-3 border-b border-slate-200 flex-shrink-0">
-          <div class="grid grid-cols-[1fr_auto] gap-2">
-            <select v-model="broadcastAudience" class="rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
-              <option v-for="option in broadcastOptions" :key="option.id" :value="option.id">{{ option.label }} ({{ option.reaches }})</option>
-            </select>
-            <button @click="messageMode = 'broadcast'; selectedConversationKey = ''" class="rounded-lg bg-slate-950 px-3 py-2 text-sm font-bold text-white">
-              Broadcast
-            </button>
-          </div>
+          <button
+            @click="openNewChat"
+            type="button"
+            title="New chat"
+            class="w-9 h-9 flex-shrink-0 rounded-lg bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors shadow-sm"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+              <rect x="3" y="3" width="18" height="18" rx="3" />
+              <path d="M12 8v8M8 12h8" />
+            </svg>
+          </button>
         </div>
 
         <div class="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-200">
@@ -791,7 +980,108 @@ async function retryMessage(message) {
               </div>
             </div>
           </div>
-          <div v-else-if="conversationList.length === 0" class="px-4 py-10 text-center text-sm text-slate-500">No conversations yet.</div>
+          <!-- People matching the search that there is no thread with yet, so
+               a search for someone never written to still leads somewhere. -->
+          <div v-if="!loading && matchingNewContacts.length" class="bg-slate-50/60">
+            <div class="px-4 pt-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Start a new chat</div>
+            <button
+              v-for="contact in matchingNewContacts"
+              :key="`new-${contact.id}`"
+              @click="startChatWith(contact.id)"
+              class="w-full px-4 py-3 text-left transition-colors flex items-center gap-3 hover:bg-slate-100/70"
+            >
+              <div class="w-8 h-8 rounded-xl bg-slate-200 text-slate-700 flex items-center justify-center text-xs font-bold shrink-0">
+                {{ (contact.name || '?').charAt(0) }}
+              </div>
+              <div class="min-w-0">
+                <div class="text-sm font-bold text-slate-900 truncate">{{ contact.name }}</div>
+                <div class="text-xs text-slate-500 capitalize">{{ contact.role }}</div>
+              </div>
+            </button>
+          </div>
+
+          <div
+            v-if="!loading && conversationList.length === 0 && !matchingNewContacts.length"
+            class="px-4 py-10 text-center text-sm text-slate-500"
+          >{{ emptyListMessage }}</div>
+        </div>
+
+        <!-- New chat. Covers the column rather than opening beside it: on the
+             narrow breakpoint the list is the whole page, and a panel that
+             pushed it aside would leave neither usable. -->
+        <div v-if="showNewChat" class="absolute inset-0 z-20 bg-white flex flex-col">
+          <div class="px-4 py-3 border-b border-slate-200 flex items-center gap-2 flex-shrink-0">
+            <button
+              @click="closeNewChat"
+              type="button"
+              title="Back"
+              class="w-8 h-8 flex-shrink-0 rounded-lg text-slate-500 hover:bg-slate-100 flex items-center justify-center"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+                <path d="M19 12H5M12 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <div class="text-sm font-bold text-slate-900">New chat</div>
+          </div>
+
+          <div class="px-4 py-3 border-b border-slate-200 flex-shrink-0">
+            <input
+              v-model="newChatSearch"
+              @keydown.esc="closeNewChat"
+              type="text"
+              placeholder="Search name or role"
+              class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            />
+          </div>
+
+          <div class="flex-1 min-h-0 overflow-y-auto">
+            <!-- Hidden while filtering: an audience is not a person, and
+                 leaving it above the name results buries what was searched for. -->
+            <template v-if="canBroadcast && !newChatSearch.trim()">
+              <div class="px-4 pt-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Broadcast to</div>
+              <button
+                v-for="option in broadcastOptions"
+                :key="option.id"
+                @click="startBroadcast(option.id)"
+                class="w-full px-4 py-3 text-left transition-colors flex items-center gap-3 hover:bg-slate-50"
+              >
+                <div class="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+                    <path d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1z" /><path d="M17 8a5 5 0 0 1 0 8" />
+                  </svg>
+                </div>
+                <div class="min-w-0">
+                  <div class="text-sm font-bold text-slate-900 truncate">{{ option.label }}</div>
+                  <div class="text-xs text-slate-500">Reaches {{ option.reaches }}</div>
+                </div>
+              </button>
+            </template>
+
+            <div class="px-4 pt-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Contacts</div>
+            <button
+              v-for="contact in newChatContacts"
+              :key="contact.id"
+              @click="startChatWith(contact.id)"
+              class="w-full px-4 py-3 text-left transition-colors flex items-center gap-3 hover:bg-slate-50"
+            >
+              <div class="w-9 h-9 rounded-xl bg-slate-950 text-white flex items-center justify-center text-xs font-bold shrink-0">
+                {{ (contact.name || '?').charAt(0) }}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-bold text-slate-900 truncate">{{ contact.name }}</div>
+                <div class="text-xs text-slate-500 capitalize">{{ contact.role }}</div>
+              </div>
+              <span
+                class="h-2.5 w-2.5 rounded-full shrink-0"
+                :class="presenceDotClass(contact.id)"
+                :title="presenceLabel(contact.id)"
+              ></span>
+            </button>
+
+            <div v-if="!newChatContacts.length" class="px-4 py-10 text-center text-sm text-slate-500">
+              No one matches “{{ newChatSearch.trim() }}”.
+            </div>
+          </div>
         </div>
       </div>
 

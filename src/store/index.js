@@ -1455,7 +1455,18 @@ function mapMessage(row) {
     subject: row.subject,
     body: row.body,
     createdAt: row.createdAt,
-    readBy: row.isRead ? [state.currentUser.id] : [],
+    /*
+     * Employee ids, not user ids.
+     *
+     * `recipientIds` below comes from message_recipients.employee_id, and the
+     * Messages view tests both arrays against the same value. Writing a user id
+     * here made a message the server had confirmed as read count as unread,
+     * because the id being looked for was never the id that was stored.
+     *
+     * It has not shown yet only because every employee in the seeded data
+     * happens to share its user's id. The first real onboarding breaks that.
+     */
+    readBy: row.isRead ? [selfEmployeeId(state.currentUser)] : [],
     // The real delivery list: the view groups a conversation by who is on the
     // other side, and tells a broadcast from a direct message by the count.
     // Falling back to the current user would make every message look like a
@@ -1494,14 +1505,17 @@ function addOptimisticMessage({ tempId, body, subject, audience, recipientIds })
     // The exact payload, kept so a retry replays what was actually sent rather
     // than rebuilding it from UI state that has since moved on.
     payload: { body, subject, audience, recipientIds },
-    senderId: state.currentUser.id,
+    // Employee id, for the same reason as mapMessage: the thread selects rows
+    // with `senderId === <my employee id>`, so a user id here left the
+    // optimistic row out of the very conversation it was typed into.
+    senderId: selfEmployeeId(state.currentUser),
     senderName: state.currentUser.name,
     senderRole: state.currentUser.role,
     audience,
     subject,
     body,
     createdAt: new Date().toISOString(),
-    readBy: [state.currentUser.id],
+    readBy: [selfEmployeeId(state.currentUser)],
     recipientIds,
     delivery: null,
     status: 'sending',
@@ -1661,11 +1675,19 @@ function setMessages(rows) {
   state.messages = [...pending, ...(rows || []).map(mapMessage)]
 }
 
-/** Marks a server-backed row read locally, so the badge updates at once. */
+/**
+ * Marks a server-backed row read locally, so the badge updates at once.
+ *
+ * This owns the readBy write. A caller that pushes first and then calls this
+ * finds the guard already satisfied, so the count is never decremented and the
+ * sidebar badge sticks at its last value until new mail happens to arrive.
+ */
 function markMessageReadLocally(id) {
+  const me = selfEmployeeId(state.currentUser)
   const message = state.messages.find(item => item.id === id && item.fromServer)
-  if (message && !message.readBy.includes(state.currentUser.id)) {
-    message.readBy.push(state.currentUser.id)
+
+  if (message && !message.readBy.includes(me)) {
+    message.readBy.push(me)
     if (state.unreadCounts.messages > 0) state.unreadCounts.messages -= 1
   }
 }

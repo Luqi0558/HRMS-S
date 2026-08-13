@@ -233,7 +233,6 @@ async function checkOut() {
 
 const ledgerRows = computed(() =>
   state.attendance.map(a => {
-    const emp = state.employees.find(e => e.id === a.employeeId)
     // Taken from the API, which differences the two stored times. The old
     // version assumed a 15:30 finish for anyone who had not checked out yet,
     // so a row that was still open reported a worked total that nobody had
@@ -244,7 +243,7 @@ const ledgerRows = computed(() =>
       hours = `${Math.floor(a.workedSeconds / 3600)}h ${String(Math.floor((a.workedSeconds % 3600) / 60)).padStart(2, '0')}m`
     }
     if (a.checkIn && !a.checkOut) status = 'active'
-    return { id: a.id, name: a.employeeName ?? emp?.name ?? '—', checkIn: a.checkIn, checkOut: a.checkOut, status, hours, photo: photoUrls.value[a.id] ?? null }
+    return { id: a.id, name: employeeName(a) || '—', checkIn: a.checkIn, checkOut: a.checkOut, status, hours, photo: photoUrls.value[a.id] ?? null }
   })
 )
 const filteredAttendanceRows = computed(() =>
@@ -269,12 +268,30 @@ const attendanceSummary = computed(() => ({
 
 const attendanceDates = computed(() => Array.from(new Set(state.attendance.map(row => row.date))).sort().reverse())
 
+/**
+ * People to filter the ledger by, taken from the ledger itself.
+ *
+ * Built from the rows rather than the roster for two reasons: the roster is
+ * empty for anyone without the Employees permission, which left this dropdown
+ * with nothing but "All employees"; and even when it is populated it lists
+ * people who have no punches on screen, so the filter offered choices that
+ * could only ever return nothing.
+ */
+const attendancePeople = computed(() => {
+  const byId = new Map()
+
+  state.attendance.forEach(row => {
+    if (row.employeeId && !byId.has(row.employeeId)) {
+      byId.set(row.employeeId, { id: row.employeeId, name: employeeName(row) })
+    }
+  })
+
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
+})
+
 const attendanceTable = useTableControls(
   filteredAttendanceRows,
-  row => {
-    const employee = state.employees.find(e => e.id === row.employeeId)
-    return `${employee?.name || ''} ${row.checkIn || ''} ${row.checkOut || ''} ${row.device || ''} ${row.status || ''}`
-  }
+  row => `${employeeName(row)} ${row.checkIn || ''} ${row.checkOut || ''} ${row.device || ''} ${row.status || ''}`
 )
 
 function applyRouteFilters(query = route.query) {
@@ -302,14 +319,28 @@ const myAttendanceRows = computed(() =>
     }))
 )
 
-function employeeName(id) {
-  return state.employees.find(e => e.id === id)?.name ?? ''
+/**
+ * Whose punch this is, as the API named it.
+ *
+ * Takes the row rather than an id: the list endpoint eager-loads
+ * `employee:id,name`, so every row already carries `employeeName`. Resolving
+ * through state.employees instead left this blank for a team lead — they may
+ * view their squad's attendance but hold no Employees permission, so their
+ * roster is empty and every name cell, CSV line and filter option came out
+ * empty. The roster stays as a fallback for a row that predates the field.
+ */
+function employeeName(row) {
+  if (!row) return ''
+
+  return row.employeeName
+    || state.employees.find(e => e.id === row.employeeId)?.name
+    || ''
 }
 
 function exportAttendanceReport() {
   const header = ['Employee', 'Date', 'Check in', 'Check out', 'Device', 'Status']
   const rows = filteredAttendanceRows.value.map(a => [
-    employeeName(a.employeeId),
+    employeeName(a),
     a.date,
     a.checkIn ?? '',
     a.checkOut ?? '',
@@ -439,7 +470,7 @@ function exportAttendanceReport() {
         </select>
         <select v-model="attendanceEmployeeFilter" class="table-filter-input max-w-[220px]">
           <option value="all">All employees</option>
-          <option v-for="employee in state.employees" :key="employee.id" :value="employee.id">{{ employee.name }}</option>
+          <option v-for="employee in attendancePeople" :key="employee.id" :value="employee.id">{{ employee.name }}</option>
         </select>
         <div class="table-count">{{ attendanceTable.filteredRows.value.length }} records</div>
       </div>
@@ -457,7 +488,7 @@ function exportAttendanceReport() {
         </thead>
         <tbody>
           <tr v-for="a in attendanceTable.visibleRows.value" :key="a.id" class="border-b border-slate-200 last:border-0 hover:bg-slate-50/60 transition-colors">
-            <td class="px-4 py-3 text-slate-900 font-medium">{{ state.employees.find(e => e.id === a.employeeId)?.name }}</td>
+            <td class="px-4 py-3 text-slate-900 font-medium">{{ employeeName(a) }}</td>
             <td class="px-4 py-3 font-mono text-xs text-slate-700">{{ a.checkIn }}</td>
             <td class="px-4 py-3 font-mono text-xs text-slate-700">{{ a.checkOut ?? '—' }}</td>
             <td class="px-4 py-3 text-slate-900 capitalize">{{ a.device }}</td>
@@ -518,7 +549,7 @@ function exportAttendanceReport() {
           <div class="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-200">
             <div class="min-w-0">
               <div class="text-[11px] uppercase tracking-[0.18em] text-slate-500 font-semibold">Check-in photo</div>
-              <div class="text-lg font-bold text-slate-900 truncate">{{ viewingPhoto.employeeName ?? employeeName(viewingPhoto.employeeId) }}</div>
+              <div class="text-lg font-bold text-slate-900 truncate">{{ employeeName(viewingPhoto) }}</div>
               <div class="text-xs text-slate-600 mt-0.5">
                 {{ formatDate(viewingPhoto.date) }} &middot; checked in {{ viewingPhoto.checkIn }}
               </div>

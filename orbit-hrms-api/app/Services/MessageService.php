@@ -196,7 +196,7 @@ class MessageService
      *
      * @return array<int, array<string, mixed>>
      */
-    public function inbox(User $user, int $limit = 100, ?int $before = null): array
+    public function inbox(User $user, int $limit = 100, ?int $before = null, ?string $search = null): array
     {
         $employee = $this->requireEmployee($user);
 
@@ -209,6 +209,26 @@ class MessageService
             // rather than an offset: an offset shifts under you the moment a
             // new message arrives, which in a live conversation is constantly.
             ->when($before, fn ($query) => $query->where('id', '<', $before))
+            /*
+             * Search runs here rather than in the client because the inbox is
+             * paged: the browser holds the newest 100 messages, so filtering
+             * locally would answer "no results" for anything older and look
+             * exactly like "this was never said".
+             *
+             * One term covers both things worth searching for — what was said,
+             * and who it was with. Matching either participant's name is what
+             * makes "conversation with Ayesha" work: a thread is only found by
+             * her name if messages *to* her count, and those carry the sender's
+             * name, not hers.
+             */
+            ->when(
+                $this->likeTerm($search),
+                fn ($query, string $term) => $query->where(fn ($q) => $q
+                    ->where('body', 'like', $term)
+                    ->orWhere('subject', 'like', $term)
+                    ->orWhereHas('sender', fn ($s) => $s->where('name', 'like', $term))
+                    ->orWhereHas('recipients.employee', fn ($e) => $e->where('name', 'like', $term)))
+            )
             ->orderByDesc('id')
             // One extra row, purely to answer "is there more?" without a
             // second COUNT over the whole conversation.
@@ -229,6 +249,29 @@ class MessageService
                 ->firstWhere('employee_id', $employee->id)?->read_at,
             'isMine' => $message->sender_id === $employee->id,
         ])->all();
+    }
+
+    /**
+     * A search term as a LIKE pattern, or null when there is nothing to match.
+     *
+     * The wildcards are escaped rather than passed through: '%' is a character
+     * people type, and left alone a search for it would match every message
+     * ever sent. '_' matters more quietly — it is common in identifiers, and
+     * unescaped it silently matches any single character.
+     */
+    private function likeTerm(?string $search): ?string
+    {
+        $search = trim((string) $search);
+
+        if ($search === '') {
+            return null;
+        }
+
+        // Backslash first: escaping it after the others would double-escape
+        // the backslashes this very line introduces.
+        $escaped = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search);
+
+        return '%'.$escaped.'%';
     }
 
     /**
@@ -659,46 +702,53 @@ class MessageService
      * could write to nobody but themselves, which is not a permission model,
      * it is a broken feature.
      *
-     * So 'self' is read as "the people you report to": the managers of
-     * projects you are on, the leads of modules you are in, plus HR — who
-     * everyone must be able to reach regardless of project. This mirrors
-     * directRecipients() in Messages.vue, which has always offered exactly
-     * these contacts; the API was refusing what the UI presented.
+     * So 'self' is read as three directions rather than one:
+     *
+     *  - upward, to the people you report to: the managers of projects you are
+     *    on and the leads of modules you are in;
+     *  - sideways, to the people you share a project or module with;
+     *  - and to HR, who everyone must reach regardless of project.
+     *
+     * Sideways was missing, and it made the QA role unusable. QA owns the
+     * Review column, so "this ticket is failing for me" is the single most
+     * common thing they need to say — and both they and the developer had
+     * scope 'self', neither supervising the other, so neither could open a
+     * conversation with the other. Developers on one module could not reach
+     * each other either. Every exchange had to be routed through a team lead.
      *
      * @return array<int, int>
      */
     private function reachableEmployeeIds(User $user, Employee $sender, string $scope): array
     {
         if ($scope === 'self') {
-            $ids = collect($this->scopes->supervisorIds($sender))
+            $reachable = collect($this->scopes->supervisorIds($sender))
+                ->merge($this->scopes->teammateIds($sender))
                 ->merge($this->employeeIdsForRoles(['hr']))
-                ->merge($this->correspondentIds($sender));
+                ->merge($this->correspondentIds($sender))
+                ->all();
+        } else {
+            $allowed = $this->scopes->visibleEmployeeIds($user, $scope);
 
-            return array_values(array_diff($ids->unique()->all(), [$sender->id]));
-        }
-
-        $allowed = $this->scopes->visibleEmployeeIds($user, $scope);
-
-        // null means 'all' — no constraint beyond excluding the sender.
-        $reachable = $allowed === null
-            ? Employee::where('status', 'active')->pluck('id')->all()
-            : $allowed;
-
-        // Anyone below 'all' still needs a route upward: a lead with scope
-        // 'owned' sees their squad but must be able to reach HR too.
-        if ($allowed !== null) {
-            $reachable = array_merge(
-                $reachable,
-                $this->employeeIdsForRoles(['hr']),
-                $this->correspondentIds($sender)
-            );
+            // null means 'all' — no constraint beyond excluding the sender.
+            $reachable = $allowed === null
+                ? Employee::where('status', 'active')->pluck('id')->all()
+                // Anyone below 'all' still needs a route upward and sideways: a
+                // lead with scope 'owned' sees their squad, but must also reach
+                // HR and the people they share a project with.
+                : array_merge(
+                    $allowed,
+                    $this->scopes->teammateIds($sender),
+                    $this->employeeIdsForRoles(['hr']),
+                    $this->correspondentIds($sender)
+                );
         }
 
         $reachable = array_values(array_diff(array_unique($reachable), [$sender->id]));
 
         // ScopeResolver works from project membership and does not know about
-        // employment status, so a scoped sender could still address someone
-        // who has left or never arrived.
+        // employment status, so a sender could still address someone who has
+        // left or never arrived. Applied to every scope: the 'self' branch used
+        // to return before reaching this and could name a departed supervisor.
         return Employee::whereIn('id', $reachable)
             ->where('status', 'active')
             ->pluck('id')

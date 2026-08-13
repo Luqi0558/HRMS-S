@@ -93,11 +93,15 @@ class MessageController extends Controller
             // would shift under them every time a new message arrived, which
             // in a live conversation is constantly.
             'before' => ['nullable', 'integer', 'min:1'],
+            // Searches message text and either participant's name. Bounded
+            // because it becomes a LIKE against the body column.
+            'q' => ['nullable', 'string', 'max:100'],
         ]);
 
         $before = $validated['before'] ?? null;
+        $search = $validated['q'] ?? null;
 
-        $messages = $this->messages->inbox($request->user(), 100, $before);
+        $messages = $this->messages->inbox($request->user(), 100, $before, $search);
 
         return response()->json([
             'data' => MessageResource::collection($messages),

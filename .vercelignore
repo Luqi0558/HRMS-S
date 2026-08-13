@@ -1,0 +1,13 @@
+# The Laravel API is not deployed to Vercel — it needs a persistent filesystem
+# for uploaded documents and a MySQL server it can create per-tenant databases
+# on, neither of which a serverless platform provides. It is hosted separately
+# and reached over VITE_API_URL.
+#
+# Only applies to `vercel` CLI deploys. A Git-integration deploy clones the
+# whole repo regardless; the build still only reads the Vite project at the
+# root, so the API directory is inert either way.
+orbit-hrms-api
+
+# Not needed to build the SPA.
+tests
+vitest.config.js

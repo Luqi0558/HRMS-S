@@ -15,9 +15,15 @@ export const messageService = {
    * permission to read the roster — that call 403s for the most common role,
    * and would be the wrong list anyway.
    */
-  async list(before = null) {
-    const query = before ? `?before=${before}` : ''
-    const data = await apiClient.get(`/messages${query}`)
+  async list(before = null, search = null) {
+    // Built rather than concatenated: a search term is user input and can
+    // contain & or #, which would otherwise truncate the query string.
+    const params = new URLSearchParams()
+    if (before) params.set('before', before)
+    if (search) params.set('q', search)
+
+    const query = params.toString()
+    const data = await apiClient.get(`/messages${query ? `?${query}` : ''}`)
 
     return {
       messages: data.data || [],

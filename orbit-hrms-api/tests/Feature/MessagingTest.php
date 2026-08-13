@@ -289,7 +289,10 @@ class MessagingTest extends TenantTestCase
         $this->assertDatabaseHas('message_recipients', ['employee_id' => $lead->id]);
     }
 
-    /** Reaching upward does not mean reaching sideways. */
+    /**
+     * Sideways is allowed now, but only to people you actually work with: this
+     * colleague shares no project or module, so there is still no route.
+     */
     public function test_an_employee_still_cannot_message_an_unrelated_colleague(): void
     {
         $colleague = $this->makeEmployee('colleague@test.com', 'employee');
@@ -299,6 +302,213 @@ class MessagingTest extends TenantTestCase
             'audience' => 'Direct message',
             'recipientIds' => [$colleague->id],
         ], $this->auth('worker@test.com'))->assertStatus(403);
+    }
+
+    /**
+     * QA owns the Review column, so "this is failing for me" is the single most
+     * common thing they need to say. QA and the developer both hold scope
+     * 'self' and neither supervises the other, so this was refused outright.
+     *
+     * The two directions are separate tests on purpose: once either side has
+     * written, correspondentIds() opens a reply channel and would make the
+     * second direction pass regardless of whether the rule works.
+     */
+    public function test_qa_can_message_a_developer_on_their_module(): void
+    {
+        $qa = $this->makeEmployee('qa@test.com', 'qa');
+        $this->putOnModuleTogether('qa-to-dev', $this->worker, $qa);
+
+        $this->postJson('/api/messages', [
+            'body' => 'This fails on an empty payload.',
+            'audience' => 'Direct message',
+            'recipientIds' => [$this->worker->id],
+        ], $this->auth('qa@test.com'))->assertCreated();
+
+        $this->assertDatabaseHas('message_recipients', ['employee_id' => $this->worker->id]);
+    }
+
+    public function test_a_developer_can_message_the_qa_on_their_module(): void
+    {
+        $qa = $this->makeEmployee('qa@test.com', 'qa');
+        $this->putOnModuleTogether('dev-to-qa', $this->worker, $qa);
+
+        $this->postJson('/api/messages', [
+            'body' => 'Fixed — ready for retest.',
+            'audience' => 'Direct message',
+            'recipientIds' => [$qa->id],
+        ], $this->auth('worker@test.com'))->assertCreated();
+
+        $this->assertDatabaseHas('message_recipients', ['employee_id' => $qa->id]);
+    }
+
+    /** The same rule, and the reason it is about shared work rather than role. */
+    public function test_two_developers_on_the_same_module_can_message_each_other(): void
+    {
+        $peer = $this->makeEmployee('peer@test.com', 'employee');
+        $this->putOnModuleTogether('two-devs', $this->worker, $peer);
+
+        $this->postJson('/api/messages', [
+            'body' => 'Are you on this one?',
+            'audience' => 'Direct message',
+            'recipientIds' => [$peer->id],
+        ], $this->auth('worker@test.com'))->assertCreated();
+    }
+
+    /** QA on a different project is not a teammate, so the rule still bites. */
+    public function test_qa_cannot_message_a_developer_they_share_nothing_with(): void
+    {
+        $qa = $this->makeEmployee('qa@test.com', 'qa');
+
+        $this->postJson('/api/messages', [
+            'body' => 'Hello',
+            'audience' => 'Direct message',
+            'recipientIds' => [$this->worker->id],
+        ], $this->auth('qa@test.com'))->assertStatus(403);
+    }
+
+    /**
+     * The composer must offer the teammate too. These are the same call, so a
+     * dropdown that omitted them would make the feature invisible even though
+     * the API accepts it.
+     */
+    public function test_the_contact_list_offers_a_teammate(): void
+    {
+        $qa = $this->makeEmployee('qa@test.com', 'qa');
+        $this->putOnModuleTogether('contacts', $this->worker, $qa);
+
+        $contacts = $this->getJson('/api/messages', $this->auth('qa@test.com'))
+            ->assertOk()
+            ->json('contacts');
+
+        $this->assertContains(
+            $this->worker->id,
+            array_column($contacts, 'id'),
+            'the developer should appear in QA\'s composer',
+        );
+    }
+
+    /**
+     * Search exists because the inbox is paged: filtering in the browser would
+     * miss anything older than the newest page and report it as "not found".
+     */
+    public function test_search_finds_a_message_by_its_text(): void
+    {
+        $this->sendTo($this->hr, $this->worker, 'The payroll run is late again');
+        $this->sendTo($this->hr, $this->worker, 'Standup moved to ten');
+
+        $bodies = $this->searchAs('worker@test.com', 'payroll');
+
+        $this->assertSame(['The payroll run is late again'], $bodies);
+    }
+
+    /** "My conversation with X" has to work from X's name, in both directions. */
+    public function test_search_finds_a_conversation_by_the_other_persons_name(): void
+    {
+        $this->sendTo($this->hr, $this->worker, 'Anything from them at all');
+
+        $this->assertSame(
+            ['Anything from them at all'],
+            $this->searchAs('worker@test.com', 'hr@test.com'),
+        );
+    }
+
+    /**
+     * The half a sender-name-only search would miss: this message is FROM the
+     * searcher, so it carries their name, not the person they wrote to.
+     */
+    public function test_search_finds_messages_the_searcher_sent_to_that_person(): void
+    {
+        $this->sendTo($this->worker, $this->hr, 'Sent outward, not received');
+
+        $this->assertSame(
+            ['Sent outward, not received'],
+            $this->searchAs('worker@test.com', 'hr@test.com'),
+        );
+    }
+
+    /** A LIKE wildcard typed by a user is a character, not "match everything". */
+    public function test_a_percent_sign_does_not_match_every_message(): void
+    {
+        $this->sendTo($this->hr, $this->worker, 'Bonus is 10% this year');
+        $this->sendTo($this->hr, $this->worker, 'Unrelated message');
+
+        $this->assertSame(['Bonus is 10% this year'], $this->searchAs('worker@test.com', '10%'));
+    }
+
+    /** Underscore is the quieter wildcard: it matches any single character. */
+    public function test_an_underscore_is_matched_literally(): void
+    {
+        $this->sendTo($this->hr, $this->worker, 'Use the code build_id here');
+        $this->sendTo($this->hr, $this->worker, 'Use the code buildxid here');
+
+        $this->assertSame(['Use the code build_id here'], $this->searchAs('worker@test.com', 'build_id'));
+    }
+
+    /** Search must not become a way to read someone else's inbox. */
+    public function test_search_never_reaches_another_persons_messages(): void
+    {
+        $other = $this->makeEmployee('other@test.com', 'employee');
+        $this->sendTo($this->hr, $other, 'Confidential to somebody else');
+
+        $this->assertSame([], $this->searchAs('worker@test.com', 'Confidential'));
+    }
+
+    public function test_an_empty_search_returns_the_normal_inbox(): void
+    {
+        $this->sendTo($this->hr, $this->worker, 'First');
+        $this->sendTo($this->hr, $this->worker, 'Second');
+
+        $this->assertCount(2, $this->searchAs('worker@test.com', '   '));
+    }
+
+    /** Writes a message straight to the tables, bypassing scope rules. */
+    private function sendTo(Employee $from, Employee $to, string $body): Message
+    {
+        $message = Message::create([
+            'sender_id' => $from->id,
+            'audience' => 'Direct message',
+            'body' => $body,
+        ]);
+
+        MessageRecipient::create([
+            'message_id' => $message->id,
+            'employee_id' => $to->id,
+        ]);
+
+        return $message;
+    }
+
+    /** @return array<int, string> matching bodies, newest first */
+    private function searchAs(string $email, string $term): array
+    {
+        return $this->getJson(
+            '/api/messages?q='.urlencode($term),
+            $this->auth($email),
+        )->assertOk()->json('data.*.body');
+    }
+
+    /**
+     * Puts everyone given on one module of a fresh project, which is what
+     * makes them teammates. The slug is a parameter because several tests do
+     * this and the column is unique.
+     */
+    private function putOnModuleTogether(string $slug, Employee ...$members): void
+    {
+        $project = \App\Models\Project::create([
+            'name' => 'Shared '.$slug, 'slug' => 'shared-'.$slug,
+            'manager_id' => $this->hr->id, 'status' => 'active',
+        ]);
+        $module = \App\Models\ProjectModule::create([
+            'project_id' => $project->id, 'name' => 'Module '.$slug, 'slug' => 'module-'.$slug,
+            'lead_id' => $this->hr->id, 'status' => 'active',
+        ]);
+
+        foreach ($members as $member) {
+            DB::table('project_module_members')->insert([
+                'project_module_id' => $module->id,
+                'employee_id' => $member->id,
+            ]);
+        }
     }
 
     private function putOnProjectTogether(Employee $manager, Employee $member): void

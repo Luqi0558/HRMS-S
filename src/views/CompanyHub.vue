@@ -62,7 +62,25 @@ const policyTable = useTableControls(
   10
 )
 
-function authorName(id) {
+/**
+ * Who published a record, as the API named it.
+ *
+ * Takes the record rather than an id because the name travels with it:
+ * announcements carry `authorName` and policies carry `ownerName`, both stored
+ * copies so a record still names its author after they leave the company.
+ *
+ * The roster is a fallback only. state.employees is filled from /employees,
+ * which every role below HR is forbidden to call — and Company Hub is visible
+ * to all of them, so resolving through it stamped "System" on every
+ * announcement for most of the company.
+ */
+function authorName(record) {
+  if (!record) return 'System'
+
+  const embedded = record.authorName ?? record.ownerName
+  if (embedded) return embedded
+
+  const id = record.authorId ?? record.ownerId
   return state.employees.find(employee => employee.id === Number(id))?.name || 'System'
 }
 
@@ -241,8 +259,8 @@ async function acknowledgePolicy(policy) {
             </div>
             <div class="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
               <div>
-                <div class="text-xs font-bold text-slate-900">{{ authorName(item.authorId) }}</div>
-                <div class="text-[11px] text-slate-500">Published by {{ authorName(item.authorId) }}</div>
+                <div class="text-xs font-bold text-slate-900">{{ authorName(item) }}</div>
+                <div class="text-[11px] text-slate-500">Published by {{ authorName(item) }}</div>
               </div>
               <div class="text-xs font-semibold text-slate-500">{{ formatDate(item.publishedAt) }}</div>
             </div>
@@ -295,7 +313,7 @@ async function acknowledgePolicy(policy) {
             </div>
             <div class="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
               <div>
-                <div class="text-xs font-bold text-slate-900">{{ authorName(policy.ownerId) }}</div>
+                <div class="text-xs font-bold text-slate-900">{{ authorName(policy) }}</div>
                 <div class="text-[11px] text-slate-500">Policy owner</div>
               </div>
               <div class="text-xs font-semibold text-slate-500">Updated {{ formatDate(policy.updatedAt) }}</div>
@@ -340,7 +358,7 @@ async function acknowledgePolicy(policy) {
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 border-t border-slate-200 pt-4">
             <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div class="text-[11px] uppercase tracking-wide text-slate-500 font-bold">{{ selectedItemType === 'announcement' ? 'Published by' : 'Policy owner' }}</div>
-              <div class="text-sm font-extrabold text-slate-900 mt-1">{{ authorName(selectedItemType === 'announcement' ? selectedItem.authorId : selectedItem.ownerId) }}</div>
+              <div class="text-sm font-extrabold text-slate-900 mt-1">{{ authorName(selectedItem) }}</div>
             </div>
             <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div class="text-[11px] uppercase tracking-wide text-slate-500 font-bold">{{ selectedItemType === 'announcement' ? 'Published' : 'Updated' }}</div>

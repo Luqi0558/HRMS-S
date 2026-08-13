@@ -136,6 +136,41 @@ function canSeeLink(link) {
   return can(link.module, link.action || 'view')
 }
 
+/**
+ * Unread work waiting on this person, shown as a count on the nav row.
+ *
+ * Read through a computed rather than stamped onto navSections, which is a
+ * plain constant evaluated once at module load — a count written there would
+ * never update. The store keeps state.unreadCounts current: /sync recounts
+ * whenever it returns a body, and opening a thread decrements it locally so
+ * the badge clears without waiting for the next poll.
+ */
+const badgeCounts = computed(() => ({
+  messages: state.unreadCounts.messages || 0
+}))
+
+function badgeFor(link) {
+  return badgeCounts.value[link.name] || 0
+}
+
+/** Capped like the Topbar bell, so a long backlog cannot widen the row. */
+function badgeLabel(link) {
+  const count = badgeFor(link)
+  return count > 9 ? '9+' : String(count)
+}
+
+/**
+ * Collapsed rows show only an icon, so the count needs saying out loud —
+ * otherwise the red dot is the only clue and it does not say how many.
+ */
+function linkTitle(link) {
+  const count = badgeFor(link)
+
+  if (!isCollapsed.value) return ''
+
+  return count > 0 ? `${link.label} (${count} unread)` : link.label
+}
+
 const visibleSections = computed(() =>
   navSections
     .map(section => ({
@@ -195,18 +230,33 @@ function isActive(name) {
                 'text-slate-600 hover:text-emerald-800 hover:bg-white': !isActive(link.name),
                 'justify-center px-0': isCollapsed
               }"
-              :title="isCollapsed ? link.label : ''"
+              :title="linkTitle(link)"
               class="nav-item group w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200"
             >
+              <!-- Wrapper carries the colour and the badge anchor; the inner
+                   span owns v-html, which would otherwise overwrite any
+                   sibling markup placed inside it. -->
               <span
-                class="flex-shrink-0 transition-colors duration-200"
+                class="relative flex-shrink-0 transition-colors duration-200"
                 :class="isActive(link.name) ? 'text-white' : 'text-slate-400 group-hover:text-emerald-600'"
-                v-html="iconSvg(link.name)"
-              ></span>
+              >
+                <span v-html="iconSvg(link.name)"></span>
+                <!-- Collapsed: the label is gone, so the count rides the icon. -->
+                <span
+                  v-if="isCollapsed && badgeFor(link)"
+                  class="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-bold leading-none flex items-center justify-center shadow-sm"
+                >{{ badgeLabel(link) }}</span>
+              </span>
               <span v-if="!isCollapsed" class="transition-all duration-300">{{ link.label }}</span>
-              <!-- Trailing dot marks the active row, as before. -->
               <span
-                v-if="isActive(link.name) && !isCollapsed"
+                v-if="!isCollapsed && badgeFor(link)"
+                class="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none flex items-center justify-center flex-shrink-0 shadow-sm"
+              >{{ badgeLabel(link) }}</span>
+              <!-- Trailing dot marks the active row, as before. Suppressed when
+                   a badge is present: both claim ml-auto, and the count is the
+                   more useful of the two. -->
+              <span
+                v-else-if="isActive(link.name) && !isCollapsed"
                 class="ml-auto w-1.5 h-1.5 rounded-full bg-white/90 flex-shrink-0"
               ></span>
             </button>
