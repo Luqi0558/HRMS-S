@@ -140,6 +140,34 @@ class AuthTest extends TenantTestCase
             ->assertJsonPath('error', 'unauthenticated');
     }
 
+    /**
+     * Deliberately get(), not getJson().
+     *
+     * getJson() sends Accept: application/json, and that header is the whole
+     * difference: the scaffolded Authenticate middleware only called
+     * route('login') when it was absent. There is no route named 'login' — it
+     * is a POST that returns a token — so the call threw and the response was
+     * a 500 with a full stack trace instead of a 401. Every test here used
+     * getJson(), so the suite never saw it.
+     */
+    public function test_a_request_without_a_json_accept_header_is_still_a_401(): void
+    {
+        $this->get('/api/me', ['X-Tenant' => $this->tenant->id])
+            ->assertStatus(401);
+    }
+
+    /**
+     * The real-world route to that bug: file downloads sent no Accept header,
+     * and the attendance ledger requests one per photo on the page — so a
+     * single expired token produced a burst of 500s, each logging a stack
+     * trace, rather than one quiet 401 per image.
+     */
+    public function test_an_unauthenticated_file_download_is_a_401_not_a_500(): void
+    {
+        $this->get('/api/attendance/1/photo', ['X-Tenant' => $this->tenant->id])
+            ->assertStatus(401);
+    }
+
     public function test_the_me_endpoint_returns_the_signed_in_user_and_their_employee_id(): void
     {
         $user = $this->makeUser();

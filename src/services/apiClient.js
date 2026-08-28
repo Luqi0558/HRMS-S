@@ -181,6 +181,12 @@ async function requestBlob(path, { headers = {}, timeout = DEFAULT_TIMEOUT } = {
     response = await fetch(`${API_URL}${path}`, {
       signal: controller.signal,
       headers: {
+        // Sent even though the success path returns a file: it decides what an
+        // ERROR looks like. Without it Laravel treats the request as a browser
+        // navigation and renders HTML, and an unauthenticated one used to be a
+        // 500 rather than a 401. Every other call already sends this; this one
+        // was the exception, and the attendance ledger requests one per photo.
+        Accept: 'application/json',
         'X-Tenant': getTenant(),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers

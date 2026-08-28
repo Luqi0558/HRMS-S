@@ -15,6 +15,19 @@ const loginError = ref('')
 const fieldErrors = ref({})
 const isSubmitting = ref(false)
 const typedHeadline = ref('')
+const showDemoCredentials = ref(false)
+// These accounts are created by the API's DemoUserSeeder. Keep this list in
+// sync with that fixture so every role can be explored from the public demo.
+const demoAccounts = [
+  { role: 'Super Admin', email: 'admin@company.com' },
+  { role: 'HR', email: 'sara.ahmed@company.com' },
+  { role: 'Manager', email: 'zara.nadeem@company.com' },
+  { role: 'Team Lead', email: 'imran.shah@company.com' },
+  { role: 'QA', email: 'fatima.iqbal@company.com' },
+  { role: 'Intern', email: 'hamza.sheikh@company.com' },
+  { role: 'Employee', email: 'ayesha.khan@company.com' }
+]
+const demoPassword = 'password123'
 const bannerHeadlines = [
   'Run HR operations with clarity.',
   'Manage teams without the clutter.',
@@ -27,6 +40,18 @@ let headlineIndex = 0
 let charIndex = 0
 let isDeleting = false
 let reduceMotionQuery = null
+
+function chooseDemoAccount(account) {
+  email.value = account.email
+  password.value = demoPassword
+  loginError.value = ''
+  fieldErrors.value = {}
+  showDemoCredentials.value = false
+}
+
+function closeDemoCredentials() {
+  showDemoCredentials.value = false
+}
 
 async function login() {
   if (isSubmitting.value) return
@@ -148,7 +173,15 @@ onBeforeUnmount(() => {
                 <div class="login-brand-caption">Secure workspace</div>
               </div>
             </div>
-            <div class="login-env-pill">Demo</div>
+            <button
+              type="button"
+              class="login-env-pill"
+              :aria-expanded="showDemoCredentials"
+              aria-controls="demo-credentials-dialog"
+              @click="showDemoCredentials = true"
+            >
+              Click me for login access
+            </button>
           </div>
 
           <div class="login-intro">
@@ -230,6 +263,44 @@ onBeforeUnmount(() => {
           </section>
         </div>
       </aside>
+    </div>
+
+    <div
+      v-if="showDemoCredentials"
+      class="demo-modal-backdrop"
+      @click.self="closeDemoCredentials"
+    >
+      <section
+        id="demo-credentials-dialog"
+        class="demo-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="demo-credentials-heading"
+      >
+        <div class="demo-modal-header">
+          <div>
+            <p class="demo-modal-kicker">Orbit HRMS demo</p>
+            <h2 id="demo-credentials-heading">Choose a role to explore</h2>
+          </div>
+          <button type="button" class="demo-modal-close" aria-label="Close demo credentials" @click="closeDemoCredentials">
+            ×
+          </button>
+        </div>
+        <p class="demo-modal-copy">Each account uses the password <strong>{{ demoPassword }}</strong>. Select one to fill the login form.</p>
+        <div class="demo-account-grid">
+          <button
+            v-for="account in demoAccounts"
+            :key="account.role"
+            type="button"
+            class="demo-account"
+            :aria-label="`Use ${account.role} demo account`"
+            @click="chooseDemoAccount(account)"
+          >
+            <span class="demo-account-role">{{ account.role }}</span>
+            <span class="demo-account-email">{{ account.email }}</span>
+          </button>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -335,6 +406,19 @@ onBeforeUnmount(() => {
   padding: 0.42rem 0.75rem;
   font-size: 0.7rem;
   font-weight: 900;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.login-env-pill:hover {
+  background: #dff4ec;
+  box-shadow: 0 7px 16px rgba(8, 80, 65, 0.11);
+  transform: translateY(-1px);
+}
+
+.login-env-pill:focus-visible {
+  outline: 3px solid rgba(15, 139, 118, 0.3);
+  outline-offset: 2px;
 }
 
 .login-intro {
@@ -445,6 +529,135 @@ onBeforeUnmount(() => {
   padding-top: 1rem;
   color: var(--auth-muted);
   font-size: 0.69rem;
+  font-weight: 700;
+}
+
+.demo-account-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+.demo-account {
+  min-width: 0;
+  border: 1px solid #CDE5DC;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 0.6rem 0.7rem;
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.demo-account:hover {
+  border-color: var(--auth-accent);
+  box-shadow: 0 8px 18px rgba(8, 80, 65, 0.09);
+  transform: translateY(-1px);
+}
+
+.demo-account:focus-visible {
+  outline: 3px solid rgba(15, 139, 118, 0.3);
+  outline-offset: 2px;
+}
+
+.demo-account-role,
+.demo-account-email {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-modal-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(5, 47, 42, 0.48);
+  backdrop-filter: blur(5px);
+}
+
+.demo-modal {
+  width: min(100%, 28rem);
+  max-height: min(43rem, calc(100vh - 2rem));
+  overflow-y: auto;
+  border: 1px solid rgba(169, 223, 206, 0.8);
+  border-radius: 1.25rem;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(5, 47, 42, 0.28);
+  padding: 1.25rem;
+}
+
+.demo-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.demo-modal-kicker {
+  color: var(--auth-accent-strong);
+  font-size: 0.63rem;
+  font-weight: 900;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.demo-modal h2 {
+  margin-top: 0.22rem;
+  color: var(--auth-text);
+  font-size: 1.1rem;
+  font-weight: 950;
+}
+
+.demo-modal-close {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--auth-accent-soft);
+  color: var(--auth-accent-deep);
+  font-size: 1.4rem;
+  line-height: 1;
+  transition: background 0.15s ease;
+}
+
+.demo-modal-close:hover {
+  background: #dff4ec;
+}
+
+.demo-modal-close:focus-visible {
+  outline: 3px solid rgba(15, 139, 118, 0.3);
+  outline-offset: 2px;
+}
+
+.demo-modal-copy {
+  margin-top: 0.8rem;
+  color: var(--auth-muted);
+  font-size: 0.73rem;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.demo-modal-copy strong {
+  color: var(--auth-accent-deep);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.demo-account-role {
+  color: var(--auth-accent-deep);
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.demo-account-email {
+  margin-top: 0.2rem;
+  color: var(--auth-muted);
+  font-size: 0.6rem;
   font-weight: 700;
 }
 

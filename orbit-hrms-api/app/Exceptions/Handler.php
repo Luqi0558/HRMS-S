@@ -91,13 +91,30 @@ class Handler extends ExceptionHandler
             }
         });
 
+        /*
+         * Unconditional, deliberately.
+         *
+         * This used to be guarded on expectsJson(), and anything without an
+         * `Accept: application/json` header fell through to the framework's
+         * own unauthenticated(), which redirects to route('login'). There is
+         * no route named 'login' in a token API — it is a POST that returns a
+         * bearer token — so that call threw RouteNotFoundException and a
+         * missing or expired token produced a 500 with a full stack trace in
+         * the log rather than a 401.
+         *
+         * It looked intermittent because almost every caller does send that
+         * header. File downloads did not, and the attendance ledger fetches
+         * one per photo on the page, so a single expired token turned into a
+         * burst of 500s and megabytes of stack traces.
+         *
+         * Nothing in this application serves HTML, so there is no case where
+         * redirecting is the right answer.
+         */
         $this->renderable(function (AuthenticationException $e, Request $request) {
-            if ($request->expectsJson()) {
-                return response()->json([
-                    'message' => 'Unauthenticated.',
-                    'error' => 'unauthenticated',
-                ], 401);
-            }
+            return response()->json([
+                'message' => 'Unauthenticated.',
+                'error' => 'unauthenticated',
+            ], 401);
         });
     }
 }
