@@ -407,6 +407,7 @@ onBeforeUnmount(() => {
   font-size: 0.7rem;
   font-weight: 900;
   cursor: pointer;
+  animation: demoPromptBlink 1.35s ease-in-out infinite;
   transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
@@ -877,6 +878,7 @@ onBeforeUnmount(() => {
 @media (prefers-reduced-motion: reduce) {
   .login-field,
   .login-submit,
+  .login-env-pill,
   .login-card,
   .login-auth-glow,
   .banner-shell,
@@ -923,6 +925,15 @@ onBeforeUnmount(() => {
   }
   46%, 100% {
     opacity: 0;
+  }
+}
+
+@keyframes demoPromptBlink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
   }
 }
 
