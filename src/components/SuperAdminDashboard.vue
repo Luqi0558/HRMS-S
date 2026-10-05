@@ -1,7 +1,14 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import CardEmptyState from './CardEmptyState.vue'
 import PunchLedger from './PunchLedger.vue'
 import { useDashboard } from '../composables/useDashboard.js'
+import { leaveService } from '../services/leaveService.js'
+import { medicalClaimService } from '../services/medicalClaimService.js'
+import { payrollService } from '../services/payrollService.js'
+import { projectService } from '../services/projectService.js'
+import { employeeService } from '../services/employeeService.js'
+import { financeService } from '../services/financeService.js'
 
 // Super Admin: company-wide oversight. Money in / money out / net position,
 // approvals, delivery, and the audit trail. This branch was previously a bare
@@ -30,12 +37,37 @@ const {
   pettyCashIsLow,
   pettyCashPendingExpenses,
   pettyCashPendingTopUps,
+  upsertLeaveRequest,
+  upsertMedicalClaim,
+  setProjects,
+  setModulePayments,
+  paymentsForModule,
   logActivity,
-  pushNotification
+  isAwaitingOnboardingReview,
+  documentsByKey
 } = useDashboard()
 
 const superAdminActionMessage = ref('')
+const superAdminActionError = ref('')
+const superAdminDecisionKey = ref('')
 const superAdminDetail = ref(null)
+const superAdminPayrollRuns = ref([])
+
+onMounted(async () => {
+  // A Super Admin approves a submitted company payroll run, not each HR draft
+  // payslip request. These are intentionally read from their dedicated API.
+  const [runs, projects, payments] = await Promise.allSettled([
+    payrollService.runs(),
+    projectService.list(),
+    // Every received, pending and commission figure below is derived from
+    // these. Without them each one read zero.
+    financeService.payments()
+  ])
+
+  if (runs.status === 'fulfilled') superAdminPayrollRuns.value = runs.value
+  if (projects.status === 'fulfilled') setProjects(projects.value)
+  if (payments.status === 'fulfilled') setModulePayments(payments.value)
+})
 
 // Super admin sees every employee in the punch ledger.
 const ledgerRows = computed(() => ledgerRowsFor(null))
@@ -55,6 +87,7 @@ const financeModules = computed(() =>
   state.projects.flatMap(project =>
     (project.modules || []).map(module => ({
       ...module,
+      payments: paymentsForModule(module.id),
       categoryName: project.name,
       managerId: project.managerId,
       teamMembers: module.teamMembers || []
@@ -67,7 +100,7 @@ const moneyIn = computed(() => companyMoneyIn())
 const moneyOut = computed(() => companyMoneyOut())
 const netPosition = computed(() => companyNetPosition())
 const expenseBreakdown = computed(() => [
-  { key: 'payroll', label: 'Payroll (monthly)', amount: moneyOut.value.payroll, route: { name: 'payroll' } },
+  { key: 'payroll', label: 'Paid payroll', amount: moneyOut.value.payroll, route: { name: 'payroll' } },
   { key: 'commissions', label: 'Commissions owed', amount: moneyOut.value.commissions, route: { name: 'finance' } },
   { key: 'claims', label: 'Medical claims', amount: moneyOut.value.claims, route: { name: 'medical-claims' } },
   { key: 'petty', label: 'Petty cash', amount: moneyOut.value.petty, route: { name: 'petty-cash' } }
@@ -91,7 +124,7 @@ const superAdminPendingClientBalances = computed(() =>
   financeModules.value.filter(module => projectPending(module) > 0)
 )
 const superAdminPayrollDue = computed(() =>
-  state.salarySlipRequests.filter(request => !['approved', 'paid', 'rejected'].includes(request.status))
+  superAdminPayrollRuns.value.filter(run => run.status === 'submitted')
 )
 const superAdminPendingApprovals = computed(() => [
   ...state.leaveRequests
@@ -107,7 +140,7 @@ const superAdminPendingApprovals = computed(() => [
       source: leave
     })),
   ...state.medicalClaims
-    .filter(claim => ['pending', 'processing'].includes(claim.status))
+    .filter(claim => ['pending', 'view', 'processing'].includes(claim.status))
     .map(claim => ({
       id: `claim-${claim.id}`,
       type: 'Medical',
@@ -129,13 +162,13 @@ const superAdminPendingApprovals = computed(() => [
     source: module
   })),
   ...superAdminPayrollDue.value.map(request => ({
-    id: `payroll-${request.id}`,
-    type: 'Payroll',
-    title: employeeName(request.employeeId),
-    detail: request.month || request.period || 'Payroll period',
+    id: `payroll-run-${request.id}`,
+    type: 'Payroll run',
+    title: `Payroll — ${formatDate(request.period)}`,
+    detail: `${request.slipCount || 0} payslips prepared by HR`,
     status: request.status,
     route: '/payroll',
-    sourceType: 'payroll',
+    sourceType: 'payrollRun',
     source: request
   }))
 ])
@@ -154,15 +187,13 @@ const hrAttendanceExceptions = computed(() => ({
   missingCheckout: hrMissingCheckout.value,
   absent: hrAbsentEmployees.value
 }))
-const hrOnboardingQueue = computed(() =>
-  state.employees.filter(employee => employee.status === 'invited' || employee.onboarding)
-)
+const hrOnboardingQueue = computed(() => state.employees.filter(isAwaitingOnboardingReview))
 const hrMissingDocuments = computed(() =>
   state.employees
     .filter(employee => employee.role !== 'super_admin')
     .map(employee => {
       const personal = employee.onboarding?.personal || {}
-      const documents = employee.onboarding?.documents || {}
+      const documents = documentsByKey(employee)
       const missing = [
         !personal.cnic && 'CNIC',
         !personal.bankAccount && 'Bank',
@@ -507,119 +538,223 @@ function openSuperAdminDetail(type, payload = null) {
   superAdminDetail.value = { type, ...(base[type] || base.approvals) }
 }
 
-function approveSuperAdminApproval(item) {
-  if (!item?.source) return
-  if (item.sourceType === 'leave') {
-    item.source.status = 'approved'
-    item.source.superAdminApprovedBy = state.currentUser.name
-    superAdminActionMessage.value = `Leave approved for ${employeeName(item.source.employeeId)}.`
-  } else if (item.sourceType === 'claim') {
-    item.source.status = 'approved'
-    item.source.superAdminApprovedBy = state.currentUser.name
-    superAdminActionMessage.value = `Medical claim approved for ${employeeName(item.source.employeeId)}.`
-  } else if (item.sourceType === 'commission') {
-    const module = realModuleById(item.source.id)
-    if (!module) return
-    if (!module.commission) module.commission = { type: 'fixed', value: 0, status: 'pending' }
-    module.commission.status = 'approved'
-    module.commission.approvedBy = state.currentUser.name
-    superAdminActionMessage.value = `Commission approved for ${module.name}.`
-  } else if (item.sourceType === 'payroll') {
-    item.source.status = 'approved'
-    item.source.approvedBy = state.currentUser.name
-    superAdminActionMessage.value = `Payroll approved for ${employeeName(item.source.employeeId)}.`
-  }
-  if (superAdminDetail.value?.type === 'approvals') openSuperAdminDetail('approvals')
+function updateStoredModule(module) {
+  const project = state.projects.find(item => item.id === module?.projectId)
+  const index = project?.modules?.findIndex(item => item.id === module.id) ?? -1
+  if (index >= 0) project.modules[index] = { ...project.modules[index], ...module }
 }
 
-function rejectSuperAdminApproval(item) {
-  if (!item?.source) return
-  if (item.sourceType === 'leave') {
-    item.source.status = 'rejected'
-    item.source.superAdminRejectedBy = state.currentUser.name
-    superAdminActionMessage.value = `Leave rejected for ${employeeName(item.source.employeeId)}.`
-  } else if (item.sourceType === 'claim') {
-    item.source.status = 'rejected'
-    item.source.superAdminRejectedBy = state.currentUser.name
-    superAdminActionMessage.value = `Medical claim rejected for ${employeeName(item.source.employeeId)}.`
-  } else if (item.sourceType === 'payroll') {
-    item.source.status = 'rejected'
-    item.source.rejectedBy = state.currentUser.name
-    superAdminActionMessage.value = `Payroll rejected for ${employeeName(item.source.employeeId)}.`
-  }
-  if (superAdminDetail.value?.type === 'approvals') openSuperAdminDetail('approvals')
+function isSuperAdminDecisionPending(item) {
+  return superAdminDecisionKey.value === item?.id
 }
 
-function paySuperAdminCommission(item) {
-  const module = item?.sourceType === 'commission' ? realModuleById(item.source.id) : null
-  if (!module) return
-  if (!module.commission) module.commission = { type: 'fixed', value: 0, status: 'pending' }
-  module.commission.status = 'paid'
-  module.commission.paidBy = state.currentUser.name
-  module.commission.paidAt = new Date().toISOString()
-  superAdminActionMessage.value = `Commission marked paid for ${module.name}.`
-  if (superAdminDetail.value?.type === 'approvals') openSuperAdminDetail('approvals')
-  if (superAdminDetail.value?.type === 'commissionActions') openSuperAdminDetail('commissionActions')
+/**
+ * What the primary button does for a row, in words that say so.
+ *
+ * Onboarding, document and delivery rows used to show a generic Approve and
+ * Reject wired to nothing: the click said "Saving…" and then silently did
+ * nothing, while the Super Admin believed they had verified documents or
+ * confirmed a delivery. Each now names, and performs, its real action.
+ */
+function approveActionLabel(row) {
+  if (row.sourceType === 'payrollRun') return 'Release'
+  if (row.sourceType === 'onboarding') return row.source?.status === 'invited' ? 'Resend invite' : 'Mark verified'
+  if (row.sourceType === 'documents') return 'Mark verified'
+  if (row.sourceType === 'delivery') return row.status === 'delivered' ? 'Reopen' : 'Mark delivered'
+  return 'Approve'
+}
+
+function rejectActionLabel(row) {
+  return ['onboarding', 'documents'].includes(row.sourceType) ? 'Request correction' : 'Reject'
+}
+
+/** Rows with a second, negative action. An invitee has nothing to correct yet. */
+function canRejectApproval(row) {
+  if (row.sourceType === 'onboarding') return row.source?.status !== 'invited'
+  return ['leave', 'claim', 'documents'].includes(row.sourceType)
+}
+
+/** The employee an onboarding or documents row is about. */
+function reviewedEmployee(item) {
+  return item.sourceType === 'documents' ? item.source.employee : item.source
+}
+
+/** Redraws the open dialog so a row that is settled drops out of it. */
+function refreshOpenDetail() {
+  const type = superAdminDetail.value?.type
+  if (['approvals', 'onboarding', 'missingDocs', 'delivery'].includes(type)) openSuperAdminDetail(type)
+}
+
+async function approveSuperAdminApproval(item) {
+  if (!item?.source || isSuperAdminDecisionPending(item)) return
+
+  superAdminActionMessage.value = ''
+  superAdminActionError.value = ''
+  superAdminDecisionKey.value = item.id
+  try {
+    if (item.sourceType === 'leave') {
+      upsertLeaveRequest(await leaveService.decide(item.source.id, 'approved'))
+      superAdminActionMessage.value = `Leave approved for ${employeeName(item.source.employeeId)}.`
+    } else if (item.sourceType === 'claim') {
+      upsertMedicalClaim(await medicalClaimService.decide(item.source.id, 'approved'))
+      superAdminActionMessage.value = `Medical claim approved for ${employeeName(item.source.employeeId)}.`
+    } else if (item.sourceType === 'commission') {
+      updateStoredModule(await projectService.decideModuleCommission(item.source.id, 'approved'))
+      superAdminActionMessage.value = `Commission approved for payment for ${item.source.name}.`
+    } else if (item.sourceType === 'payrollRun') {
+      const updated = await payrollService.releaseRun(item.source.id)
+      superAdminPayrollRuns.value = superAdminPayrollRuns.value.map(run => run.id === updated.id ? updated : run)
+      superAdminActionMessage.value = `Payroll for ${formatDate(updated.period)} released for payment.`
+    } else if (item.sourceType === 'onboarding' && item.source.status === 'invited') {
+      const response = await employeeService.resendInvitation(item.source.id)
+      superAdminActionMessage.value = response?.message || `A fresh invitation was sent to ${item.source.email}.`
+    } else if (item.sourceType === 'onboarding' || item.sourceType === 'documents') {
+      const employee = reviewedEmployee(item)
+      const response = await employeeService.reviewDocuments(employee.id, { action: 'verified', note: null })
+      Object.assign(employee, response.employee)
+      superAdminActionMessage.value = `Onboarding documents verified for ${employee.name}.`
+    } else if (item.sourceType === 'delivery') {
+      const delivered = item.status !== 'delivered'
+      updateStoredModule(await projectService.setModuleDelivered(item.source.id, delivered))
+      superAdminActionMessage.value = delivered
+        ? `${item.source.name} marked delivered.`
+        : `${item.source.name} reopened for work.`
+    }
+    refreshOpenDetail()
+  } catch (error) {
+    superAdminActionError.value = error?.message || 'Unable to save this approval.'
+  } finally {
+    superAdminDecisionKey.value = ''
+  }
+}
+
+async function rejectSuperAdminApproval(item) {
+  if (!item?.source || isSuperAdminDecisionPending(item)) return
+
+  superAdminActionMessage.value = ''
+  superAdminActionError.value = ''
+  superAdminDecisionKey.value = item.id
+  try {
+    if (item.sourceType === 'leave') {
+      upsertLeaveRequest(await leaveService.decide(item.source.id, 'rejected'))
+      superAdminActionMessage.value = `Leave rejected for ${employeeName(item.source.employeeId)}.`
+    } else if (item.sourceType === 'claim') {
+      upsertMedicalClaim(await medicalClaimService.decide(item.source.id, 'rejected'))
+      superAdminActionMessage.value = `Medical claim rejected for ${employeeName(item.source.employeeId)}.`
+    } else if (item.sourceType === 'onboarding' || item.sourceType === 'documents') {
+      const employee = reviewedEmployee(item)
+      const missing = item.sourceType === 'documents' ? item.source.missing || [] : []
+      const note = missing.length
+        ? `Please provide or correct: ${missing.join(', ')}.`
+        : 'Please review and resubmit your onboarding documents.'
+      const response = await employeeService.reviewDocuments(employee.id, { action: 'correction_requested', note })
+      Object.assign(employee, response.employee)
+      superAdminActionMessage.value = `Correction requested from ${employee.name}.`
+    }
+    refreshOpenDetail()
+  } catch (error) {
+    superAdminActionError.value = error?.message || 'Unable to save this rejection.'
+  } finally {
+    superAdminDecisionKey.value = ''
+  }
+}
+
+async function paySuperAdminCommission(item) {
+  if (item?.sourceType !== 'commission' || isSuperAdminDecisionPending(item)) return
+
+  superAdminActionMessage.value = ''
+  superAdminActionError.value = ''
+  superAdminDecisionKey.value = item.id
+  try {
+    updateStoredModule(await projectService.decideModuleCommission(item.source.id, 'paid'))
+    superAdminActionMessage.value = `Commission marked paid for ${item.source.name}.`
+    if (superAdminDetail.value?.type === 'approvals') openSuperAdminDetail('approvals')
+    if (superAdminDetail.value?.type === 'commissionActions') openSuperAdminDetail('commissionActions')
+  } catch (error) {
+    superAdminActionError.value = error?.message || 'Unable to mark this commission as paid.'
+  } finally {
+    superAdminDecisionKey.value = ''
+  }
 }
 </script>
 
 <template>
-  <div>
-
-  <div class="space-y-6">
-    <div class="space-y-6">
+  <div class="orbit-dashboard super-admin-dashboard">
+    <div class="space-y-5">
+      <div class="space-y-5">
       <!-- Position at a glance: in, out, net, and what needs the admin.
            Previously this row was 4 revenue cards, which read as if client
            budgets were the whole financial picture. -->
-      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div role="button" tabindex="0" @click="goToRoute({ name: 'finance' })" @keydown.enter="goToRoute({ name: 'finance' })" @keydown.space.prevent="goToRoute({ name: 'finance' })" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
-            <div class="text-slate-600 text-xs font-bold uppercase tracking-wide">Money in</div>
+      <div class="super-admin-kpis grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div role="button" tabindex="0" @click="goToRoute({ name: 'finance' })" @keydown.enter="goToRoute({ name: 'finance' })" @keydown.space.prevent="goToRoute({ name: 'finance' })" class="super-admin-kpi dashboard-click-card orbit-kpi kpi-tile">
+          <div class="super-admin-kpi-label">
+            <span class="super-admin-kpi-icon super-admin-kpi-icon-positive">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 18v2h14v-2"/></svg>
+            </span>
+            <div>Money in</div>
           </div>
           <div class="kpi-value text-emerald-600">{{ formatCurrency(moneyIn.received) }}</div>
-          <div class="text-slate-500 text-[11px] mt-1.5">{{ formatCurrency(moneyIn.outstanding) }} still outstanding</div>
-        </div>
-
-        <div role="button" tabindex="0" @click="goToRoute({ name: 'petty-cash' })" @keydown.enter="goToRoute({ name: 'petty-cash' })" @keydown.space.prevent="goToRoute({ name: 'petty-cash' })" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="h-2 w-2 rounded-full bg-rose-500"></span>
-            <div class="text-slate-600 text-xs font-bold uppercase tracking-wide">Money out</div>
+          <div class="super-admin-kpi-context">
+            {{ formatCurrency(moneyIn.outstanding) }} still outstanding
           </div>
-          <div class="kpi-value text-rose-600">{{ formatCurrency(moneyOut.total) }}</div>
-          <div class="text-slate-500 text-[11px] mt-1.5">Payroll, commissions, claims, petty cash</div>
         </div>
 
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="h-2 w-2 rounded-full" :class="netPosition >= 0 ? 'bg-emerald-500' : 'bg-rose-500'"></span>
-            <div class="text-slate-600 text-xs font-bold uppercase tracking-wide">Net position</div>
+        <div role="button" tabindex="0" @click="goToRoute({ name: 'petty-cash' })" @keydown.enter="goToRoute({ name: 'petty-cash' })" @keydown.space.prevent="goToRoute({ name: 'petty-cash' })" class="super-admin-kpi dashboard-click-card orbit-kpi kpi-tile">
+          <div class="super-admin-kpi-label">
+            <span class="super-admin-kpi-icon super-admin-kpi-icon-neutral">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21V9"/><path d="m17 14-5-5-5 5"/><path d="M5 6V4h14v2"/></svg>
+            </span>
+            <div>Money out</div>
+          </div>
+          <div class="kpi-value text-slate-950">{{ formatCurrency(moneyOut.total) }}</div>
+          <div class="super-admin-kpi-context">
+            Paid payroll, committed costs, petty cash
+          </div>
+        </div>
+
+        <div class="super-admin-kpi orbit-kpi kpi-tile">
+          <div class="super-admin-kpi-label">
+            <span class="super-admin-kpi-icon" :class="netPosition >= 0 ? 'super-admin-kpi-icon-positive' : 'super-admin-kpi-icon-problem'">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16"/><path d="M12 5v15"/><path d="m6 9 3 5 3-5"/><path d="m12 9 3 5 3-5"/></svg>
+            </span>
+            <div>Net position</div>
           </div>
           <div class="kpi-value" :class="netPosition >= 0 ? 'text-slate-900' : 'text-rose-600'">
             {{ formatCurrency(netPosition) }}
           </div>
-          <div class="text-slate-500 text-[11px] mt-1.5">Received minus all outgoings</div>
+          <div class="super-admin-kpi-context">
+            Received minus all outgoings
+          </div>
         </div>
 
-        <div role="button" tabindex="0" @click="openSuperAdminDetail('approvals')" @keydown.enter="openSuperAdminDetail('approvals')" @keydown.space.prevent="openSuperAdminDetail('approvals')" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="h-2 w-2 rounded-full bg-amber-500"></span>
-            <div class="text-slate-600 text-xs font-bold uppercase tracking-wide">Needs you</div>
+        <div role="button" tabindex="0" @click="openSuperAdminDetail('approvals')" @keydown.enter="openSuperAdminDetail('approvals')" @keydown.space.prevent="openSuperAdminDetail('approvals')" class="super-admin-kpi super-admin-kpi-attention dashboard-click-card orbit-kpi kpi-tile">
+          <div class="super-admin-kpi-label">
+            <span class="super-admin-kpi-icon super-admin-kpi-icon-warning">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg>
+            </span>
+            <div>Needs your attention</div>
           </div>
-          <div class="kpi-value text-amber-600">{{ superAdminPendingApprovals.length + pettyCashPendingExpenses().length + pettyCashPendingTopUps().length }}</div>
-          <div class="text-slate-500 text-[11px] mt-1.5">Approvals waiting</div>
+          <div class="kpi-value text-amber-700">{{ superAdminPendingApprovals.length + pettyCashPendingExpenses().length + pettyCashPendingTopUps().length }}</div>
+          <div class="super-admin-kpi-context">
+            Approvals waiting
+          </div>
         </div>
       </div>
 
       <!-- Money in / Money out, side by side. Commission sits on the OUT side:
            it is owed to a manager, not earned from a client. -->
-      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <div class="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
+      <section class="finance-overview bg-white rounded-xl border border-slate-200 shadow-sm p-3">
+        <div class="finance-overview-heading">Finance overview</div>
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <section class="super-admin-card bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div class="super-admin-card-header px-4 py-3 border-b border-slate-200 flex items-center gap-2">
             <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
             <div class="text-sm font-bold text-slate-900">Money In — client revenue</div>
           </div>
-          <div class="divide-y divide-slate-200">
+          <span class="finance-panel-icon finance-panel-icon-positive" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16v12H4z"/><path d="M8 7V5h8v2"/><path d="M8 14h8"/><circle cx="16" cy="11" r="1"/></svg>
+          </span>
+          <div class="super-admin-finance-list divide-y divide-slate-200">
             <div class="flex items-center justify-between px-4 py-3">
               <div class="text-sm text-slate-700">Total budgets</div>
               <div class="text-sm font-bold text-slate-900">{{ formatCurrency(moneyIn.budget) }}</div>
@@ -635,24 +770,28 @@ function paySuperAdminCommission(item) {
           </div>
         </section>
 
-        <section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <div class="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
+        <section class="super-admin-card bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div class="super-admin-card-header px-4 py-3 border-b border-slate-200 flex items-center gap-2">
             <span class="h-2 w-2 rounded-full bg-rose-500"></span>
             <div class="text-sm font-bold text-slate-900">Money Out — company costs</div>
           </div>
-          <div class="divide-y divide-slate-200">
+          <span class="finance-panel-icon finance-panel-icon-negative" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10v18l-3-2-2 2-2-2-3 2z"/><path d="M10 8h4M10 12h4M10 16h4"/></svg>
+          </span>
+          <div class="super-admin-finance-list divide-y divide-slate-200">
             <button
               v-for="row in expenseBreakdown"
               :key="row.key"
               @click="goToRoute(row.route)"
-              class="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors text-left"
+              class="super-admin-expense-row w-full flex items-center justify-between px-4 py-3 transition-colors text-left"
             >
               <div class="text-sm text-slate-700">{{ row.label }}</div>
               <div class="text-sm font-bold text-slate-900">{{ formatCurrency(row.amount) }}</div>
             </button>
           </div>
         </section>
-      </div>
+        </div>
+      </section>
 
       <!-- Petty cash strip: HR runs it, but the super admin owns the variance. -->
       <section
@@ -661,9 +800,13 @@ function paySuperAdminCommission(item) {
         @click="goToRoute({ name: 'petty-cash' })"
         @keydown.enter="goToRoute({ name: 'petty-cash' })"
         @keydown.space.prevent="goToRoute({ name: 'petty-cash' })"
-        class="dashboard-click-card bg-white rounded-xl p-4 border shadow-sm flex flex-wrap items-center justify-between gap-4"
+        class="super-admin-petty-cash dashboard-click-card bg-white rounded-xl p-4 border shadow-sm flex flex-wrap items-center justify-between gap-4"
         :class="pettyCashIsLow() ? 'border-amber-300' : 'border-slate-200'"
       >
+        <div class="petty-cash-primary">
+        <span class="petty-cash-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18v12H3z"/><path d="M7 7V5h10v2"/><path d="M7 12h10"/><circle cx="16" cy="16" r="1.5"/></svg>
+        </span>
         <div>
           <div class="text-sm font-bold text-slate-900">Petty cash in hand</div>
           <div class="text-xs text-slate-600 mt-1">
@@ -671,7 +814,8 @@ function paySuperAdminCommission(item) {
             <span v-else>Office float held by HR</span>
           </div>
         </div>
-        <div class="flex items-center gap-6">
+        </div>
+        <div class="flex flex-wrap items-center gap-5">
           <div class="text-right">
             <div class="text-[11px] font-bold uppercase tracking-wide text-slate-500">Balance</div>
             <div class="text-xl font-extrabold" :class="pettyCashIsLow() ? 'text-amber-700' : 'text-slate-900'">{{ formatCurrency(pettyCashBalance()) }}</div>
@@ -680,6 +824,9 @@ function paySuperAdminCommission(item) {
             <div class="text-[11px] font-bold uppercase tracking-wide text-slate-500">Awaiting you</div>
             <div class="text-xl font-extrabold text-slate-900">{{ pettyCashPendingExpenses().length + pettyCashPendingTopUps().length }}</div>
           </div>
+          <button type="button" class="super-admin-petty-action" @click.stop="goToRoute({ name: 'petty-cash' })">
+            {{ pettyCashIsLow() ? 'Top up' : 'View cash' }}
+          </button>
         </div>
       </section>
 
@@ -687,8 +834,9 @@ function paySuperAdminCommission(item) {
         {{ superAdminActionMessage }}
       </div>
 
-      <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-4">
-        <section class="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
+      <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-4 items-stretch">
+        <div class="space-y-4 min-w-0">
+          <section class="super-admin-panel project-finance-panel orbit-card p-5">
           <div class="flex items-center justify-between gap-3 mb-4">
             <div>
               <!-- Renamed: this covers client projects only. Calling it
@@ -696,68 +844,63 @@ function paySuperAdminCommission(item) {
               <h2 class="text-lg font-bold text-slate-900">Project Finance Detail</h2>
               <div class="text-xs text-slate-600 mt-1">Per-module budgets, client payments, and manager commissions. Company-wide totals are above.</div>
             </div>
-            <RouterLink to="/finance" class="text-xs font-bold rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-slate-50">Finance</RouterLink>
+            <RouterLink to="/finance" class="orbit-button orbit-button-secondary px-3 py-2 text-xs font-bold">Finance</RouterLink>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div class="project-finance-stats grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div class="project-finance-stat orbit-finance-stat orbit-finance-stat-earned p-4">
+              <span class="project-finance-stat-icon project-finance-stat-icon-earned" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 5-6"/></svg>
+              </span>
               <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Commission Earned</div>
               <div class="text-xl font-extrabold text-slate-900 mt-2">{{ formatCurrency(superAdminFinanceTotals.commissionEarned) }}</div>
+              <svg class="project-finance-sparkline project-finance-sparkline-earned" viewBox="0 0 160 28" preserveAspectRatio="none" aria-hidden="true"><path d="M2 23 20 16 36 21 55 11 73 19 91 8 111 18 131 10 158 17"/></svg>
             </div>
-            <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div class="project-finance-stat orbit-finance-stat orbit-finance-stat-paid p-4">
+              <span class="project-finance-stat-icon project-finance-stat-icon-paid" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8h14v11H5z"/><path d="M8 8V5h8v3"/><path d="m9 14 2 2 4-4"/></svg>
+              </span>
               <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Commission Paid</div>
               <div class="text-xl font-extrabold text-emerald-600 mt-2">{{ formatCurrency(superAdminFinanceTotals.commissionPaid) }}</div>
+              <svg class="project-finance-sparkline project-finance-sparkline-paid" viewBox="0 0 160 28" preserveAspectRatio="none" aria-hidden="true"><path d="M2 20 18 9 34 19 52 12 67 16 85 7 103 21 121 12 140 15 158 8"/></svg>
             </div>
-            <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div class="project-finance-stat orbit-finance-stat orbit-finance-stat-payroll p-4">
+              <span class="project-finance-stat-icon project-finance-stat-icon-payroll" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10v18l-3-2-2 2-2-2-3 2z"/><path d="M10 8h4M10 12h4M10 16h4"/></svg>
+              </span>
               <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Payroll Due</div>
               <div class="text-xl font-extrabold text-orange-600 mt-2">{{ superAdminPayrollDue.length }}</div>
+              <svg class="project-finance-sparkline project-finance-sparkline-payroll" viewBox="0 0 160 28" preserveAspectRatio="none" aria-hidden="true"><path d="M2 21 21 14 39 20 58 12 76 18 96 7 114 16 133 9 158 14"/></svg>
             </div>
           </div>
-          <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <div class="flex items-center justify-between gap-3 mb-3">
-                <div class="text-sm font-extrabold text-slate-900">Pending client balances</div>
-                <button type="button" @click="openSuperAdminDetail('pendingBalances')" class="company-hub-badge company-hub-badge-warning hover:opacity-80">{{ superAdminPendingClientBalances.length }} View</button>
-              </div>
-              <div class="space-y-2 max-h-[180px] overflow-y-auto pr-1">
-                <div v-for="module in superAdminPendingClientBalances" :key="module.id" class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <div>
-                    <div class="text-sm font-bold text-slate-900">{{ module.name }}</div>
-                    <div class="text-xs text-slate-500">{{ module.categoryName }}</div>
-                  </div>
-                  <div class="text-sm font-extrabold text-orange-600">{{ formatCurrency(projectPending(module)) }}</div>
-                </div>
-                <div v-if="superAdminPendingClientBalances.length === 0" class="text-sm font-semibold text-slate-500">No pending client balances.</div>
-              </div>
-            </div>
-            <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <div class="flex items-center justify-between gap-3 mb-3">
-                <div class="text-sm font-extrabold text-slate-900">Commission actions</div>
-                <button type="button" @click="openSuperAdminDetail('commissionActions')" class="company-hub-badge company-hub-badge-warning hover:opacity-80">{{ superAdminPendingCommissions.length + superAdminApprovedCommissions.length }} View</button>
-              </div>
-              <div class="space-y-2 max-h-[180px] overflow-y-auto pr-1">
-                <div v-for="module in [...superAdminPendingCommissions, ...superAdminApprovedCommissions]" :key="module.id" class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                  <div>
-                    <div class="text-sm font-bold text-slate-900">{{ module.name }}</div>
-                    <div class="text-xs text-slate-500">{{ employeeName(module.managerId) }} - {{ module.commission?.status || 'pending' }}</div>
-                  </div>
-                  <div class="text-sm font-extrabold text-slate-900">{{ formatCurrency(projectCommissionOwed(module)) }}</div>
-                </div>
-                <div v-if="superAdminPendingCommissions.length + superAdminApprovedCommissions.length === 0" class="text-sm font-semibold text-slate-500">No commission action needed.</div>
-              </div>
-            </div>
-          </div>
-        </section>
+          </section>
 
-        <section class="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
+          <section class="super-admin-panel super-admin-attendance-panel orbit-card p-5">
+            <div class="flex items-center gap-3 mb-4">
+              <div>
+                <h2 class="text-lg font-bold text-slate-900">Today's Attendance</h2>
+                <div class="text-xs text-slate-600 mt-1">Company check-ins and working status for today.</div>
+              </div>
+            </div>
+            <PunchLedger :rows="ledgerRows" header-filters />
+          </section>
+        </div>
+
+        <section class="super-admin-panel approvals-panel orbit-card h-full p-5 flex flex-col">
           <div class="flex items-center justify-between gap-3 mb-4">
             <div>
               <h2 class="text-lg font-bold text-slate-900">Approvals Center</h2>
               <div class="text-xs text-slate-600 mt-1">Company-wide approvals waiting for Super Admin.</div>
             </div>
-            <button type="button" @click="openSuperAdminDetail('approvals')" class="text-xs font-bold rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-slate-50">View all</button>
+            <button type="button" @click="openSuperAdminDetail('approvals')" class="approvals-view-all orbit-button orbit-button-secondary px-3 py-2 text-xs font-bold">
+              <span>View all</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+            </button>
           </div>
           <div v-if="superAdminPendingApprovals.length" class="space-y-3 max-h-[430px] overflow-y-auto pr-1">
-            <div v-for="item in superAdminPendingApprovals" :key="item.id" class="rounded-xl border border-slate-200 bg-slate-50 p-4 hover:bg-white">
+            <div v-if="superAdminActionError" class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              {{ superAdminActionError }}
+            </div>
+            <div v-for="item in superAdminPendingApprovals" :key="item.id" class="orbit-approval-item p-4">
               <div class="flex items-start justify-between gap-3">
                 <div>
                   <div class="text-sm font-extrabold text-slate-900">{{ item.title }}</div>
@@ -766,35 +909,44 @@ function paySuperAdminCommission(item) {
                 <span class="company-hub-badge capitalize" :class="statusBadgeClass(item.status)">{{ item.status }}</span>
               </div>
               <div class="mt-3 flex flex-wrap items-center justify-end gap-2">
-                <RouterLink :to="item.route" class="text-xs font-bold rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-white">Open page</RouterLink>
+                <RouterLink :to="item.route" class="orbit-button orbit-button-secondary px-3 py-2 text-xs font-bold">Open page</RouterLink>
                 <button
-                  v-if="item.sourceType !== 'commission'"
+                  v-if="!['commission', 'payrollRun'].includes(item.sourceType)"
                   type="button"
                   @click="rejectSuperAdminApproval(item)"
-                  class="text-xs font-bold rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-white"
+                  :disabled="isSuperAdminDecisionPending(item)"
+                  class="orbit-button orbit-button-secondary px-3 py-2 text-xs font-bold"
                 >
-                  Reject
+                  {{ isSuperAdminDecisionPending(item) ? 'Saving…' : 'Reject' }}
                 </button>
                 <button
                   v-if="item.sourceType === 'commission' && item.status === 'approved'"
                   type="button"
                   @click="paySuperAdminCommission(item)"
-                  class="bg-emerald-600 text-white text-xs font-bold rounded-lg px-3 py-2 hover:bg-emerald-700"
+                  :disabled="isSuperAdminDecisionPending(item)"
+                  class="orbit-button orbit-button-primary px-3 py-2 text-xs font-bold"
                 >
-                  Mark paid
+                  {{ isSuperAdminDecisionPending(item) ? 'Saving…' : 'Mark paid' }}
                 </button>
                 <button
                   v-else
                   type="button"
                   @click="approveSuperAdminApproval(item)"
-                  class="bg-slate-950 text-white text-xs font-bold rounded-lg px-3 py-2 hover:bg-slate-800"
+                  :disabled="isSuperAdminDecisionPending(item)"
+                  class="orbit-button orbit-button-primary px-3 py-2 text-xs font-bold"
                 >
-                  Approve
+                  {{ isSuperAdminDecisionPending(item) ? 'Saving…' : item.sourceType === 'payrollRun' ? 'Release' : 'Approve' }}
                 </button>
               </div>
             </div>
           </div>
-          <div v-else class="text-sm font-semibold text-slate-500 py-4">No approvals waiting.</div>
+          <CardEmptyState
+            v-else
+            class="flex-1"
+            variant="review"
+            title="No approvals waiting"
+            description="You're all caught up!"
+          />
         </section>
       </div>
 
@@ -906,7 +1058,13 @@ function paySuperAdminCommission(item) {
               <div class="text-xs text-slate-500 mt-2">{{ log.details }}</div>
             </button>
           </div>
-          <div v-else class="text-sm font-semibold text-slate-500 py-4">No audit activity yet.</div>
+          <CardEmptyState
+            v-else
+            compact
+            variant="review"
+            title="No audit activity yet"
+            description="New approvals and system changes will appear here."
+          />
         </section>
       </div>
 
@@ -1024,11 +1182,6 @@ function paySuperAdminCommission(item) {
         </section>
       </div>
 
-      <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm">
-        <h2 class="text-lg font-bold text-slate-900 mb-4">Today's Attendance</h2>
-        <PunchLedger :rows="ledgerRows" />
-      </div>
-
       <div v-if="false">
       <!-- Header -->
       <div class="mb-8">
@@ -1102,6 +1255,9 @@ function paySuperAdminCommission(item) {
           <div v-if="superAdminActionMessage" class="m-5 mb-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
             {{ superAdminActionMessage }}
           </div>
+          <div v-if="superAdminActionError" class="m-5 mb-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+            {{ superAdminActionError }}
+          </div>
 
           <!-- Rendered as striped rows rather than detached cards, so record
                lists in dialogs read the same as the tables elsewhere. -->
@@ -1121,28 +1277,31 @@ function paySuperAdminCommission(item) {
                 <span v-if="row.status" class="company-hub-badge capitalize" :class="statusBadgeClass(row.status)">{{ row.status }}</span>
                 <template v-if="superAdminDetail.type === 'approvals' || row.sourceType">
                   <button
-                    v-if="row.sourceType && row.sourceType !== 'commission'"
+                    v-if="row.sourceType && canRejectApproval(row)"
                     type="button"
                     @click="rejectSuperAdminApproval(row)"
+                    :disabled="isSuperAdminDecisionPending(row)"
                     class="text-xs font-bold rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-white"
                   >
-                    Reject
+                    {{ isSuperAdminDecisionPending(row) ? 'Saving…' : rejectActionLabel(row) }}
                   </button>
                   <button
                     v-if="row.sourceType === 'commission' && row.status === 'approved'"
                     type="button"
                     @click="paySuperAdminCommission(row)"
+                    :disabled="isSuperAdminDecisionPending(row)"
                     class="bg-emerald-600 text-white text-xs font-bold rounded-lg px-3 py-2 hover:bg-emerald-700"
                   >
-                    Mark paid
+                    {{ isSuperAdminDecisionPending(row) ? 'Saving…' : 'Mark paid' }}
                   </button>
                   <button
                     v-else-if="row.sourceType"
                     type="button"
                     @click="approveSuperAdminApproval(row)"
+                    :disabled="isSuperAdminDecisionPending(row)"
                     class="bg-slate-950 text-white text-xs font-bold rounded-lg px-3 py-2 hover:bg-slate-800"
                   >
-                    Approve
+                    {{ isSuperAdminDecisionPending(row) ? 'Saving…' : approveActionLabel(row) }}
                   </button>
                 </template>
               </div>

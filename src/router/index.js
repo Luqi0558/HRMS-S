@@ -23,7 +23,7 @@ function moduleById(project, moduleId) {
 }
 
 const routes = [
-  { path: '/', redirect: '/dashboard' },
+  { path: '/', name: 'welcome', component: () => import('../views/Welcome.vue'), meta: { blank: true, publicTheme: true } },
   { path: '/login', name: 'login', component: () => import('../views/Login.vue'), meta: { blank: true } },
   { path: '/accept-invite', name: 'accept-invite', component: () => import('../views/AcceptInvite.vue'), meta: { blank: true } },
   // meta.module / meta.action mirror the gate inside each view, so a typed URL
@@ -103,7 +103,7 @@ router.beforeEach(to => {
     return to.name === 'profile' ? true : { name: 'profile' }
   }
 
-  // Blank routes (login, accept-invite) are the way IN, so they must stay
+  // Public routes (welcome, login, accept-invite) are the way IN, so they stay
   // reachable while signed out — but a signed-in user landing on /login has no
   // reason to see it again.
   if (to.meta.blank) {
@@ -113,6 +113,8 @@ router.beforeEach(to => {
     return true
   }
 
+  // Guests enter through the welcome page. Preserve a requested protected
+  // path so its login link can return them there after authentication.
   // Authentication before permissions. This check did not exist: the store
   // defaulted to a hardcoded manager, so typing /dashboard in a fresh browser
   // signed you in as someone else entirely.
@@ -120,7 +122,7 @@ router.beforeEach(to => {
   // Both halves must agree — a stored user without a token cannot call the API,
   // and a token without a stored user leaves the UI with no name or role.
   if (!isAuthenticated() || !authService.isAuthenticated()) {
-    return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } }
+    return { name: 'welcome', query: { redirect: to.fullPath } }
   }
 
   const module = to.meta.module

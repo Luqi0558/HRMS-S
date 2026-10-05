@@ -140,15 +140,25 @@ class ProjectTicketTest extends TenantTestCase
         $this->assertStringStartsWith('internal-', $first);
     }
 
+    /**
+     * Sync replaces the roster — except for anyone working on one of the
+     * project's modules, who must never fall off the parent project (see
+     * ProjectService::syncMembers). The fixture's $member is on a module, so
+     * a project-only member is what shows the replacement.
+     */
     public function test_a_manager_can_replace_the_member_list(): void
     {
+        $projectOnly = $this->makeEmployee('project-only@test.com', 'employee');
+        $this->project->members()->attach($projectOnly->id);
+
         $this->putJson('/api/projects/internal/members', [
             'employeeIds' => [$this->outsider->id],
         ], $this->auth('manager@test.com'))->assertOk();
 
         $ids = $this->project->fresh()->members->pluck('id');
         $this->assertTrue($ids->contains($this->outsider->id));
-        $this->assertFalse($ids->contains($this->member->id), 'sync replaces rather than appends');
+        $this->assertFalse($ids->contains($projectOnly->id), 'sync replaces rather than appends');
+        $this->assertTrue($ids->contains($this->member->id), 'a module contributor stays on the project');
     }
 
     // --- tickets ---------------------------------------------------------
@@ -295,6 +305,7 @@ class ProjectTicketTest extends TenantTestCase
         ]);
 
         $auth = $this->auth('member@test.com');
+        $this->postJson('/api/attendance/check-in', ['device' => 'laptop'], $auth)->assertCreated();
         $this->postJson("/api/tickets/{$first->id}/start-timer", [], $auth)->assertOk();
         $this->postJson("/api/tickets/{$second->id}/start-timer", [], $auth)->assertOk();
 
@@ -307,6 +318,19 @@ class ProjectTicketTest extends TenantTestCase
         // The stopped one has its duration written for report aggregation.
         $stopped = \DB::table('ticket_time_logs')->whereNotNull('ended_at')->first();
         $this->assertNotNull($stopped->duration_seconds);
+    }
+
+    public function test_a_ticket_timer_requires_an_active_check_in(): void
+    {
+        $ticket = Ticket::create([
+            'project_id' => $this->project->id,
+            'project_module_id' => $this->module->id,
+            'title' => 'Work', 'status' => 'todo',
+        ]);
+
+        $this->postJson("/api/tickets/{$ticket->id}/start-timer", [], $this->auth('member@test.com'))
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Check in from Attendance before starting a ticket timer.');
     }
 
     public function test_commenting_records_the_author(): void

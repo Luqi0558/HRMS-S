@@ -56,6 +56,9 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
+    // APP_URL may point at the API host; actionable emails link to the SPA.
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
+
     'asset_url' => env('ASSET_URL', '/'),
 
     /*

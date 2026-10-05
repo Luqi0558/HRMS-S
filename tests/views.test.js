@@ -27,6 +27,7 @@ function testRouter() {
   return createRouter({
     history: createWebHistory(),
     routes: [
+      { path: '/welcome', name: 'welcome', component: { template: '<div />' } },
       { path: '/', name: 'dashboard', component: { template: '<div />' } },
       { path: '/projects', name: 'projects', component: { template: '<div />' } },
       { path: '/projects/:projectSlug', name: 'project-detail', component: { template: '<div />' } },

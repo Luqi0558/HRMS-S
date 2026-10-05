@@ -2,12 +2,14 @@
 
 namespace App\Services;
 
+use App\Mail\LeaveRequestSubmittedMail;
 use App\Models\Employee;
 use App\Models\LeaveApproval;
 use App\Models\LeaveRequest;
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -58,6 +60,43 @@ class LeaveService
         return $query->orderByDesc('from_date')->paginate($perPage);
     }
 
+    /**
+     * A request whose attachment this user may download: their own, or one
+     * their Leave Request grant can see. 404 rather than 403 either way, so
+     * the endpoint cannot confirm a request exists.
+     */
+    public function findForAttachment(User $user, int $requestId): LeaveRequest
+    {
+        $request = LeaveRequest::find($requestId);
+        $employee = $this->employeeFor($user);
+
+        if (! $request || ! $request->attachment_path) {
+            throw new NotFoundHttpException('Attachment not found.');
+        }
+
+        if ($employee && $employee->id === $request->employee_id) {
+            return $request;
+        }
+
+        // HR reads through Leave Request; a team lead reads their squad's
+        // requests through Team Leaves. Either grant is enough.
+        $permissions = collect($this->permissions->forUser($user));
+
+        foreach (['Leave Request', 'Team Leaves'] as $module) {
+            $row = $permissions->firstWhere('module', $module);
+            if (! ($row['view'] ?? false)) {
+                continue;
+            }
+
+            $visibleIds = $this->scopes->visibleEmployeeIds($user, $row['scope']);
+            if ($visibleIds === null || in_array($request->employee_id, $visibleIds, true)) {
+                return $request;
+            }
+        }
+
+        throw new NotFoundHttpException('Attachment not found.');
+    }
+
     public function create(User $user, array $attributes): LeaveRequest
     {
         $employee = $this->requireEmployee($user);
@@ -96,20 +135,43 @@ class LeaveService
             'to_date' => $to,
             'days' => $days,
             'reason' => $attributes['reason'] ?? null,
+            'contact' => $attributes['contact'] ?? null,
+            // Stored under a generated name; the uploader's filename is kept
+            // only as a label, since it is attacker-controlled.
+            'attachment_path' => isset($attributes['attachment'])
+                ? $attributes['attachment']->store("leave/{$employee->id}", 'local')
+                : null,
+            'attachment_name' => isset($attributes['attachment'])
+                ? $attributes['attachment']->getClientOriginalName()
+                : null,
             'status' => 'pending',
         ]);
 
-        // Nobody acts on a request they were never told about, so the people
-        // who can approve it hear about it as it is filed.
+        // A leave request needs an accountable, persistent hand-off. Create
+        // one notification per HR and Super Admin recipient on the server;
+        // browser-only role broadcasts disappear on refresh and cannot notify
+        // someone who is not currently online.
+        $recipientIds = $this->messages->employeeIdsForRoles(['hr', 'super_admin']);
+
         $this->messages->notify(
-            $this->messages->employeeIdsForRoles(['hr', 'team_lead', 'super_admin']),
+            $recipientIds,
             [
                 'title' => 'Leave request submitted',
-                'body' => sprintf('%s requested %s from %s.', $employee->name, strtolower($request->type), $from),
+                'body' => sprintf(
+                    '%s requested %s from %s to %s (%s day%s).',
+                    $employee->name,
+                    strtolower($request->type),
+                    $from,
+                    $to,
+                    $request->days,
+                    $request->days == 1.0 ? '' : 's',
+                ),
                 'type' => 'leave',
                 'routeName' => 'leave-requests',
             ],
         );
+
+        $this->queueLeaveRequestEmails($recipientIds, $request, $employee);
 
         return $request;
     }
@@ -200,6 +262,26 @@ class LeaveService
             'type' => 'leave',
             'routeName' => 'leave-requests',
         ]);
+
+        // The hand-off. HR heard about this request when it was submitted, but
+        // under two-step approval they could not act until the lead signed —
+        // and nothing told them that moment had come.
+        if ($stage === 'lead' && $decided->status === 'pending') {
+            $this->messages->notifyOthers(
+                $user,
+                $this->messages->employeeIdsForRoles(['hr', 'super_admin']),
+                [
+                    'title' => 'Leave ready for HR review',
+                    'body' => sprintf(
+                        "%s's %s has team lead approval and needs HR sign-off.",
+                        $decided->employee?->name ?? 'An employee',
+                        strtolower($decided->type),
+                    ),
+                    'type' => 'leave',
+                    'routeName' => 'leave-requests',
+                ],
+            );
+        }
 
         return $decided;
     }
@@ -341,5 +423,39 @@ class LeaveService
     private function employeeFor(User $user): ?Employee
     {
         return Employee::where('user_id', $user->id)->first();
+    }
+
+    /**
+     * Queue a private copy for every recipient. The in-app notification is
+     * already persisted, so an SMTP failure must not undo a leave request.
+     */
+    private function queueLeaveRequestEmails(array $recipientIds, LeaveRequest $request, Employee $requester): void
+    {
+        $reviewUrl = rtrim((string) config('app.frontend_url'), '/').'/leave-requests';
+
+        Employee::query()
+            ->with('user:id,email')
+            ->whereIn('id', $recipientIds)
+            ->get()
+            ->each(function (Employee $recipient) use ($request, $requester, $reviewUrl): void {
+                $email = $recipient->user?->email ?? $recipient->email;
+                if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    return;
+                }
+
+                try {
+                    Mail::to($email)->queue(new LeaveRequestSubmittedMail(
+                        requesterName: $requester->name,
+                        leaveType: $request->type,
+                        fromDate: $request->from_date->toDateString(),
+                        toDate: $request->to_date->toDateString(),
+                        days: (string) $request->days,
+                        reason: $request->reason,
+                        reviewUrl: $reviewUrl,
+                    ));
+                } catch (\Throwable $exception) {
+                    report($exception);
+                }
+            });
     }
 }

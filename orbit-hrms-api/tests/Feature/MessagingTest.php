@@ -1376,4 +1376,18 @@ class MessagingTest extends TenantTestCase
 
         $this->assertContains($admin->id, array_column($contacts, 'id'));
     }
+
+    /**
+     * The suite must never reach a real Pusher app. It runs on the pusher
+     * driver for channel authorisation, and once used .env's production keys
+     * to broadcast every message the tests sent.
+     */
+    public function test_broadcasts_never_leave_the_test_process(): void
+    {
+        $broadcaster = app(BroadcastManager::class)->connection('pusher');
+
+        $this->assertNotSame(\Pusher\Pusher::class, get_class($broadcaster->getPusher()));
+        $this->assertSame('test-key', config('broadcasting.connections.pusher.key'));
+        $this->assertSame('test-secret', config('broadcasting.connections.pusher.secret'));
+    }
 }

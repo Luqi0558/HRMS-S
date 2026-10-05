@@ -12,6 +12,7 @@ class SalarySlipRequestResource extends JsonResource
         return [
             'id' => $this->id,
             'employeeId' => $this->employee_id,
+            'payrollRunId' => $this->payroll_run_id,
             'period' => $this->period?->toDateString(),
             // "June 2026" — the label the frontend's month column shows.
             'month' => $this->period?->format('F Y'),

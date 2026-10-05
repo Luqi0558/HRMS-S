@@ -5,7 +5,7 @@ import { employeeService } from '../services/employeeService.js'
 import { ApiError } from '../services/apiClient.js'
 import { useStore } from '../store/index.js'
 
-const { state, roleLabel: formatRoleLabel, logActivity, setCurrentUser, can } = useStore()
+const { state, roleLabel: formatRoleLabel, logActivity, setCurrentUser, can, documentsByKey } = useStore()
 
 /**
  * Employment details — department, joining date, designation, employment type,
@@ -38,7 +38,7 @@ const roleLabel = computed(() => formatRoleLabel(state.currentUser.role))
 const onboarding = computed(() => employee.value?.onboarding || {})
 const personal = computed(() => onboarding.value.personal || {})
 const technical = computed(() => onboarding.value.technical || {})
-const documents = computed(() => onboarding.value.documents || {})
+const documents = computed(() => documentsByKey(employee.value))
 
 // Built as a function rather than inline, because the record arrives from the
 // API after setup has already run. Without a rebuild the form would stay bound
@@ -271,9 +271,21 @@ async function saveProfile() {
       })
       : saved
 
+    // Files picked in this form. They were never sent before: the inputs
+    // stored the File here and the save posted only text fields, then the
+    // rebuild below threw the selection away.
+    const pickedFiles = Object.fromEntries(
+      ['photo', 'cv', 'offerLetter', 'contract', 'certificates', 'experienceLetters']
+        .map(key => [key, profileForm.value[key]])
+        .filter(([, file]) => file instanceof File)
+    )
+    const withDocuments = Object.keys(pickedFiles).length
+      ? await profileService.uploadDocuments(pickedFiles)
+      : withEmployment
+
     // Rebuilt from the response rather than from the form, so what is on screen
     // afterwards is what the server actually stored.
-    ownEmployee.value = withEmployment
+    ownEmployee.value = withDocuments
     profileForm.value = buildForm()
 
     setCurrentUser(
@@ -379,12 +391,12 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
+  <div class="orbit-page space-y-6">
+    <div class="orbit-page-header flex flex-col xl:flex-row xl:items-end justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">Manage your account, contact, onboarding, and security details.</div>
       </div>
-      <button v-if="!isBlocked" @click="saveProfile" :disabled="isSaving" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+      <button v-if="!isBlocked" @click="saveProfile" :disabled="isSaving" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
         {{ isSaving ? 'Saving...' : 'Save profile' }}
       </button>
     </div>
@@ -397,7 +409,7 @@ onMounted(async () => {
     </section>
 
     <section v-else class="space-y-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div class="orbit-card p-5">
         <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
           <div class="flex items-center gap-4 min-w-0">
           <div class="w-16 h-16 rounded-2xl bg-slate-950 text-white flex items-center justify-center text-xl font-extrabold">
@@ -436,8 +448,59 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- Effectiveness preview moved to the dashboard. -->
+      <!-- Legacy effectiveness markup moved to EffectivenessSnapshot.
+              <div class="text-xs text-slate-500 mt-1">{{ effectivenessPreview.confidence }} · preview only</div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div v-for="metric in effectivenessPreview.metrics" :key="metric.id" class="effectiveness-metric">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="text-sm font-bold text-slate-900">{{ metric.label }}</div>
+                  <div class="text-xs text-slate-500 mt-1 leading-5">{{ metric.detail }}</div>
+                </div>
+                <div class="text-lg font-extrabold text-slate-900">{{ metric.score }}%</div>
+              </div>
+              <div class="effectiveness-progress mt-3"><div :style="{ width: metric.score + '%' }"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-5 mt-5">
+          <div class="effectiveness-trend-card">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-sm font-bold text-slate-900">Six-month trend</div>
+                <div class="text-xs text-slate-500 mt-1">Monthly snapshots will replace this preview when the backend is enabled.</div>
+              </div>
+              <span class="text-xs font-bold text-emerald-700">Improving</span>
+            </div>
+            <div class="effectiveness-bars">
+              <div v-for="point in effectivenessPreview.trend" :key="point.label" class="effectiveness-bar-group">
+                <div class="effectiveness-bar-value">{{ point.score }}</div>
+                <div class="effectiveness-bar-track"><div class="effectiveness-bar" :style="{ height: point.score + '%' }"></div></div>
+                <div class="text-[11px] font-semibold text-slate-500">{{ point.label }}</div>
+              </div>
+            </div>
+          </div>
+
+          <aside class="effectiveness-evidence">
+            <div class="text-sm font-bold text-slate-900">How this will work</div>
+            <ul class="mt-3 space-y-2 text-xs leading-5 text-slate-600">
+              <li><span>1</span> Ticket delivery and deadlines</li>
+              <li><span>2</span> Quality and returned work</li>
+              <li><span>3</span> Ticket time against checked-in time</li>
+              <li><span>4</span> Attendance, excluding approved leave</li>
+            </ul>
+            <div class="mt-4 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600">Role-specific weights will be set by HR.</div>
+          </aside>
+        </div>
+      -->
+
       <div v-if="isDeveloperProfile" class="grid grid-cols-1 gap-4">
-        <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+        <section class="orbit-card p-5">
           <div class="flex items-start justify-between gap-4">
             <div>
               <div class="text-lg font-bold text-slate-900">Profile Completion</div>
@@ -461,7 +524,7 @@ onMounted(async () => {
       </div>
 
       <div class="space-y-4">
-        <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+        <section class="orbit-card p-5">
           <div class="text-lg font-bold text-slate-900">Account Details</div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
             <div>
@@ -506,7 +569,7 @@ onMounted(async () => {
           </div>
         </section>
 
-        <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+        <section class="orbit-card p-5">
           <div class="text-lg font-bold text-slate-900">Personal Information</div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
             <div>
@@ -542,7 +605,7 @@ onMounted(async () => {
           </div>
         </section>
 
-        <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+        <section class="orbit-card p-5">
           <div class="text-lg font-bold text-slate-900">Technical Profile</div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
             <div>
@@ -716,7 +779,7 @@ onMounted(async () => {
           </div>
         </section>
 
-        <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+        <section class="orbit-card p-5">
           <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div>
               <div class="text-lg font-bold text-slate-900">Documents</div>
@@ -772,7 +835,7 @@ onMounted(async () => {
           </div>
         </section>
 
-        <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+        <section class="orbit-card p-5">
           <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div>
               <div class="text-lg font-bold text-slate-900">Security</div>

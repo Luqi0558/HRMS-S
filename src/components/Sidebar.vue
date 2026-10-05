@@ -1,24 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
 import { authService } from '../services/authService.js'
 
 const route = useRoute()
 const router = useRouter()
-const { state, can, roleLabel, clearCurrentUser } = useStore()
-
-// Guarded: the guest user has an empty name, and split(' ')[0] on '' yields
-// undefined, which rendered "undefined" in the avatar.
-const userInitials = computed(() => {
-  const name = state.currentUser.name || ''
-  const initials = name
-    .split(' ')
-    .filter(Boolean)
-    .map(part => part[0])
-    .join('')
-  return initials.toUpperCase() || '?'
-})
+const { state, can, scopeFor, clearCurrentUser } = useStore()
 
 async function signOut() {
   // Revokes this device's token server-side, then clears local state. The
@@ -26,7 +14,7 @@ async function signOut() {
   // cause and the user must still end up signed out locally.
   await authService.logout()
   clearCurrentUser()
-  router.push({ name: 'login' })
+  router.replace({ name: 'welcome' })
 }
 const collapseStorageKey = 'orbit-sidebar-collapsed'
 const isCollapsed = ref(false)
@@ -36,7 +24,16 @@ onMounted(() => {
   if (savedValue !== null) {
     isCollapsed.value = savedValue === 'true'
   }
+  window.addEventListener('orbit:toggle-sidebar', toggleSidebar)
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('orbit:toggle-sidebar', toggleSidebar)
+})
+
+function toggleSidebar() {
+  isCollapsed.value = !isCollapsed.value
+}
 
 watch(isCollapsed, value => {
   window.localStorage.setItem(collapseStorageKey, String(value))
@@ -69,7 +66,9 @@ const navSections = [
     label: 'People',
     links: [
       { name: 'employees', label: 'Employees', module: 'Employees' },
-      { name: 'attendance', label: 'Attendance', module: 'Attendance' },
+      // The ledger is company-wide; leads keep their narrower Attendance
+      // permission for dashboard squad status, not this navigation route.
+      { name: 'attendance', label: 'Attendance', module: 'Attendance', scope: 'all' },
       { name: 'assets', label: 'Assets', module: 'Assets' }
     ]
   },
@@ -133,7 +132,12 @@ function iconSvg(name) {
 function canSeeLink(link) {
   // Links without a module (My Profile) are always visible.
   if (!link.module) return true
-  return can(link.module, link.action || 'view')
+
+  // Match the route guard exactly. A narrower module permission can power a
+  // dashboard widget (for example a lead's own squad attendance) without
+  // granting access to the company-wide ledger linked from this sidebar.
+  if (!can(link.module, link.action || 'view')) return false
+  return link.scope !== 'all' || scopeFor(link.module) === 'all'
 }
 
 /**
@@ -187,33 +191,28 @@ function isActive(name) {
 </script>
 
 <template>
-  <aside :class="isCollapsed ? 'w-20' : 'w-64'" class="flex-shrink-0 h-screen overflow-hidden bg-[#e6eef8]/95 border-r border-white flex flex-col transition-all duration-300 relative shadow-[12px_0_38px_rgba(31,41,55,0.12)] backdrop-blur-xl">
-    <button
-      @click="isCollapsed = !isCollapsed"
-      class="absolute -right-3 top-6 w-6 h-6 bg-white text-slate-600 border border-slate-200 rounded-full flex items-center justify-center hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition-all shadow-md hover:shadow-lg z-50"
-      :title="isCollapsed ? 'Expand' : 'Collapse'"
-    >
-      <span class="text-xs font-bold">{{ isCollapsed ? '>' : '<' }}</span>
-    </button>
-
-    <div :class="isCollapsed ? 'px-3 pt-5 pb-4' : 'px-5 pt-5 pb-4'" class="transition-all duration-300">
-      <div class="flex items-center gap-3">
-        <!-- Brand mark in Orbit teal rather than near-black, and the wordmark
-             is shown again (it was v-if="false", leaving a bare "O"). -->
-        <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center text-white font-display font-bold text-lg flex-shrink-0 shadow-[0_6px_16px_rgba(15,139,118,0.35)]">
-          O
+  <aside :class="isCollapsed ? 'w-20' : 'w-52'" class="orbit-sidebar flex-shrink-0 h-screen overflow-hidden flex flex-col transition-all duration-300 relative">
+    <div :class="isCollapsed ? 'px-3 pt-4 pb-3' : 'px-4 pt-4 pb-3'" class="transition-all duration-300">
+      <div class="sidebar-brand flex items-center gap-3">
+        <!-- The mark is drawn locally so it retains its identity on the deep
+             navigation rail without introducing an image dependency. -->
+        <div class="orbit-brand-mark flex items-center justify-center text-white flex-shrink-0">
+          <svg viewBox="0 0 32 32" class="w-7 h-7" fill="none" aria-hidden="true">
+            <circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-dasharray="29 34" transform="rotate(-42 16 16)" opacity=".95" />
+            <circle cx="16" cy="16" r="10" stroke="#5eead4" stroke-width="5" stroke-linecap="round" stroke-dasharray="14 49" transform="rotate(137 16 16)" />
+          </svg>
         </div>
         <div v-if="!isCollapsed" class="min-w-0 transition-all duration-300">
-          <div class="font-display font-bold text-slate-900 text-base leading-tight">Orbit</div>
-          <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">HRMS</div>
+          <div class="sidebar-brand-name font-display font-bold text-base leading-tight">Orbit</div>
+          <div class="sidebar-brand-subtitle text-[11px] font-semibold uppercase tracking-[0.18em]">HRMS</div>
         </div>
       </div>
     </div>
 
-    <div class="mx-5 h-px bg-slate-300/50" :class="isCollapsed ? 'mx-3' : 'mx-5'"></div>
+    <div class="orbit-sidebar-divider" :class="isCollapsed ? 'mx-3' : 'mx-5'"></div>
 
-    <nav :class="isCollapsed ? 'px-3 pt-10' : 'px-4 pt-10'" class="flex-1 min-h-0 overflow-y-auto transition-all duration-300">
-      <div class="w-full space-y-5">
+    <nav :class="isCollapsed ? 'px-3 pt-5' : 'px-2 pt-5'" class="flex-1 min-h-0 overflow-y-auto transition-all duration-300">
+      <div class="sidebar-nav-groups w-full space-y-5">
         <div v-for="section in visibleSections" :key="section.label || 'main'" class="space-y-2">
           <div
             v-if="section.label && !isCollapsed"
@@ -227,11 +226,11 @@ function isActive(name) {
               @click="router.push({ name: link.name })"
               :class="{
                 'nav-item-active text-white': isActive(link.name),
-                'text-slate-600 hover:text-emerald-800 hover:bg-white': !isActive(link.name),
+                'orbit-nav-item-idle': !isActive(link.name),
                 'justify-center px-0': isCollapsed
               }"
               :title="linkTitle(link)"
-              class="nav-item group w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200"
+              class="nav-item orbit-nav-item group w-full flex items-center gap-3 px-3 py-2.5 text-sm font-semibold transition-all duration-200"
             >
               <!-- Wrapper carries the colour and the badge anchor; the inner
                    span owns v-html, which would otherwise overwrite any
@@ -247,50 +246,29 @@ function isActive(name) {
                   class="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-bold leading-none flex items-center justify-center shadow-sm"
                 >{{ badgeLabel(link) }}</span>
               </span>
-              <span v-if="!isCollapsed" class="transition-all duration-300">{{ link.label }}</span>
+              <!-- Long labels stay one line during expansion, without taking
+                   over the remaining flex space or changing their alignment. -->
+              <span v-if="!isCollapsed" class="whitespace-nowrap">{{ link.label }}</span>
               <span
                 v-if="!isCollapsed && badgeFor(link)"
                 class="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none flex items-center justify-center flex-shrink-0 shadow-sm"
               >{{ badgeLabel(link) }}</span>
-              <!-- Trailing dot marks the active row, as before. Suppressed when
-                   a badge is present: both claim ml-auto, and the count is the
-                   more useful of the two. -->
-              <span
-                v-else-if="isActive(link.name) && !isCollapsed"
-                class="ml-auto w-1.5 h-1.5 rounded-full bg-white/90 flex-shrink-0"
-              ></span>
             </button>
           </div>
         </div>
       </div>
     </nav>
 
-    <!-- Divider separates the profile from the nav list, which previously ran
-         straight into it. -->
-    <div :class="isCollapsed ? 'mx-3' : 'mx-4'" class="h-px bg-slate-300/50"></div>
+    <!-- Keep account actions visually separate from navigation. The user's
+         identity is intentionally shown only in the topbar to avoid a second,
+         redundant profile block in the sidebar. -->
+    <div :class="isCollapsed ? 'mx-3' : 'mx-4'" class="orbit-sidebar-divider"></div>
 
     <div :class="isCollapsed ? 'px-3 pt-3 pb-5' : 'px-4 pt-3 pb-5'" class="transition-all duration-300">
       <button
-        @click="router.push({ name: 'profile' })"
-        :title="isCollapsed ? 'My Profile' : ''"
-        class="sidebar-profile w-full flex items-center gap-3 rounded-xl transition-all duration-200 hover:bg-white"
-        :class="isCollapsed ? 'justify-center p-0' : 'p-2'"
-      >
-        <div class="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-emerald-700 font-display font-bold text-sm flex-shrink-0 shadow-sm">
-          {{ userInitials }}
-        </div>
-        <div v-if="!isCollapsed" class="min-w-0 flex-1 text-left transition-all duration-300">
-          <div class="text-sm font-semibold text-slate-900 truncate">{{ state.currentUser.name }}</div>
-          <div class="text-[10px] text-emerald-700 font-bold uppercase tracking-[0.14em] truncate">
-            {{ roleLabel(state.currentUser.role) }}
-          </div>
-        </div>
-      </button>
-
-      <button
         @click="signOut"
         :title="isCollapsed ? 'Sign out' : ''"
-        class="sidebar-signout mt-2 w-full flex items-center gap-3 rounded-xl transition-all duration-200"
+        class="sidebar-signout w-full flex items-center gap-3 rounded-xl transition-all duration-200"
         :class="isCollapsed ? 'justify-center p-2' : 'p-2'"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 flex-shrink-0">

@@ -51,42 +51,20 @@ class ActivityLogTest extends TenantTestCase
     // --- writing ---------------------------------------------------------
 
     /**
-     * Anyone signed in may write: the action being logged has already
-     * happened, so refusing the log would only lose the record of it.
+     * Audit entries only come from trusted server-side domain operations.
+     *
+     * 405 rather than 404: the write route is gone, but the same path still
+     * answers GET for reading the log, so the method is what is refused.
      */
-    public function test_any_signed_in_user_can_record_an_action(): void
+    public function test_a_signed_in_user_cannot_create_an_audit_entry_over_http(): void
     {
         $this->postJson('/api/activity-logs', [
             'module' => 'leave',
             'action' => 'leave requested',
             'details' => 'Annual leave for two days.',
-        ], $this->auth('worker@test.com'))->assertCreated();
+        ], $this->auth('worker@test.com'))->assertStatus(405);
 
-        $this->assertDatabaseHas('activity_logs', [
-            'module' => 'leave',
-            'actor_id' => $this->worker->id,
-        ]);
-    }
-
-    /**
-     * The actor comes from the token, never the body — a client must not be
-     * able to attribute an action to somebody else.
-     */
-    public function test_the_actor_cannot_be_forged(): void
-    {
-        $other = $this->makeEmployee('other@test.com', 'hr');
-
-        $this->postJson('/api/activity-logs', [
-            'module' => 'payroll',
-            'action' => 'payroll released',
-            // Ignored: not an accepted field.
-            'actorId' => $other->id,
-            'actor_name' => 'Somebody Else',
-        ], $this->auth('worker@test.com'))->assertCreated();
-
-        $log = ActivityLog::firstOrFail();
-        $this->assertSame($this->worker->id, $log->actor_id);
-        $this->assertSame('worker@test.com', $log->actor_name);
+        $this->assertDatabaseCount('activity_logs', 0);
     }
 
     /**

@@ -106,7 +106,10 @@ class RolePermissionSeeder extends Seeder
             ['hr', 'Employees', true, true, false, false, 'all'],
             ['hr', 'Attendance', true, false, false, false, 'all'],
             ['hr', 'Leave Request', true, true, true, false, 'all'],
-            ['hr', 'Medical Request', true, false, true, false, 'all'],
+            // HR can file its own claim as an employee. It is never eligible
+            // to approve that claim; MedicalClaimService routes it to Super
+            // Admin and enforces the self-review prohibition server-side.
+            ['hr', 'Medical Request', true, true, true, false, 'all'],
             ['hr', 'Payroll', true, true, false, false, 'all'],
             ['hr', 'Assets', true, true, false, false, 'all'],
             ['hr', 'Petty Cash', true, true, false, true, 'all'],

@@ -87,15 +87,18 @@ class InstallTenant extends Command
 
         $this->line("Creating tenant '{$id}' and migrating its database...");
 
-        // Creating the tenant fires TenantCreated, whose pipeline creates the
-        // database and migrates it.
-        $tenant = Tenant::create([
-            'id' => $id,
-            'name' => $company,
-            'slug' => Str::slug($company) ?: $id,
-        ]);
-
+        $tenant = null;
         try {
+            // Creating the tenant fires TenantCreated, whose pipeline creates
+            // and migrates its database. Keep this inside the rollback guard:
+            // a migration failure happens during create(), before the previous
+            // implementation had a chance to clean up the partial tenant.
+            $tenant = Tenant::create([
+                'id' => $id,
+                'name' => $company,
+                'slug' => Str::slug($company) ?: $id,
+            ]);
+
             tenancy()->initialize($tenant);
 
             $this->line('Seeding the permission grid and company settings...');
@@ -111,10 +114,15 @@ class InstallTenant extends Command
         } catch (Throwable $e) {
             tenancy()->end();
 
+            // A migration can fail during Tenant::create(), before its return
+            // value is assigned. Resolve it again so the central record and
+            // its database are removed in either failure path.
+            $tenant ??= Tenant::find($id);
+
             // A half-built tenant is worse than none: it would occupy the id,
             // so a corrected re-run would be refused by the guard above.
             $this->error('Install failed, rolling the tenant back: '.$e->getMessage());
-            $tenant->delete();
+            $tenant?->delete();
 
             return self::FAILURE;
         }

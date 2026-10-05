@@ -9,7 +9,7 @@ import { employeeService } from '../services/employeeService.js'
 
 const route = useRoute()
 const {
-  state, can, formatCurrency, currencyCode, pushNotification, logActivity,
+  state, can, formatCurrency, currencyCode, logActivity,
   setMedicalClaims, upsertMedicalClaim, setServerSettings, setEmployees
 } = useStore()
 const loadError = ref('')
@@ -39,6 +39,7 @@ onMounted(loadClaimData)
 // Reviewers hold the approve right; applicants hold create on their own claims.
 const canAccess = computed(() => can('Medical Request', 'approve'))
 const canApply = computed(() => can('Medical Request', 'create'))
+const currentEmployeeId = computed(() => state.currentUser.employeeId ?? state.currentUser.id)
 const statusFlow = ['pending', 'view', 'processing', 'approved']
 const form = ref({
   type: '',
@@ -53,14 +54,14 @@ const claimError = ref('')
 const showApplyModal = ref(false)
 const claimContextFilter = ref('all')
 function matchesClaimContext(claim) {
-  if (claimContextFilter.value === 'mine') return claim.employeeId === state.currentUser.id
+  if (claimContextFilter.value === 'mine') return claim.employeeId === (state.currentUser.employeeId ?? state.currentUser.id)
   if (claimContextFilter.value === 'pending') return claim.status === 'pending'
   if (claimContextFilter.value === 'processing') return claim.status === 'processing' || claim.status === 'view'
   if (claimContextFilter.value === 'approved') return claim.status === 'approved'
   if (claimContextFilter.value === 'rejected') return claim.status === 'rejected'
   return true
 }
-const myClaims = computed(() => state.medicalClaims.filter(c => c.employeeId === state.currentUser.id && matchesClaimContext(c)))
+const myClaims = computed(() => state.medicalClaims.filter(c => c.employeeId === currentEmployeeId.value && matchesClaimContext(c)))
 const allClaims = computed(() => state.medicalClaims.filter(matchesClaimContext))
 const myClaimsTable = useTableControls(
   myClaims,
@@ -87,6 +88,10 @@ function employeeName(id) {
   return state.employees.find(e => e.id === id)?.name ?? ''
 }
 
+function isOwnClaim(claim) {
+  return claim.employeeId === currentEmployeeId.value
+}
+
 async function openReceipt(claim) {
   claimError.value = ''
   try {
@@ -101,15 +106,28 @@ function nextStatus(currentStatus) {
   return statusFlow[Math.min(index + 1, statusFlow.length - 1)] || 'view'
 }
 
+/** How a status reads on screen; the review stages get plain words. */
+function claimStatusLabel(status) {
+  if (status === 'view') return 'In review'
+  if (status === 'processing') return 'Processing'
+  return status
+}
+
 /**
  * Advances a claim one step through the review flow.
  *
- * 'view' and 'processing' are review states this screen tracks locally — the
- * API models only pending, approved, rejected and paid, because those are the
- * ones that decide whether money moves. Reaching 'approved' is therefore the
- * step that has to be recorded server-side; the two before it are not.
+ * Every step is recorded on the server. 'view' and 'processing' used to be
+ * tracked only in this browser, so a claim marked processing was pending
+ * again on the next load and its owner never knew anyone had looked. They
+ * are review stages beside the status rather than statuses — status is what
+ * moves money — and the API tells the employee once processing begins.
  */
 async function moveNext(claim) {
+  if (isOwnClaim(claim)) {
+    claimError.value = 'Your own medical claim requires Super Admin approval.'
+    return
+  }
+
   const target = nextStatus(claim.status)
 
   if (target === 'approved') {
@@ -128,16 +146,18 @@ async function moveNext(claim) {
       decidingId.value = null
     }
   } else {
-    claim.status = target
+    claimError.value = ''
+    decidingId.value = claim.id
+    try {
+      upsertMedicalClaim(await medicalClaimService.advance(claim.id, target))
+    } catch (error) {
+      claimError.value = error?.message || 'Unable to move that claim forward.'
+      return
+    } finally {
+      decidingId.value = null
+    }
   }
 
-  if (!claim.timeline) claim.timeline = []
-  claim.timeline.unshift({
-    status: claim.status,
-    note: reviewNotes.value[claim.id] || '',
-    by: state.currentUser.name,
-    at: new Date().toISOString()
-  })
   logActivity({
     module: 'medical',
     action: 'claim status updated',
@@ -145,17 +165,15 @@ async function moveNext(claim) {
     targetId: claim.id,
     targetType: 'medicalClaim'
   })
-  pushNotification({
-    title: 'Medical claim updated',
-    message: `${claim.type} is now ${claim.status}.`,
-    type: 'medical',
-    userIds: [claim.employeeId],
-    route: { name: 'medical-claims' }
-  })
   reviewNotes.value[claim.id] = ''
 }
 
 async function rejectClaim(claim) {
+  if (isOwnClaim(claim)) {
+    claimError.value = 'Your own medical claim requires Super Admin approval.'
+    return
+  }
+
   const note = reviewNotes.value[claim.id] || 'No reason provided.'
 
   claimError.value = ''
@@ -169,26 +187,12 @@ async function rejectClaim(claim) {
     decidingId.value = null
   }
 
-  if (!claim.timeline) claim.timeline = []
-  claim.timeline.unshift({
-    status: 'rejected',
-    note,
-    by: state.currentUser.name,
-    at: new Date().toISOString()
-  })
   logActivity({
     module: 'medical',
     action: 'claim rejected',
     details: `${employeeName(claim.employeeId)}'s ${claim.type} was rejected. Reason: ${note}`,
     targetId: claim.id,
     targetType: 'medicalClaim'
-  })
-  pushNotification({
-    title: 'Medical claim rejected',
-    message: `${claim.type} was rejected. ${note}`,
-    type: 'medical',
-    userIds: [claim.employeeId],
-    route: { name: 'medical-claims' }
   })
   reviewNotes.value[claim.id] = ''
 }
@@ -240,13 +244,6 @@ async function applyMedicalClaim() {
     submitting.value = false
   }
 
-  pushNotification({
-    title: 'New medical claim submitted',
-    message: `${state.currentUser.name} submitted a ${form.value.type} for ${formatCurrency(form.value.amount)}.`,
-    type: 'medical',
-    roles: ['hr', 'super_admin'],
-    route: { name: 'medical-claims' }
-  })
   logActivity({
     module: 'medical',
     action: 'claim submitted',
@@ -259,12 +256,12 @@ async function applyMedicalClaim() {
 </script>
 
 <template>
-  <div v-if="canApply" class="space-y-6">
-    <div class="flex items-start justify-between gap-4">
+  <div v-if="canApply" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex items-start justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">Track your submitted medical reimbursement requests</div>
       </div>
-      <button @click="showApplyModal = true" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors shadow-sm">
+      <button @click="showApplyModal = true" class="orbit-button orbit-button-primary text-sm font-medium px-5 py-2">
         Apply medical request
       </button>
     </div>
@@ -274,21 +271,21 @@ async function applyMedicalClaim() {
     </div>
 
     <div v-if="usage" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Annual allowance</div>
         <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ formatCurrency(usage.limit) }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Claimed this year</div>
         <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ formatCurrency(usage.used) }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Remaining</div>
         <div class="text-2xl font-extrabold text-teal mt-2">{{ formatCurrency(usage.remaining) }}</div>
       </div>
     </div>
 
-    <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+    <div class="orbit-table-card overflow-hidden">
       <div class="px-4 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900">My medical requests</div>
       <div class="table-tools">
         <input v-model="myClaimsTable.query.value" type="search" placeholder="Filter medical requests..." class="table-filter-input" />
@@ -303,7 +300,7 @@ async function applyMedicalClaim() {
         <div class="table-count">{{ myClaimsTable.filteredRows.value.length }} records</div>
       </div>
       <div class="table-scroll" @scroll="myClaimsTable.loadMoreRows">
-      <table class="w-full text-sm">
+      <table class="orbit-data-table w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left bg-slate-50/80">
             <th class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Claim</th>
@@ -317,7 +314,7 @@ async function applyMedicalClaim() {
             <td class="px-4 py-3 text-slate-900 font-medium">{{ claim.type }}</td>
             <td class="px-4 py-3 text-slate-700">{{ formatCurrency(claim.amount) }}</td>
             <td class="px-4 py-3 text-slate-700">{{ claim.submittedAt }}</td>
-            <td class="px-4 py-3 capitalize text-slate-700">{{ claim.status }}</td>
+            <td class="px-4 py-3 capitalize text-slate-700">{{ claimStatusLabel(claim.status) }}</td>
           </tr>
           <tr v-if="myClaimsTable.filteredRows.value.length === 0">
             <td colspan="4" class="px-4 py-8 text-center text-sm text-slate-500">No medical requests submitted yet.</td>
@@ -328,8 +325,8 @@ async function applyMedicalClaim() {
     </div>
 
     <Teleport to="body">
-      <div v-if="showApplyModal" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showApplyModal = false">
-        <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
+      <div v-if="showApplyModal" class="orbit-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showApplyModal = false">
+        <div class="orbit-modal p-6 w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
           <div class="flex items-start justify-between gap-4 mb-5">
             <div>
               <div class="text-lg font-bold text-slate-900">Apply medical request</div>
@@ -403,12 +400,12 @@ async function applyMedicalClaim() {
     </Teleport>
   </div>
 
-  <div v-else-if="canAccess" class="space-y-6">
+  <div v-if="canAccess" class="orbit-page space-y-6">
     <div>
       <div class="text-sm text-slate-600 mt-1">Review employee medical reimbursement requests</div>
     </div>
 
-    <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+    <div class="orbit-table-card overflow-hidden">
       <div class="table-tools">
         <input v-model="allClaimsTable.query.value" type="search" placeholder="Filter medical claims..." class="table-filter-input" />
         <select v-model="claimContextFilter" class="table-filter-input max-w-[210px]">
@@ -421,7 +418,7 @@ async function applyMedicalClaim() {
         <div class="table-count">{{ allClaimsTable.filteredRows.value.length }} records</div>
       </div>
       <div class="table-scroll" @scroll="allClaimsTable.loadMoreRows">
-      <table class="w-full text-sm">
+      <table class="orbit-data-table w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left bg-slate-50/80">
             <th class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Employee</th>
@@ -452,31 +449,43 @@ async function applyMedicalClaim() {
             <td class="px-4 py-3 text-slate-700">{{ formatCurrency(claim.amount) }}</td>
             <td class="px-4 py-3 text-slate-700">{{ claim.submittedAt }}</td>
             <td class="px-4 py-3 min-w-[260px]">
-              <select v-model="claim.status" class="text-sm capitalize border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500">
-                <option v-for="status in [...statusFlow, 'rejected']" :key="status" :value="status">{{ status }}</option>
-              </select>
-              <input v-model="reviewNotes[claim.id]" placeholder="Review note / rejection reason" class="mt-2 w-full text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
-              <div v-if="claim.timeline?.length" class="mt-2 text-xs text-slate-500">
-                Last: {{ claim.timeline[0].status }} by {{ claim.timeline[0].by }}
+              <div v-if="isOwnClaim(claim)" class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                <div class="font-bold">Your medical claim</div>
+                Awaiting Super Admin review. You cannot approve or reject your own claim.
               </div>
+              <template v-else>
+                <span class="inline-flex text-sm font-semibold capitalize border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 text-slate-700">
+                  {{ claimStatusLabel(claim.status) }}
+                </span>
+                <input v-model="reviewNotes[claim.id]" placeholder="Review note / rejection reason" class="mt-2 w-full text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+                <div v-if="claim.timeline?.length" class="mt-2 text-xs text-slate-500">
+                  Last: {{ claimStatusLabel(claim.timeline[0].status) }} by {{ claim.timeline[0].by }}
+                </div>
+              </template>
             </td>
             <td class="px-4 py-3">
-              <div class="flex flex-wrap gap-2">
+              <div v-if="!isOwnClaim(claim)" class="flex flex-wrap gap-2">
                 <button
                   @click="moveNext(claim)"
-                  :disabled="claim.status === 'approved' || claim.status === 'rejected' || decidingId === claim.id"
+                  :disabled="['approved', 'rejected', 'paid'].includes(claim.status) || decidingId === claim.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Move next
                 </button>
                 <button
                   @click="rejectClaim(claim)"
-                  :disabled="claim.status === 'approved' || claim.status === 'rejected' || decidingId === claim.id"
+                  :disabled="['approved', 'rejected', 'paid'].includes(claim.status) || decidingId === claim.id"
                   class="text-sm font-medium rounded-lg px-3 py-2 bg-rose-600 text-white hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
                   Reject
                 </button>
               </div>
+              <span v-else class="text-xs font-semibold text-amber-700">Super Admin review</span>
+            </td>
+          </tr>
+          <tr v-if="allClaimsTable.filteredRows.value.length === 0">
+            <td colspan="8" class="px-4 py-8 text-center text-sm text-slate-500">
+              {{ allClaimsTable.query.value.trim() || claimContextFilter !== 'all' ? 'No medical claims match the current filters.' : 'No medical claims submitted yet.' }}
             </td>
           </tr>
         </tbody>
@@ -484,7 +493,7 @@ async function applyMedicalClaim() {
       </div>
     </div>
   </div>
-  <div v-else class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+  <div v-if="!canApply && !canAccess" class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
     <div class="text-lg font-semibold text-slate-900">Medical claims are not available for this role</div>
   </div>
 </template>

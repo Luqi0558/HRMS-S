@@ -13,6 +13,37 @@ use Illuminate\Validation\Rules\Password;
  */
 class CompleteOnboardingRequest extends FormRequest
 {
+    /**
+     * The onboarding selector predates the numeric database field and sends
+     * human-readable bands (for example, "1-3" or "5+"). Convert those to
+     * their representative numeric values before Laravel's numeric rule runs.
+     * An untouched selector must be NULL, not an empty string.
+     */
+    protected function prepareForValidation(): void
+    {
+        $technical = $this->input('technical');
+
+        if (!is_array($technical) || !array_key_exists('experienceYears', $technical)) {
+            return;
+        }
+
+        $experienceYears = $technical['experienceYears'];
+        $bands = [
+            '0-1' => 0.5,
+            '1-3' => 2,
+            '3-5' => 4,
+            '5+' => 5,
+        ];
+
+        if ($experienceYears === '') {
+            $technical['experienceYears'] = null;
+        } elseif (is_string($experienceYears) && array_key_exists($experienceYears, $bands)) {
+            $technical['experienceYears'] = $bands[$experienceYears];
+        }
+
+        $this->merge(['technical' => $technical]);
+    }
+
     public function authorize(): bool
     {
         // The invitation token is the credential; OnboardingService verifies it.

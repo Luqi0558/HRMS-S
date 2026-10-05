@@ -31,6 +31,10 @@ class Employee extends Model
         'exit_date',
         'employment_type',
         'probation_status',
+        'onboarding_review_status',
+        'onboarding_reviewed_by',
+        'onboarding_reviewed_at',
+        'onboarding_correction_note',
         'status',
     ];
 
@@ -39,6 +43,7 @@ class Employee extends Model
         'joining_date' => 'date',
         'exit_date' => 'date',
         'presence_updated_at' => 'datetime',
+        'onboarding_reviewed_at' => 'datetime',
     ];
 
     public function user(): BelongsTo

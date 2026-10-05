@@ -2,18 +2,52 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Three intentionally distinct light-mode layers: a cool navigation rail,
+     a soft workspace canvas, and white cards. The earlier rail/page values
+     were too close together and made the application read as one white slab. */
+  --orbit-page: #f5f7fa;
+  --orbit-surface: #ffffff;
+  --orbit-surface-muted: #edf3f8;
+  --orbit-border: #d2dee9;
+  --orbit-border-strong: #afc5d7;
+  --orbit-text: #0f172a;
+  --orbit-text-muted: #64748b;
+  --orbit-primary: #0f8b76;
+  --orbit-primary-hover: #0a7563;
+  --orbit-radius: 16px;
+  --orbit-radius-sm: 9px;
+  --orbit-shadow: 0 4px 16px rgba(15, 23, 42, 0.045);
+}
+
 html, body, #app {
   min-height: 100%;
 }
 
+/* Vue removes v-cloak only after it has mounted the current route and applied
+   the stored theme. This avoids showing a one-frame fallback shell during a
+   refresh, especially on data-dense pages such as Petty Cash. */
+[v-cloak] {
+  display: none !important;
+}
+
 body {
-  /* System fallbacks matter here: the Google Fonts stylesheet now loads
-     without blocking paint, so the first frame renders in whatever is listed
-     next. These are metrically close to Inter, which keeps the swap subtle
-     instead of reflowing the layout. */
+  /* Inter and the display face are bundled with the app rather than fetched
+     from Google at runtime. This keeps every route on the same font after a
+     normal refresh, a hard refresh, or a slow network response. */
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  color: #0f172a;
-  background-color: #e8f0f7;
+  color: var(--orbit-text);
+  background-color: var(--orbit-page);
+}
+
+/* Native controls do not consistently inherit the page font across browsers.
+   Payroll contains several select and date controls, so make their typography
+   use the same bundled theme face as the rest of the application. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 /* Set by the inline script in index.html before Vue mounts, so a dark-mode
@@ -137,60 +171,6 @@ th,
    read heavier than the page content it points at. It is now brand teal with a
    left rail, and inactive icons pick up the accent only on hover. */
 /* Inactive rows only — the active row keeps its white icon on hover. */
-.nav-item:not(.nav-item-active):hover svg {
-  color: #0F8B76;
-}
-
-.nav-item-active {
-  background: linear-gradient(135deg, #12977E 0%, #0B6B5B 100%);
-  box-shadow: 0 8px 18px rgba(15, 139, 118, 0.28);
-}
-
-/* Deepen slightly on hover rather than inheriting the inactive white fill. */
-.nav-item-active:hover {
-  background: linear-gradient(135deg, #0F8B76 0%, #085041 100%);
-  box-shadow: 0 10px 22px rgba(15, 139, 118, 0.34);
-}
-
-/* The label sits on a saturated teal fill, so it must stay white in BOTH
-   themes. Without this the night-mode text rules (which use !important) win
-   and the active item's text disappears into its own background. */
-.nav-item-active,
-.nav-item-active span,
-.night-mode .nav-item-active,
-.night-mode .nav-item-active span {
-  color: #fff !important;
-}
-
-.nav-item-active svg {
-  color: #fff !important;
-}
-
-.nav-section-label {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: #94a3b8;
-}
-
-/* Lift the label against the dark sidebar. */
-.night-mode .nav-section-label {
-  color: #7c8ba1;
-}
-
-/* Inactive nav rows: the night-mode .text-slate-600 rule handles the label,
-   but the hover fill must not stay white-on-dark. Same for the profile row. */
-.night-mode .nav-item:not(.nav-item-active):hover,
-.night-mode .sidebar-profile:hover {
-  background-color: rgba(30, 41, 59, 0.75) !important;
-}
-
-/* Sidebar dividers. */
-.night-mode aside .bg-slate-300\/50 {
-  background-color: rgba(71, 85, 105, 0.6) !important;
-}
-
 .dashboard-click-card {
   cursor: pointer;
   transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
@@ -198,7 +178,7 @@ th,
 
 .dashboard-click-card:hover {
   transform: translateY(-1px);
-  border-color: rgba(15, 23, 42, 0.24) !important;
+  border-color: rgba(15, 23, 42, 0.24);
 }
 
 .dashboard-click-card:focus-visible {
@@ -362,10 +342,10 @@ th,
   grid-template-columns: minmax(96px, 1.3fr) 42px 58px 58px 68px;
   align-items: center;
   gap: 8px;
-  padding: 10px;
-  border: 1px solid rgba(203, 213, 225, 0.72);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.58);
+  padding: 10px 12px;
+  border: 1px solid #dce6ef;
+  border-radius: 12px;
+  background: #fbfdff;
 }
 
 .punch-ledger-name,
@@ -380,18 +360,35 @@ th,
 
 .punch-ledger-person {
   min-width: 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
   gap: 2px;
 }
 
+.punch-ledger-avatar {
+  grid-row: 1 / span 2;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e8f1f8;
+  color: #38516d;
+  font-size: 9px;
+  font-weight: 850;
+}
+
 .punch-ledger-name {
+  grid-column: 2;
   color: #1f3147;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .punch-ledger-department {
+  grid-column: 2;
   color: #64748b;
   font-size: 10px;
   overflow: hidden;
@@ -415,6 +412,9 @@ th,
 }
 
 .punch-ledger-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   justify-self: start;
   border-radius: 999px;
   padding: 4px 7px;
@@ -428,34 +428,37 @@ th,
 }
 
 .punch-ledger-status-late {
+  background: rgba(245, 158, 11, 0.14);
+  color: #a16207;
+}
+
+.punch-ledger-status-active {
+  background: rgba(20, 184, 166, 0.12);
+  color: #0f766e;
+}
+
+.punch-ledger-status-exception {
   background: rgba(244, 63, 94, 0.12);
   color: #be123c;
 }
 
-.punch-ledger-status-active {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
-}
-
-.punch-ledger-track {
-  height: 4px;
-  background: #e2e8f0;
-  border-radius: 999px;
-  position: relative;
-  grid-column: 1 / -1;
-}
-
-.punch-ledger-bar {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  border-radius: 999px;
+.punch-ledger-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .punch-ledger-more,
 .punch-ledger-empty {
   text-align: center;
   padding: 8px 0 2px;
+}
+
+.punch-ledger-scroll > .card-empty-state.punch-ledger-empty {
+  min-height: 190px;
+  margin: 0.15rem 0;
+  padding: 1rem;
 }
 
 .timesheet-chart-card {
@@ -551,17 +554,11 @@ th,
 }
 
 .app-shell:not(.night-mode) {
-  background:
-    radial-gradient(circle at 10% -8%, rgba(255, 255, 255, 0.92) 0, rgba(255, 255, 255, 0) 34%),
-    radial-gradient(circle at 90% 5%, rgba(203, 213, 225, 0.5) 0, rgba(203, 213, 225, 0) 30%),
-    linear-gradient(135deg, #dde9f4 0%, #eef4f9 48%, #e5eef7 100%);
+  background: var(--orbit-page);
 }
 
 .app-shell:not(.night-mode) .app-main {
-  background:
-    radial-gradient(rgba(100, 116, 139, 0.13) 0.75px, transparent 0.75px),
-    linear-gradient(135deg, #eff5fa 0%, #e8f0f7 56%, #edf4fa 100%);
-  background-size: 20px 20px, auto;
+  background: var(--orbit-page);
 }
 
 .night-mode {
@@ -722,84 +719,41 @@ th,
   color: #e5edf7 !important;
 }
 
-.app-shell:not(.night-mode) aside {
-  background:
-    linear-gradient(180deg, rgba(204, 220, 236, 0.98), rgba(190, 210, 229, 0.98)) !important;
-  border-color: rgba(146, 168, 191, 0.88) !important;
-  box-shadow: 16px 0 38px rgba(30, 41, 59, 0.16) !important;
-}
-
-.app-shell:not(.night-mode) aside nav button:not(.nav-item-active) {
-  color: #334860 !important;
-}
-
-.app-shell:not(.night-mode) aside nav button:not(.nav-item-active):hover {
-  background: rgba(255, 255, 255, 0.68) !important;
-  color: #0f172a !important;
-}
-
-.app-shell:not(.night-mode) aside nav button:not(.nav-item-active) svg {
-  color: #4a617a !important;
-  stroke-width: 2.15;
-}
-
-.app-shell:not(.night-mode) aside nav button:not(.nav-item-active):hover svg {
-  color: #0f172a !important;
-}
-
-.app-shell:not(.night-mode) aside .text-slate-400,
-.app-shell:not(.night-mode) aside .text-slate-500 {
-  color: #50677f !important;
-}
-
-.app-shell:not(.night-mode) aside .uppercase {
-  color: #7d91a8 !important;
-  letter-spacing: 0.14em !important;
-  font-weight: 850 !important;
-}
-
 /* Non-nav dark chips inside the sidebar. The nav's active item is handled by
    .nav-item-active (brand teal) — this rule used to force it near-black and
    fought the new styling. */
-.app-shell:not(.night-mode) aside .bg-slate-950 {
-  background: #07111f !important;
-  color: #ffffff !important;
-}
-
 .app-shell:not(.night-mode) header {
-  background:
-    linear-gradient(90deg, rgba(248, 251, 254, 0.96), rgba(232, 241, 249, 0.94)) !important;
-  border-color: rgba(186, 202, 220, 0.82) !important;
-  box-shadow: 0 12px 32px rgba(30, 41, 59, 0.1) !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  border-color: var(--orbit-border) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
 }
 
 .app-shell:not(.night-mode) .bg-white {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(247, 251, 254, 0.86)) !important;
+  background: var(--orbit-surface) !important;
 }
 
 .app-shell:not(.night-mode) .bg-slate-50,
 .app-shell:not(.night-mode) .bg-slate-50\/80,
 .app-shell:not(.night-mode) .bg-slate-50\/60 {
-  background-color: rgba(236, 244, 251, 0.86) !important;
+  background-color: var(--orbit-surface-muted) !important;
 }
 
 .app-shell:not(.night-mode) .border-slate-200 {
-  border-color: rgba(178, 195, 214, 0.78) !important;
+  border-color: var(--orbit-border) !important;
 }
 
 .app-shell:not(.night-mode) .rounded-xl {
-  border-radius: 22px !important;
+  border-radius: var(--orbit-radius) !important;
 }
 
 .app-shell:not(.night-mode) .rounded-lg {
-  border-radius: 14px !important;
+  border-radius: var(--orbit-radius-sm) !important;
 }
 
 .app-shell:not(.night-mode) .shadow-sm,
 .app-shell:not(.night-mode) .shadow-xl,
 .app-shell:not(.night-mode) .shadow-2xl {
-  box-shadow: 0 18px 42px rgba(30, 41, 59, 0.1) !important;
+  box-shadow: var(--orbit-shadow) !important;
 }
 
 .app-shell:not(.night-mode) .text-slate-950,
@@ -830,23 +784,98 @@ th,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid rgba(203, 213, 225, 0.72);
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--orbit-border);
+}
+
+/* Attendance uses a compact operational summary: punctuality and live
+   attendance are deliberately shown as separate concepts. */
+.attendance-summary-card,
+.asset-summary-card {
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--orbit-border);
+  border-radius: var(--orbit-radius);
+  background: var(--orbit-surface);
+  box-shadow: 0 5px 14px rgba(15, 23, 42, 0.04);
+}
+
+.attendance-summary-label,
+.asset-summary-label {
+  color: var(--orbit-text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.attendance-summary-help,
+.asset-summary-help {
+  margin-top: 0.2rem;
+  color: var(--orbit-text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.attendance-summary-value,
+.asset-summary-value {
+  flex: 0 0 auto;
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.attendance-advanced-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--orbit-border);
+  background: var(--orbit-surface-muted);
+}
+
+.attendance-clear-filters {
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.attendance-clear-filters:hover {
+  color: var(--orbit-primary-hover);
+}
+
+.attendance-filter-chip {
+  border: 1px solid #b9e4da;
+  border-radius: 999px;
+  background: #effbf7;
+  color: #0f766e;
+  padding: 0.38rem 0.65rem;
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .app-shell:not(.night-mode) .table-tools {
-  background:
-    linear-gradient(180deg, rgba(242, 247, 252, 0.84), rgba(232, 241, 249, 0.62));
-  border-color: rgba(178, 195, 214, 0.72);
+  background: var(--orbit-surface);
+  border-color: var(--orbit-border);
 }
 
 .table-filter-input {
   width: min(100%, 320px);
-  border: 1px solid #d5dde8;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.86);
-  color: #0f172a;
+  border: 1px solid var(--orbit-border-strong);
+  border-radius: var(--orbit-radius-sm);
+  background: var(--orbit-surface);
+  color: var(--orbit-text);
   font-size: 13px;
   font-weight: 600;
   padding: 10px 12px;
@@ -854,8 +883,8 @@ th,
 }
 
 .table-filter-input:focus {
-  border-color: #111827;
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+  border-color: #5fc4b2;
+  box-shadow: 0 0 0 3px rgba(15, 139, 118, 0.1);
 }
 
 .table-count {
@@ -879,13 +908,22 @@ th,
 }
 
 .app-empty-state {
-  border: 1px dashed rgba(148, 163, 184, 0.72);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(248, 250, 252, 0.88), rgba(241, 245, 249, 0.72));
+  border: 1px dashed #cddde4;
+  border-radius: 14px;
+  background: #f9fcfd;
   padding: 28px 18px;
   text-align: center;
   color: #64748b;
+}
+
+.app-empty-state::before {
+  content: '';
+  display: block;
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 0.62rem;
+  border-radius: 14px;
+  background: #edf4f8 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40' fill='none' stroke='%235f7891' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 14h24l-2 16a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3L8 14Z'/%3E%3Cpath d='M14 14V11a6 6 0 0 1 12 0v3M15 23h10'/%3E%3C/svg%3E") center/30px 30px no-repeat;
 }
 
 .app-empty-title {
@@ -903,10 +941,48 @@ th,
 }
 
 .app-shell:not(.night-mode) .app-empty-state {
-  background:
-    linear-gradient(180deg, rgba(248, 251, 254, 0.92), rgba(235, 243, 250, 0.82));
-  border-color: rgba(148, 163, 184, 0.62);
-  color: #52657b;
+  background: #f9fcfd;
+  border-color: #cddde4;
+  color: var(--orbit-text-muted);
+}
+
+.app-shell.night-mode .attendance-advanced-filters {
+  border-color: #334155;
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.app-shell.night-mode .attendance-summary-card,
+.app-shell.night-mode .asset-summary-card,
+body.night-mode .attendance-summary-card,
+body.night-mode .asset-summary-card {
+  border-color: #334155;
+  background: #172033;
+  box-shadow: none;
+}
+
+.app-shell.night-mode .attendance-summary-label,
+.app-shell.night-mode .attendance-summary-help,
+.app-shell.night-mode .asset-summary-label,
+.app-shell.night-mode .asset-summary-help,
+body.night-mode .attendance-summary-label,
+body.night-mode .attendance-summary-help,
+body.night-mode .asset-summary-label,
+body.night-mode .asset-summary-help {
+  color: #aab8cb;
+}
+
+.app-shell.night-mode .attendance-clear-filters {
+  color: #aab8cb;
+}
+
+.app-shell.night-mode .attendance-clear-filters:hover {
+  color: #99f6e4;
+}
+
+.app-shell.night-mode .attendance-filter-chip {
+  border-color: rgba(45, 212, 191, 0.35);
+  background: rgba(20, 184, 166, 0.14);
+  color: #99f6e4;
 }
 
 .app-shell button,
@@ -1070,25 +1146,6 @@ body.night-mode .modal-row:hover {
   background: rgba(51, 65, 85, 0.62);
 }
 
-.employees-table-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(239, 247, 253, 0.84)) !important;
-}
-
-/* Employees table opts into the same striping rather than a flat fill, which
-   would otherwise override the global rule above. */
-.employees-table tbody tr {
-  background: #ffffff;
-}
-
-.employees-table tbody tr:nth-child(even) {
-  background: #f7f9fb;
-}
-
-.employees-table tbody tr:hover {
-  background: rgba(219, 234, 246, 0.9) !important;
-}
-
 .employees-table td,
 .employees-table th {
   vertical-align: middle;
@@ -1096,17 +1153,33 @@ body.night-mode .modal-row:hover {
 
 .app-shell:not(.night-mode) button.bg-emerald-600,
 .app-shell:not(.night-mode) .bg-emerald-600 {
-  background-color: #0f172a !important;
+  background-color: var(--orbit-primary) !important;
+  color: #ffffff !important;
+}
+
+.app-shell button.bg-slate-950,
+.app-shell a.bg-slate-950,
+.app-shell [role="button"].bg-slate-950 {
+  background-color: var(--orbit-primary) !important;
+  color: #ffffff !important;
 }
 
 .app-shell:not(.night-mode) button.hover\:bg-emerald-700:hover {
-  background-color: #020617 !important;
+  background-color: var(--orbit-primary-hover) !important;
+}
+
+.app-shell button.bg-slate-950:hover:not(:disabled),
+.app-shell a.bg-slate-950:hover,
+.app-shell [role="button"].bg-slate-950:hover,
+.app-shell button.hover\:bg-black:hover:not(:disabled),
+.app-shell button.hover\:bg-slate-800:hover:not(:disabled) {
+  background-color: var(--orbit-primary-hover) !important;
 }
 
 .app-shell:not(.night-mode) .text-emerald-600,
 .app-shell:not(.night-mode) .text-emerald-700,
 .app-shell:not(.night-mode) .text-emerald-800 {
-  color: #0f172a !important;
+  color: var(--orbit-primary) !important;
 }
 
 .app-shell:not(.night-mode) .bg-emerald-50,
@@ -1312,6 +1385,12 @@ body.night-mode .fixed.inset-0 .app-empty-state {
   color: #aab8cb !important;
 }
 
+.app-shell.night-mode .app-empty-state::before,
+body.night-mode .fixed.inset-0 .app-empty-state::before {
+  background-color: #24364c;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40' fill='none' stroke='%23a9c2d5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 14h24l-2 16a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3L8 14Z'/%3E%3Cpath d='M14 14V11a6 6 0 0 1 12 0v3M15 23h10'/%3E%3C/svg%3E");
+}
+
 .app-shell.night-mode .app-empty-title,
 body.night-mode .fixed.inset-0 .app-empty-title {
   color: #f8fafc !important;
@@ -1342,23 +1421,6 @@ body.night-mode .fixed.inset-0 tbody tr:hover {
 
 body.night-mode .striped-list > *:nth-child(even) {
   background: rgba(38, 51, 71, 0.34);
-}
-
-.app-shell.night-mode .employees-table-card {
-  background:
-    linear-gradient(180deg, rgba(30, 41, 59, 0.88), rgba(15, 23, 42, 0.88)) !important;
-}
-
-.app-shell.night-mode .employees-table tbody tr {
-  background: rgba(15, 23, 42, 0.28);
-}
-
-.app-shell.night-mode .employees-table tbody tr:nth-child(even) {
-  background: rgba(38, 51, 71, 0.42);
-}
-
-.app-shell.night-mode .employees-table tbody tr:hover {
-  background: rgba(51, 65, 85, 0.62) !important;
 }
 
 .app-shell.night-mode .employees-table .bg-slate-950 {
@@ -1480,26 +1542,6 @@ body.night-mode .striped-list > *:nth-child(even) {
 .app-shell.night-mode .text-emerald-700,
 .app-shell.night-mode .text-emerald-800 {
   color: #bbf7d0 !important;
-}
-
-.app-shell.night-mode .nav-item-active,
-.app-shell.night-mode .nav-item-active span,
-.app-shell.night-mode .nav-item-active svg {
-  color: #ffffff !important;
-}
-
-/* Sidebar hover in dark mode. Matches both the old bg-white/80 chips and the
-   current hover:bg-white nav rows. */
-.app-shell.night-mode aside button.hover\:bg-white\/80:hover,
-.app-shell.night-mode aside button.hover\:bg-white\/80:hover svg,
-.app-shell.night-mode aside button.hover\:bg-white:not(.nav-item-active):hover,
-.app-shell.night-mode aside button.hover\:bg-white:not(.nav-item-active):hover svg {
-  background-color: rgba(30, 41, 59, 0.9) !important;
-  color: #ffffff !important;
-}
-
-.app-shell.night-mode aside button.hover\:text-slate-950:hover {
-  color: #ffffff !important;
 }
 
 .app-shell.night-mode button.bg-emerald-600,
@@ -2290,6 +2332,81 @@ body.night-mode .fixed.inset-0 .company-hub-badge-muted {
   color: #aab8cb !important;
 }
 
+/* Attendance work-mode badges need explicit foreground tokens. Table cells in
+   dark mode deliberately set a high-contrast text colour; without these,
+   the WFH badge inherited that white value over a pale violet background. */
+.app-shell.night-mode .attendance-work-mode-badge--remote,
+body.night-mode .attendance-work-mode-badge--remote {
+  background-color: rgba(124, 58, 237, 0.28) !important;
+  color: #e9d5ff !important;
+}
+
+.app-shell.night-mode .attendance-work-mode-badge--mixed,
+body.night-mode .attendance-work-mode-badge--mixed {
+  background-color: rgba(245, 158, 11, 0.22) !important;
+  color: #fde68a !important;
+}
+
+.app-shell.night-mode .attendance-work-mode-badge--office,
+body.night-mode .attendance-work-mode-badge--office {
+  background-color: rgba(100, 116, 139, 0.4) !important;
+  color: #dbeafe !important;
+}
+
+/* HR and Super Admin can open this from any operational page. It uses its own
+   tokens instead of generic `bg-emerald-*` utilities, which are intentionally
+   remapped for some legacy dark-mode buttons. */
+.workforce-quick-trigger {
+  background: #0f8b76;
+  color: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 139, 118, 0.28);
+}
+
+.workforce-quick-trigger:hover {
+  background: #0a7563;
+}
+
+.workforce-quick-open-list {
+  color: #0f8b76;
+}
+
+.workforce-quick-open-list:hover {
+  background: #f0fdfa;
+}
+
+.workforce-quick-panel-enter-active,
+.workforce-quick-panel-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.workforce-quick-panel-enter-from,
+.workforce-quick-panel-leave-to {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+}
+
+.app-shell.night-mode .workforce-quick-panel {
+  background: #172033 !important;
+  border-color: #334155 !important;
+}
+
+.app-shell.night-mode .workforce-quick-panel .border-slate-200 {
+  border-color: #334155 !important;
+}
+
+.app-shell.night-mode .workforce-quick-panel .bg-slate-50,
+.app-shell.night-mode .workforce-quick-panel .hover\:bg-slate-50:hover {
+  background: rgba(51, 65, 85, 0.6) !important;
+}
+
+.app-shell.night-mode .workforce-quick-panel .text-violet-700 {
+  color: #ddd6fe !important;
+}
+
+.app-shell.night-mode .workforce-quick-open-list:hover {
+  background: rgba(15, 139, 118, 0.16) !important;
+}
+
 .app-shell.night-mode .punch-ledger-filter {
   background: rgba(15, 23, 42, 0.72) !important;
   border-color: rgba(71, 85, 105, 0.92) !important;
@@ -2318,6 +2435,11 @@ body.night-mode .fixed.inset-0 .company-hub-badge-muted {
   color: #dbe4ef !important;
 }
 
+.app-shell.night-mode .punch-ledger-avatar {
+  background: rgba(71, 85, 105, 0.72) !important;
+  color: #dbeafe !important;
+}
+
 .app-shell.night-mode .punch-ledger-missing {
   color: #fda4af !important;
 }
@@ -2328,17 +2450,18 @@ body.night-mode .fixed.inset-0 .company-hub-badge-muted {
 }
 
 .app-shell.night-mode .punch-ledger-status-late {
-  background: rgba(251, 113, 133, 0.16) !important;
-  color: #fecdd3 !important;
-}
-
-.app-shell.night-mode .punch-ledger-status-active {
   background: rgba(251, 191, 36, 0.18) !important;
   color: #fde68a !important;
 }
 
-.app-shell.night-mode .punch-ledger-track {
-  background: rgba(148, 163, 184, 0.28) !important;
+.app-shell.night-mode .punch-ledger-status-active {
+  background: rgba(45, 212, 191, 0.16) !important;
+  color: #99f6e4 !important;
+}
+
+.app-shell.night-mode .punch-ledger-status-exception {
+  background: rgba(251, 113, 133, 0.16) !important;
+  color: #fecdd3 !important;
 }
 
 .app-shell.night-mode .timesheet-chart-card {
@@ -2628,24 +2751,6 @@ body.night-mode .fixed.inset-0 .company-hub-badge-muted {
 
 /* Sidebar sign-out. Muted until hovered, so it never competes with the nav
    items above it — this is a destructive-ish action, not a destination. */
-.sidebar-signout {
-  color: #64748b;
-}
-
-.sidebar-signout:hover {
-  background-color: #FDF1EE;
-  color: #B93636;
-}
-
-.app-shell.night-mode .sidebar-signout {
-  color: #94a3b8;
-}
-
-.app-shell.night-mode .sidebar-signout:hover {
-  background-color: rgba(185, 54, 54, 0.16) !important;
-  color: #F3C0B4;
-}
-
 /* Weekend columns on the timesheet. A band rather than the word "OFF", which
    on the month view replaced the date and left three anonymous Saturdays. */
 .timesheet-weekend-band {
@@ -2688,4 +2793,2142 @@ body.night-mode .fixed.inset-0 .company-hub-badge-muted {
 .app-shell.night-mode .timesheet-value.attendance-inline {
   stroke: none;
   fill: #ffffff;
+}
+
+/* Dashboard system refresh -------------------------------------------------
+   The role dashboards deliberately share one visual language. Individual
+   dashboards still own their data, actions, and role-specific layouts. */
+.topbar-dashboard-title {
+  min-width: 0;
+}
+
+.topbar-menu-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 0.45rem;
+  border: 0;
+  border-radius: 8px;
+  color: #334155;
+  background: transparent;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.topbar-title-area {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.topbar-menu-button svg { width: 20px; height: 20px; }
+.topbar-menu-button:hover,
+.topbar-menu-button:focus-visible { background: #f1f5f9; color: #0f8b76; outline: none; }
+
+.topbar-dashboard-subtitle {
+  margin-top: 0.18rem;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.topbar-dashboard-date {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-right: 0.55rem;
+  color: #475569;
+  font-size: 12px;
+}
+
+.topbar-dashboard-date > svg { width: 18px; height: 18px; color: #334155; flex: 0 0 auto; }
+.topbar-date-label { color: #334155; font-size: 10px; font-weight: 750; line-height: 1.25; }
+.topbar-time-label { margin-top: 0.1rem; color: #64748b; font-size: 10px; font-weight: 600; line-height: 1.2; }
+
+.topbar-profile-copy {
+  min-width: 76px;
+  line-height: 1.25;
+}
+
+.topbar-profile-copy > div {
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.topbar-profile-copy > span {
+  color: #64748b;
+  font-size: 11px;
+}
+
+/* Notification inbox ------------------------------------------------------
+   The bell opens a short decision inbox, not a second miniature dashboard.
+   Category totals were redundant with the list and made the old popover feel
+   dense, so the hierarchy now stays focused on state, message, and action. */
+.notification-popover {
+  overflow: hidden;
+  border: 1px solid #d8e3ee;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+}
+
+.notification-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem 0.75rem;
+  border-bottom: 1px solid #e3ebf3;
+}
+
+.notification-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.notification-heading-icon,
+.notification-type-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  font-weight: 800;
+}
+
+.notification-heading-icon {
+  width: 30px;
+  height: 30px;
+  color: #087f6b;
+  background: #e8f8f4;
+}
+
+.notification-heading-icon svg { width: 16px; height: 16px; }
+
+.notification-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.notification-subtitle {
+  margin-top: 0.12rem;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.notification-mark-read {
+  flex: 0 0 auto;
+  padding: 0.3rem 0.1rem;
+  color: #07856f;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 750;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.notification-mark-read:hover:not(:disabled),
+.notification-mark-read:focus-visible:not(:disabled) {
+  color: #056c5b;
+  background: #ecfdf8;
+  outline: none;
+}
+
+.notification-mark-read:disabled {
+  cursor: default;
+  color: #94a3b8;
+}
+
+.notification-toolbar {
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid #e3ebf3;
+}
+
+.notification-filter-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.3rem;
+  padding: 0.25rem;
+  border-radius: 10px;
+  background: #f1f5f9;
+}
+
+.notification-filter-tab {
+  min-height: 28px;
+  padding: 0.3rem 0.5rem;
+  border: 0;
+  border-radius: 7px;
+  color: #64748b;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  transition: color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.notification-filter-tab:hover,
+.notification-filter-tab:focus-visible {
+  color: #0f172a;
+  outline: none;
+}
+
+.notification-filter-tab.is-active {
+  color: #087f6b;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.13);
+}
+
+.notification-list {
+  max-height: 22.5rem;
+  overflow-y: auto;
+}
+
+.notification-item {
+  position: relative;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.65rem;
+  padding: 0.78rem 1rem;
+  border: 0;
+  border-bottom: 1px solid #e8eef5;
+  color: inherit;
+  background: #ffffff;
+  text-align: left;
+  transition: background-color 160ms ease;
+}
+
+.notification-item:last-of-type { border-bottom: 0; }
+.notification-item:hover,
+.notification-item:focus-visible { background: #f8fbfd; outline: none; }
+.notification-item.is-unread { background: linear-gradient(90deg, #f1fbf8 0%, #ffffff 46%); }
+
+.notification-type-icon {
+  width: 30px;
+  height: 30px;
+  color: #087f6b;
+  background: #e8f8f4;
+  font-size: 11px;
+}
+
+.notification-type-icon--leave { color: #1d4ed8; background: #e8f0ff; }
+.notification-type-icon--medical { color: #be3d65; background: #fff0f3; }
+.notification-type-icon--assets { color: #a16207; background: #fff6df; }
+.notification-type-icon--payroll { color: #7c3aed; background: #f2ebff; }
+.notification-type-icon--tickets,
+.notification-type-icon--projects { color: #2563eb; background: #eaf2ff; }
+
+.notification-item-copy { min-width: 0; display: block; }
+.notification-item-topline { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+
+.notification-item-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #172033;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-item-type {
+  flex: 0 0 auto;
+  padding: 0.17rem 0.4rem;
+  border-radius: 99px;
+  color: #4f6a84;
+  background: #eef4f8;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1.1;
+}
+
+.notification-item-message {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 0.22rem;
+  color: #526b84;
+  font-size: 11px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.notification-item-time {
+  display: block;
+  margin-top: 0.32rem;
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.notification-unread-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 0.35rem;
+  border-radius: 99px;
+  background: #14a287;
+  box-shadow: 0 0 0 3px #dff8f1;
+}
+
+.notification-empty-state { margin: 0.75rem; }
+
+.app-shell.night-mode .notification-popover,
+body.night-mode .notification-popover {
+  border-color: #334155;
+  background: #172033;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.32);
+}
+
+.app-shell.night-mode .notification-popover-header,
+.app-shell.night-mode .notification-toolbar,
+.app-shell.night-mode .notification-item,
+body.night-mode .notification-popover-header,
+body.night-mode .notification-toolbar,
+body.night-mode .notification-item {
+  border-color: #334155;
+}
+
+.app-shell.night-mode .notification-heading-icon,
+body.night-mode .notification-heading-icon {
+  color: #78e0ca;
+  background: rgba(20, 184, 166, 0.16);
+}
+
+.app-shell.night-mode .notification-title,
+.app-shell.night-mode .notification-item-title,
+body.night-mode .notification-title,
+body.night-mode .notification-item-title { color: #f1f5f9; }
+
+.app-shell.night-mode .notification-subtitle,
+.app-shell.night-mode .notification-item-message,
+.app-shell.night-mode .notification-item-time,
+body.night-mode .notification-subtitle,
+body.night-mode .notification-item-message,
+body.night-mode .notification-item-time { color: #9fb0c4; }
+
+.app-shell.night-mode .notification-toolbar,
+body.night-mode .notification-toolbar { background: #141d2d; }
+
+.app-shell.night-mode .notification-filter-tabs,
+body.night-mode .notification-filter-tabs { background: #0f1726; }
+
+.app-shell.night-mode .notification-filter-tab,
+body.night-mode .notification-filter-tab { color: #9fb0c4; }
+
+.app-shell.night-mode .notification-filter-tab:hover,
+.app-shell.night-mode .notification-filter-tab:focus-visible,
+body.night-mode .notification-filter-tab:hover,
+body.night-mode .notification-filter-tab:focus-visible { color: #f1f5f9; }
+
+.app-shell.night-mode .notification-filter-tab.is-active,
+body.night-mode .notification-filter-tab.is-active {
+  color: #91f0dc;
+  background: #26384d;
+  box-shadow: none;
+}
+
+.app-shell.night-mode .notification-item,
+body.night-mode .notification-item { background: #172033; }
+
+.app-shell.night-mode .notification-item:hover,
+.app-shell.night-mode .notification-item:focus-visible,
+body.night-mode .notification-item:hover,
+body.night-mode .notification-item:focus-visible { background: #1d2a3e; }
+
+.app-shell.night-mode .notification-item.is-unread,
+body.night-mode .notification-item.is-unread { background: linear-gradient(90deg, rgba(20, 184, 166, 0.13), #172033 52%); }
+
+.app-shell.night-mode .notification-item-type,
+body.night-mode .notification-item-type {
+  color: #b9c8d8;
+  background: #26384d;
+}
+
+.app-shell.night-mode .notification-mark-read,
+body.night-mode .notification-mark-read { color: #78e0ca; }
+
+.app-shell.night-mode .notification-type-icon,
+body.night-mode .notification-type-icon { color: #78e0ca; background: rgba(20, 184, 166, 0.16); }
+
+.app-shell.night-mode .notification-type-icon--leave,
+body.night-mode .notification-type-icon--leave { color: #b7d4ff; background: rgba(59, 130, 246, 0.18); }
+
+.app-shell.night-mode .notification-type-icon--medical,
+body.night-mode .notification-type-icon--medical { color: #fecdd3; background: rgba(244, 63, 94, 0.16); }
+
+.app-shell.night-mode .notification-type-icon--assets,
+body.night-mode .notification-type-icon--assets { color: #fde68a; background: rgba(245, 158, 11, 0.16); }
+
+.app-shell.night-mode .notification-type-icon--payroll,
+body.night-mode .notification-type-icon--payroll { color: #ddd6fe; background: rgba(124, 58, 237, 0.18); }
+
+.app-shell.night-mode .notification-type-icon--tickets,
+.app-shell.night-mode .notification-type-icon--projects,
+body.night-mode .notification-type-icon--tickets,
+body.night-mode .notification-type-icon--projects { color: #bfdbfe; background: rgba(59, 130, 246, 0.16); }
+
+.app-shell.night-mode .notification-unread-dot,
+body.night-mode .notification-unread-dot { box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.15); }
+
+.orbit-dashboard {
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.orbit-dashboard > .space-y-6 {
+  row-gap: 1.25rem !important;
+}
+
+.orbit-kpi {
+  position: relative;
+  min-height: 92px;
+  padding: 0.85rem 0.9rem 0.85rem 4.1rem;
+  justify-content: center;
+  gap: 0.18rem;
+  border: 1px solid var(--orbit-border);
+  border-radius: var(--orbit-radius);
+  background: var(--orbit-surface);
+  box-shadow: var(--orbit-shadow);
+}
+
+.orbit-kpi::before {
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #e9f8f3;
+  color: #0f8b76;
+  content: '\25c9';
+  font-size: 17px;
+  font-weight: 800;
+  transform: translateY(-50%);
+}
+
+.orbit-kpi:nth-child(2)::before {
+  background: #edf5ff;
+  color: #2563eb;
+  content: '\2197';
+}
+
+.orbit-kpi:nth-child(3)::before {
+  background: #fff6e8;
+  color: #d97706;
+  content: '\2713';
+}
+
+.orbit-kpi:nth-child(4)::before {
+  background: #f3efff;
+  color: #7c3aed;
+  content: '\25c7';
+}
+
+.orbit-kpi:nth-child(5)::before,
+.orbit-kpi:nth-child(6)::before {
+  background: #fff1f2;
+  color: #e11d48;
+  content: '!';
+}
+
+.orbit-kpi .kpi-value,
+.orbit-kpi .text-2xl {
+  font-size: clamp(1.35rem, 2vw, 1.7rem);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+}
+
+.orbit-dashboard .dashboard-click-card {
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.orbit-dashboard .dashboard-click-card:hover,
+.orbit-dashboard .dashboard-click-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: #8bd3c5;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.09);
+  outline: none;
+}
+
+.super-admin-kpi {
+  position: relative;
+  min-height: 96px;
+  padding: 0.85rem 1rem 0.8rem 4.45rem !important;
+  justify-content: center;
+  gap: 0.18rem;
+  border-radius: 16px !important;
+  background: #ffffff;
+}
+
+.super-admin-kpi .kpi-value {
+  margin-top: 0.2rem;
+  font-size: clamp(1.45rem, 2vw, 1.85rem) !important;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+}
+
+.super-admin-kpi-label {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.super-admin-kpi-label::before {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #0f8b76;
+  content: '';
+}
+
+.super-admin-kpi:nth-child(2) .super-admin-kpi-label::before { background: #ef4444; }
+.super-admin-kpi:nth-child(3) .super-admin-kpi-label::before { background: #3b82f6; }
+.super-admin-kpi:nth-child(4) .super-admin-kpi-label::before { background: #f59e0b; }
+
+.super-admin-kpi-icon {
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  display: flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #edf2f7;
+  color: #475569;
+  transform: translateY(-50%);
+}
+
+.super-admin-kpi-icon svg { width: 22px; height: 22px; }
+
+.super-admin-kpi-icon-positive { background: #e8f8f3; color: #0f8b76; }
+.super-admin-kpi-icon-neutral { background: #f1f5f9; color: #475569; }
+.super-admin-kpi-icon-warning { background: #fff6df; color: #b7791f; }
+.super-admin-kpi-icon-problem { background: #fff1f2; color: #e11d48; }
+
+.super-admin-kpi-context {
+  margin-top: 0.25rem;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.super-admin-card {
+  border-color: #e2e8f0 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04) !important;
+}
+
+.finance-overview {
+  padding: 0.9rem !important;
+  border-radius: 16px !important;
+}
+
+.finance-overview-heading {
+  padding: 0.05rem 0.15rem 0.55rem;
+  margin-bottom: 0.6rem;
+  color: #0f8b76;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.finance-overview .super-admin-card {
+  position: relative;
+  isolation: isolate;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+}
+
+.finance-overview .super-admin-card-header,
+.finance-overview .super-admin-finance-list {
+  position: relative;
+  z-index: 1;
+}
+
+.finance-overview .super-admin-card-header {
+  padding: 0.55rem 0.75rem 0.15rem !important;
+}
+
+.finance-overview .super-admin-finance-list > div,
+.finance-overview .super-admin-finance-list > button {
+  box-sizing: border-box;
+  min-height: 2rem;
+  padding: 0.375rem 0.75rem !important;
+}
+
+.finance-panel-icon {
+  position: absolute;
+  z-index: 0;
+  right: -0.75rem;
+  bottom: -1.1rem;
+  width: 8.5rem;
+  height: 8.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0;
+  background: transparent;
+  opacity: 0.14;
+  pointer-events: none;
+  transform: rotate(-10deg);
+}
+
+.finance-panel-icon svg { width: 100%; height: 100%; }
+.finance-panel-icon-positive { color: #0f8b76; }
+.finance-panel-icon-negative { color: #ef4444; }
+
+/* Every dashboard panel, including the lower content that follows the KPI
+   strip, uses the same quiet SaaS surface. This intentionally targets nested
+   cards as well: project finance, approvals, operational panels, activity,
+   delivery, and charts all previously retained the old tinted treatment. */
+.project-finance-stats {
+  gap: 0.75rem !important;
+}
+
+.project-finance-stat {
+  position: relative;
+  min-height: 74px;
+  overflow: hidden;
+  padding: 0.72rem 0.72rem 0.58rem 3.55rem !important;
+}
+
+.project-finance-stat-icon {
+  position: absolute;
+  left: 0.72rem;
+  top: 0.8rem;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #dff6ee;
+  color: #0f8b76;
+}
+
+.project-finance-stat-icon svg { width: 17px; height: 17px; }
+
+.orbit-finance-stat {
+  border: 1px solid var(--orbit-border);
+  border-radius: 0.75rem;
+  background: var(--orbit-surface-muted);
+}
+
+.orbit-finance-stat-earned { background: #f0fbf7; border-color: #d6f2e7; }
+.orbit-finance-stat-paid { background: #f1f7ff; border-color: #dceafe; }
+.orbit-finance-stat-payroll { background: #fff7ed; border-color: #fde6c7; }
+.project-finance-stat-icon-paid { background: #e0ecff; color: #2563eb; }
+.project-finance-stat-icon-payroll { background: #ffead6; color: #d97706; }
+
+.super-admin-petty-cash {
+  position: relative;
+  min-height: 58px;
+  padding-left: 1rem !important;
+}
+
+.petty-cash-icon {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: #fff0d8;
+  color: #d97706;
+}
+
+.petty-cash-icon svg { width: 21px; height: 21px; }
+
+.petty-cash-primary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.super-admin-dashboard .super-admin-petty-cash {
+  min-height: 46px;
+  padding: 0.55rem 0.9rem !important;
+  background: #fffaf0 !important;
+  border-color: #f6d48d !important;
+  box-shadow: none !important;
+}
+
+.super-admin-dashboard .super-admin-petty-cash .text-sm { font-size: 11px !important; }
+.super-admin-dashboard .super-admin-petty-cash .text-xs { font-size: 10px !important; }
+.super-admin-dashboard .super-admin-petty-cash .text-xl { font-size: 15px !important; }
+
+.project-finance-sparkline {
+  position: absolute;
+  right: 0.72rem;
+  bottom: 0.45rem;
+  width: 45%;
+  height: 21px;
+  overflow: visible;
+  fill: none;
+  stroke-width: 1.45;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.project-finance-sparkline-earned { stroke: #0f8b76; }
+.project-finance-sparkline-paid { stroke: #2563eb; }
+.project-finance-sparkline-payroll { stroke: #f97316; }
+
+.project-finance-panel {
+  min-height: 128px;
+}
+
+.orbit-approval-item {
+  border: 1px solid var(--orbit-border);
+  border-radius: 0.75rem;
+  background: var(--orbit-surface-muted);
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.orbit-approval-item:hover {
+  background: var(--orbit-surface);
+  border-color: var(--orbit-border-strong);
+}
+
+.approvals-panel .space-y-3 { gap: 0.55rem !important; }
+.approvals-panel .mt-3 { margin-top: 0.55rem !important; }
+.approvals-panel .text-xs.font-bold.rounded-lg { padding: 0.35rem 0.68rem !important; }
+
+.super-admin-panel > .flex:first-child {
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid #edf2f6;
+}
+
+.project-finance-panel .project-finance-stats {
+  margin-top: 0.15rem;
+}
+
+/* Finance is a summary, so it should be dense. Give the attendance ledger
+   the saved vertical room: operational monitoring benefits from seeing at
+   least five people before requiring a scroll. */
+.super-admin-dashboard .project-finance-panel {
+  padding-top: 0.85rem !important;
+  padding-bottom: 0.85rem !important;
+}
+
+.super-admin-dashboard .project-finance-panel > .flex:first-child {
+  margin-bottom: 0.6rem !important;
+  padding-bottom: 0.6rem;
+}
+
+.super-admin-dashboard .project-finance-panel .project-finance-stat {
+  padding-top: 0.7rem !important;
+  padding-bottom: 0.7rem !important;
+}
+
+/* The attendance ledger now completes the shorter finance column beside the
+   approvals queue. Keep its dashboard preview concise; the linked attendance
+   page remains the place for the full, scrollable record. */
+.super-admin-dashboard .super-admin-attendance-panel {
+  min-height: 410px !important;
+}
+
+@media (min-width: 1024px) {
+  /* Use the former check-in-summary area for the actual attendance controls.
+     The record count is intentionally omitted here: it makes the controls
+     wrap at normal desktop widths and adds no decision-making value. */
+  .super-admin-attendance-panel .punch-ledger--header-filters {
+    position: relative;
+  }
+
+  .super-admin-attendance-panel .punch-ledger--header-filters .punch-ledger-tools {
+    position: absolute;
+    top: -4.15rem;
+    right: 0;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+  }
+
+  .super-admin-attendance-panel .punch-ledger--header-filters .punch-ledger-search {
+    width: 10.75rem;
+  }
+
+  .super-admin-attendance-panel .punch-ledger--header-filters .punch-ledger-filters {
+    gap: 0.3rem;
+    flex-wrap: nowrap;
+  }
+
+  .super-admin-attendance-panel .punch-ledger--header-filters .punch-ledger-filter {
+    padding-inline: 0.45rem;
+  }
+
+  .super-admin-attendance-panel .punch-ledger-scroll {
+    max-height: 286px;
+  }
+}
+
+@media (max-width: 767px) {
+  .super-admin-dashboard .super-admin-attendance-panel {
+    min-height: 0 !important;
+  }
+}
+
+.approvals-panel .company-hub-badge {
+  border-radius: 999px;
+}
+
+.super-admin-dashboard .company-hub-badge,
+.role-dashboard .company-hub-badge {
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.super-admin-dashboard .rounded-lg.border,
+.role-dashboard .rounded-lg.border {
+  border-color: #e2eaf1 !important;
+  box-shadow: none !important;
+}
+
+.super-admin-petty-cash {
+  gap: 0.9rem !important;
+  border-color: #f6d48d !important;
+  background: #fffaf0 !important;
+  box-shadow: none !important;
+}
+
+.super-admin-petty-action {
+  flex: 0 0 auto;
+  border: 1px solid #eabf61;
+  border-radius: 9px;
+  padding: 0.42rem 0.7rem;
+  background: #ffffff;
+  color: #a16207;
+  font-size: 11px;
+  font-weight: 750;
+  /* Theme changes must be immediate. This action otherwise lags behind the
+     petty-cash strip while its background and border animate. */
+  transition: none;
+}
+
+.super-admin-petty-action:hover,
+.super-admin-petty-action:focus-visible {
+  border-color: #d99b27;
+  background: #fff5db;
+  outline: none;
+}
+
+/* The old global `.bg-white` rule has higher specificity than the dashboard
+   utility classes. This final scoped rule deliberately wins so the petty-cash
+   strip renders as the amber warning surface shown in the reference. */
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-petty-cash {
+  min-height: 44px;
+  padding: 0.45rem 0.85rem !important;
+  background: #fff8e7 !important;
+  border-color: #f3c96c !important;
+  box-shadow: none !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .petty-cash-primary {
+  flex: 1 1 auto;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-petty-cash > .flex {
+  gap: 1.25rem !important;
+  padding-left: 1.25rem;
+  border-left: 1px solid #f1dda9;
+}
+
+/* Orbit teal is the product-wide primary action colour. Scope this to actual
+   interactive controls so black avatars, message bubbles, progress bars, and
+   modal backdrops retain their semantic styling. */
+.app-shell button.bg-slate-950,
+.app-shell a.bg-slate-950,
+.app-shell [role="button"].bg-slate-950 {
+  background-color: #0f8b76 !important;
+  color: #ffffff !important;
+}
+
+.app-shell button.bg-slate-950:hover:not(:disabled),
+.app-shell a.bg-slate-950:hover,
+.app-shell [role="button"].bg-slate-950:hover {
+  background-color: #0a7563 !important;
+}
+
+.app-shell button.hover\:bg-black:hover:not(:disabled),
+.app-shell a.hover\:bg-black:hover,
+.app-shell [role="button"].hover\:bg-black:hover,
+.app-shell button.hover\:bg-slate-800:hover:not(:disabled),
+.app-shell a.hover\:bg-slate-800:hover {
+  background-color: #0a7563 !important;
+}
+
+.app-shell button.bg-slate-950:disabled,
+.app-shell a.bg-slate-950[aria-disabled="true"] {
+  background-color: #cbd5e1 !important;
+  color: #64748b !important;
+}
+
+.app-shell.night-mode .topbar-profile-copy > div {
+  color: #f8fafc;
+}
+
+.app-shell.night-mode .topbar-dashboard-subtitle,
+.app-shell.night-mode .topbar-profile-copy > span {
+  color: #94a3b8;
+}
+
+.app-shell.night-mode .super-admin-kpi,
+.app-shell.night-mode .super-admin-card {
+  background: #172033 !important;
+  border-color: #334155 !important;
+}
+
+.orbit-app-shell.night-mode .orbit-finance-stat {
+  background: #172033;
+  border-color: #334155;
+}
+
+.orbit-app-shell.night-mode .orbit-finance-stat-earned { background: rgba(15, 139, 118, 0.15); border-color: rgba(45, 190, 161, 0.3); }
+.orbit-app-shell.night-mode .orbit-finance-stat-paid { background: rgba(37, 99, 235, 0.15); border-color: rgba(96, 165, 250, 0.3); }
+.orbit-app-shell.night-mode .orbit-finance-stat-payroll { background: rgba(217, 119, 6, 0.15); border-color: rgba(251, 191, 36, 0.3); }
+
+.orbit-app-shell.night-mode .orbit-approval-item {
+  background: #172033;
+  border-color: #334155;
+}
+
+.orbit-app-shell.night-mode .orbit-approval-item:hover {
+  background: #1d293b;
+  border-color: #475569;
+}
+
+.app-shell.night-mode .super-admin-petty-cash {
+  background: rgba(120, 73, 19, 0.18) !important;
+  border-color: rgba(234, 191, 97, 0.45) !important;
+}
+
+@media (max-width: 640px) {
+  .super-admin-kpi {
+    min-height: 118px;
+  }
+
+  .topbar-dashboard-date,
+  .topbar-dashboard-subtitle {
+    display: none;
+  }
+}
+
+/* Orbit UI primitives ------------------------------------------------------
+   Named component classes are the only styling contract for the application
+   shell and shared dashboard primitives. They intentionally do not target
+   utility classes or arbitrary descendants, so a new page cannot be changed
+   accidentally by the styling of another one. */
+.orbit-app-shell {
+  background: var(--orbit-page);
+}
+
+/* Project board: a purpose-built, scoped Kanban surface. */
+.kanban-project-hero { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }
+.kanban-project-heading { flex:1; }.kanban-project-icon { display:grid; place-items:center; width:2.35rem; height:2.35rem; border-radius:.75rem; color:#fff; background:#0fa87a; box-shadow:0 8px 18px rgba(15,168,122,.18); }
+.kanban-project-title { margin:0; color:#14213d; font-size:1.55rem; font-weight:800; letter-spacing:-.03em; }.kanban-project-subtitle { margin:.2rem 0 0; color:#64748b; font-size:.82rem; }.kanban-primary-action { border:1px solid #0fa87a; background:#0fa87a; color:#fff; box-shadow:0 5px 12px rgba(15,168,122,.16); }.kanban-primary-action:hover { background:#0b8f69; }
+.kanban-summary-card { display:grid; grid-template-columns:1.7fr repeat(5, minmax(115px,1fr)); align-items:stretch; overflow:hidden; border:1px solid #e3ebf4; border-radius:14px; background:#fff; box-shadow:0 4px 14px rgba(15,23,42,.035); }.kanban-progress-block,.kanban-summary-stat { padding:1rem 1.15rem; }.kanban-summary-stat { display:flex; align-items:center; gap:.65rem; border-left:1px solid #edf2f7; }.kanban-summary-stat>span { color:#0fa87a; font-size:1.2rem; }.kanban-summary-stat b { display:block; color:#14213d; font-size:.85rem; }.kanban-summary-stat small,.kanban-summary-label { display:block; color:#718096; font-size:.68rem; }.kanban-summary-label { font-weight:700; text-transform:uppercase; letter-spacing:.08em; }.kanban-progress-value { color:#0fa87a; font-size:1.2rem; }.kanban-progress-track { height:6px; overflow:hidden; margin-top:.65rem; border-radius:999px; background:#e8eef5; }.kanban-progress-track span { display:block; height:100%; border-radius:inherit; background:#0fa87a; }
+.kanban-filter-bar { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.75rem; border:1px solid #e3ebf4; border-radius:12px; background:#fff; }.kanban-search-field { display:flex; align-items:center; gap:.45rem; min-width:250px; padding:0 .7rem; border:1px solid #dce6f0; border-radius:8px; color:#94a3b8; background:#f8fafc; }.kanban-search-field input { width:100%; padding:.52rem 0; outline:0; background:transparent; color:#334155; font-size:.78rem; }
+.kanban-board-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }.kanban-column { overflow:hidden; padding:.75rem; border:1px solid #e2eaf2; border-top:3px solid #94a3b8; border-radius:14px; background:#fff; box-shadow:0 3px 12px rgba(15,23,42,.035); }.kanban-column-in_progress { border-top-color:#3b82f6; }.kanban-column-review { border-top-color:#f59e0b; }.kanban-column-done { border-top-color:#0fa87a; }.kanban-column-header { display:flex; align-items:center; justify-content:space-between; padding:.2rem .2rem .75rem; border-bottom:1px solid #edf2f7; color:#14213d; font-size:.78rem; }.kanban-status-dot { width:7px; height:7px; border-radius:50%; background:#94a3b8; }.kanban-column-in_progress .kanban-status-dot { background:#3b82f6; }.kanban-column-review .kanban-status-dot { background:#f59e0b; }.kanban-column-done .kanban-status-dot { background:#0fa87a; }.kanban-column-header em { padding:.08rem .42rem; border-radius:99px; background:#f1f5f9; color:#64748b; font-size:.67rem; font-style:normal; }.kanban-column-menu { border:0; background:transparent; color:#94a3b8; letter-spacing:1px; }.kanban-ticket-card { border-color:#e5edf5; background:#fff; box-shadow:0 2px 7px rgba(15,23,42,.025); }.kanban-column .overdue-ticket-card { background:#fff7f8; border-color:#fecdd3; }.kanban-empty-state { display:flex; min-height:190px; align-items:center; justify-content:center; flex-direction:column; margin-top:.4rem; padding:1rem; border:1px dashed #d8e2ed; border-radius:10px; color:#94a3b8; text-align:center; }.kanban-empty-state>span { font-size:1.5rem; }.kanban-empty-state b { margin-top:.4rem; color:#475569; font-size:.75rem; }.kanban-empty-state p { margin:.3rem 0 .75rem; font-size:.68rem; }.kanban-empty-state button { border:1px solid #b8d9d0; border-radius:7px; background:#fff; padding:.38rem .7rem; color:#08785c; font-size:.7rem; font-weight:700; }
+.kanban-column-locked { background:#fbfcfe; }.kanban-column-lock { margin-left:auto; margin-right:.4rem; color:#94a3b8; font-size:.58rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+.kanban-ticket-title { color:#14213d; font-size:.82rem; font-weight:700; line-height:1.4; }
+.kanban-ticket-quick-row { display:flex; align-items:center; justify-content:space-between; gap:.55rem; margin-top:.7rem; padding-top:.62rem; border-top:1px solid #edf2f7; }.kanban-ticket-due { display:inline-flex; min-width:0; align-items:center; gap:.3rem; color:#64748b; font-size:.66rem; font-weight:600; white-space:nowrap; }.kanban-ticket-due svg { width:.8rem; height:.8rem; flex:0 0 auto; }
+.app-shell.night-mode .kanban-summary-card,
+.app-shell.night-mode .kanban-filter-bar,
+.app-shell.night-mode .kanban-column { background:#172033 !important; border-color:#334155 !important; box-shadow:0 4px 14px rgba(0,0,0,.2); }
+.app-shell.night-mode .kanban-summary-stat { border-color:#334155; }.app-shell.night-mode .kanban-summary-stat b,.app-shell.night-mode .kanban-column-header,.app-shell.night-mode .kanban-ticket-title { color:#f1f5f9; }
+.app-shell.night-mode .kanban-summary-stat small,.app-shell.night-mode .kanban-summary-label,.app-shell.night-mode .kanban-ticket-due,.app-shell.night-mode .kanban-column-menu,.app-shell.night-mode .kanban-column-lock { color:#a9bbcf; }
+.app-shell.night-mode .kanban-progress-track { background:#334155; }.app-shell.night-mode .kanban-search-field { background:#0f172a; border-color:#334155; color:#94a3b8; }.app-shell.night-mode .kanban-search-field input { color:#e2e8f0; }
+.app-shell.night-mode .kanban-column-header,.app-shell.night-mode .kanban-ticket-quick-row { border-color:#334155; }.app-shell.night-mode .kanban-column-header em { background:#263449; color:#c4d1df; }
+.app-shell.night-mode .kanban-ticket-card { background:#1d293b !important; border-color:#3b4c63 !important; box-shadow:0 2px 8px rgba(0,0,0,.2); }.app-shell.night-mode .kanban-column-locked { background:#121b2a !important; }
+.app-shell.night-mode .kanban-empty-state { border-color:#3b4c63; color:#9db0c5; }.app-shell.night-mode .kanban-empty-state b { color:#dbe7f3; }.app-shell.night-mode .kanban-empty-state button { background:#172033; border-color:#3f6f66; color:#6ee7c2; }
+@media (max-width:900px) { .kanban-project-hero { flex-direction:column; }.kanban-summary-card { grid-template-columns:repeat(2,1fr); }.kanban-summary-stat:nth-child(4) { border-left:0; }.kanban-summary-stat { border-top:1px solid #edf2f7; } }
+
+.orbit-main {
+  background: var(--orbit-page);
+  box-shadow: inset 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.orbit-page-frame {
+  width: min(100%, 1600px);
+  margin-inline: auto;
+}
+
+.orbit-page {
+  width: 100%;
+  min-width: 0;
+}
+
+.orbit-page-header {
+  min-height: 44px;
+}
+
+.orbit-sidebar {
+  z-index: 2;
+}
+
+/* The navigation rail remains a docked panel in both themes, preserving a
+   clear physical boundary between navigation and the workspace. */
+@media (min-width: 768px) {
+  .orbit-sidebar {
+    height: calc(100vh - 20px) !important;
+    margin: 10px;
+    border-radius: 18px;
+  }
+}
+
+.orbit-profile-avatar {
+  border: 1px solid var(--orbit-border);
+  border-radius: var(--orbit-radius-sm);
+  background: var(--orbit-surface);
+  color: var(--orbit-primary);
+  box-shadow: var(--orbit-shadow);
+}
+
+.orbit-topbar {
+  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid var(--orbit-border);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* Give the workspace header the same deliberate, docked treatment as the
+   sidebar. It remains a normal flex item (so scrolling and all controls keep
+   working exactly as before), but the surrounding gutter makes the page
+   structure immediately readable in light mode. */
+@media (min-width: 768px) {
+  .app-shell:not(.night-mode) .orbit-topbar {
+    margin: 10px 10px 0 0;
+    border: 1px solid #c6d5e2 !important;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.98) !important;
+    box-shadow: 8px 10px 24px rgba(37, 67, 96, 0.1) !important;
+  }
+}
+
+.orbit-icon-button {
+  border: 1px solid var(--orbit-border);
+  border-radius: 999px;
+  background: var(--orbit-surface);
+  color: #334155;
+  box-shadow: var(--orbit-shadow);
+}
+
+.orbit-icon-button:hover,
+.orbit-icon-button:focus-visible {
+  background: var(--orbit-surface-muted);
+  color: var(--orbit-primary);
+  outline: none;
+}
+
+.orbit-attendance-panel,
+.orbit-card {
+  border: 1px solid var(--orbit-border);
+  border-radius: var(--orbit-radius);
+  background: var(--orbit-surface);
+  box-shadow: var(--orbit-shadow);
+}
+
+.orbit-card-interactive {
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.orbit-card-interactive:hover,
+.orbit-card-interactive:focus-visible {
+  transform: translateY(-2px);
+  border-color: #8bd3c5;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.09);
+  outline: none;
+}
+
+.orbit-stat-card {
+  min-height: 96px;
+  border: 1px solid var(--orbit-border);
+  border-radius: var(--orbit-radius);
+  background: var(--orbit-surface);
+  box-shadow: var(--orbit-shadow);
+}
+
+.orbit-table-card {
+  border: 1px solid var(--orbit-border);
+  border-radius: var(--orbit-radius);
+  background: var(--orbit-surface);
+  box-shadow: var(--orbit-shadow);
+}
+
+.orbit-data-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.orbit-data-table thead tr {
+  background: var(--orbit-surface-muted);
+}
+
+.orbit-data-table th {
+  color: var(--orbit-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.orbit-data-table tbody tr {
+  border-color: var(--orbit-border);
+}
+
+.orbit-data-table tbody tr:hover {
+  background: #f5fbf9;
+}
+
+.orbit-button {
+  border-radius: var(--orbit-radius-sm);
+  transition: transform 160ms ease;
+}
+
+.orbit-button:focus-visible,
+.orbit-tab:focus-visible {
+  outline: 3px solid rgba(15, 139, 118, 0.18);
+  outline-offset: 2px;
+}
+
+.orbit-button-primary {
+  background: var(--orbit-primary);
+  color: #ffffff;
+  box-shadow: 0 5px 12px rgba(15, 139, 118, 0.16);
+}
+
+.orbit-button-primary:hover:not(:disabled) {
+  background: var(--orbit-primary-hover);
+  transform: translateY(-1px);
+}
+
+.orbit-button-secondary {
+  border: 1px solid var(--orbit-border-strong);
+  background: var(--orbit-surface);
+  color: #334155;
+}
+
+.orbit-button-secondary:hover:not(:disabled) {
+  border-color: #8bd3c5;
+  background: #f5fbf9;
+  color: var(--orbit-primary-hover);
+}
+
+.attendance-date-shortcut.is-active {
+  border-color: #0f8b76;
+  background: #0f8b76;
+  color: #ffffff;
+}
+
+.orbit-button-danger {
+  background: #d14343;
+  color: #ffffff;
+  box-shadow: 0 5px 12px rgba(209, 67, 67, 0.16);
+}
+
+.orbit-button-danger:hover:not(:disabled) {
+  background: #b93636;
+  transform: translateY(-1px);
+}
+
+.orbit-button:disabled {
+  cursor: not-allowed;
+  background: #cbd5e1;
+  color: #64748b;
+  box-shadow: none;
+}
+
+.orbit-modal-backdrop {
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.orbit-modal {
+  border: 1px solid var(--orbit-border);
+  border-radius: 18px;
+  background: var(--orbit-surface);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+}
+
+.orbit-field {
+  border: 1px solid var(--orbit-border-strong);
+  border-radius: var(--orbit-radius-sm);
+  background: var(--orbit-surface);
+  color: var(--orbit-text);
+  outline: none;
+}
+
+.orbit-field:focus {
+  border-color: #5fc4b2;
+  box-shadow: 0 0 0 3px rgba(15, 139, 118, 0.1);
+}
+
+.orbit-tab-list {
+  padding: 0.25rem;
+  border: 1px solid var(--orbit-border);
+  border-radius: 12px;
+  background: var(--orbit-surface-muted);
+}
+
+.orbit-tab {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.orbit-tab-active {
+  background: var(--orbit-primary);
+  color: #ffffff;
+  box-shadow: 0 3px 8px rgba(15, 139, 118, 0.16);
+}
+
+.orbit-tab-idle {
+  color: #475569;
+}
+
+.orbit-tab-idle:hover {
+  background: var(--orbit-surface);
+  color: var(--orbit-text);
+}
+
+.orbit-attendance-panel {
+  min-height: 78px;
+}
+
+.orbit-app-shell.night-mode {
+  background: #0f172a;
+}
+
+.orbit-app-shell.night-mode .orbit-main {
+  background: #0f172a;
+}
+
+.orbit-app-shell.night-mode .orbit-topbar {
+  background: #101c2d;
+  border-color: #26384d;
+}
+
+/* Preserve the same workspace framing after the colour scheme changes. The
+   dark theme should be a palette change, never a return to the old flat
+   layout. */
+@media (min-width: 768px) {
+  .app-shell.night-mode .orbit-topbar {
+    margin: 10px 10px 0 0;
+    border: 1px solid #314862 !important;
+    border-radius: 16px;
+    background: #101c2d !important;
+    box-shadow: 8px 10px 24px rgba(0, 0, 0, 0.24) !important;
+  }
+}
+
+/* Topbar metadata has its own colours rather than inheriting the page text
+   palette. This keeps compact, secondary information legible against the
+   dark header without making it compete with the page title. */
+.orbit-app-shell.night-mode .topbar-menu-button {
+  color: #9fb0c4;
+}
+
+.orbit-app-shell.night-mode .topbar-menu-button:hover,
+.orbit-app-shell.night-mode .topbar-menu-button:focus-visible {
+  background: #1a2a40;
+  color: #67d6bf;
+}
+
+.orbit-app-shell.night-mode .topbar-dashboard-date {
+  color: #b9c8d8;
+}
+
+.orbit-app-shell.night-mode .topbar-dashboard-date > svg {
+  color: #8fa3b8;
+}
+
+.orbit-app-shell.night-mode .topbar-date-label {
+  color: #dbe7f3;
+}
+
+.orbit-app-shell.night-mode .topbar-time-label {
+  color: #9fb0c4;
+}
+
+/* KPI labels and their supporting copy are dashboard-specific text, so they
+   need an explicit dark palette instead of the light-page muted colours. */
+.orbit-app-shell.night-mode .super-admin-kpi-label {
+  color: #b9c8d8;
+}
+
+.orbit-app-shell.night-mode .super-admin-kpi-context {
+  color: #94a7bb;
+}
+
+.orbit-app-shell.night-mode .super-admin-kpi-icon-positive {
+  background: rgba(15, 139, 118, 0.2);
+  color: #67d6bf;
+}
+
+.orbit-app-shell.night-mode .super-admin-kpi-icon-neutral {
+  background: #263549;
+  color: #dbe7f3;
+}
+
+.orbit-app-shell.night-mode .super-admin-kpi-icon-warning {
+  background: rgba(217, 119, 6, 0.2);
+  color: #f7c96b;
+}
+
+.orbit-app-shell.night-mode .super-admin-kpi-icon-problem {
+  background: rgba(225, 29, 72, 0.18);
+  color: #fda4af;
+}
+
+.orbit-app-shell.night-mode .finance-panel-icon-positive {
+  background: transparent;
+  color: #67d6bf;
+  opacity: 0.16;
+}
+
+.orbit-app-shell.night-mode .finance-panel-icon-negative {
+  background: transparent;
+  color: #fda4af;
+  opacity: 0.16;
+}
+
+.orbit-app-shell.night-mode .petty-cash-icon {
+  background: rgba(217, 119, 6, 0.2);
+  color: #f7c96b;
+}
+
+.orbit-app-shell.night-mode .super-admin-petty-action {
+  border-color: rgba(234, 191, 97, 0.55);
+  background: #263549;
+  color: #f7d88d;
+}
+
+.orbit-app-shell.night-mode .super-admin-petty-action:hover,
+.orbit-app-shell.night-mode .super-admin-petty-action:focus-visible {
+  border-color: #f1bd57;
+  background: #34445a;
+  color: #fff4d6;
+}
+
+.orbit-app-shell.night-mode .orbit-icon-button,
+.orbit-app-shell.night-mode .orbit-profile-avatar,
+.orbit-app-shell.night-mode .orbit-attendance-panel,
+.orbit-app-shell.night-mode .orbit-card,
+.orbit-app-shell.night-mode .orbit-kpi,
+.orbit-app-shell.night-mode .orbit-stat-card,
+.orbit-app-shell.night-mode .orbit-table-card,
+.orbit-app-shell.night-mode .orbit-tab-list {
+  background: #172033;
+  border-color: #334155;
+  color: #e5edf7;
+}
+
+.orbit-app-shell.night-mode .orbit-data-table thead tr {
+  background: #1e293b;
+}
+
+.orbit-app-shell.night-mode .orbit-tab-idle {
+  color: #c4d1df;
+}
+
+.orbit-app-shell.night-mode .orbit-tab-idle:hover {
+  background: #1e293b;
+  color: #ffffff;
+}
+
+.orbit-app-shell.night-mode .orbit-button-secondary {
+  border-color: #475569;
+  background: #172033;
+  color: #dbe7f3;
+}
+
+.orbit-app-shell.night-mode .orbit-button-secondary:hover:not(:disabled) {
+  border-color: #2fb39c;
+  background: #1e293b;
+  color: #ffffff;
+}
+
+.orbit-app-shell.night-mode .attendance-date-shortcut.is-active {
+  border-color: #2dd4bf;
+  background: #0f8b76;
+  color: #ffffff;
+}
+
+body.night-mode .orbit-modal {
+  border-color: #334155;
+  background: #172033;
+  color: #e5edf7;
+}
+
+body.night-mode .orbit-field {
+  border-color: #475569;
+  background: #0f172a;
+  color: #e5edf7;
+}
+
+/* A focused, themed alert used when ticket time cannot be started. */
+.ticket-timer-alert-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(3px);
+}
+
+.ticket-timer-alert {
+  width: min(100%, 23rem);
+  padding: 1.5rem;
+  border: 1px solid var(--orbit-border);
+  border-radius: 1rem;
+  background: var(--orbit-surface);
+  color: var(--orbit-text);
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+}
+
+.ticket-timer-alert-icon {
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  margin: 0 auto .9rem;
+  border-radius: 50%;
+  background: #e5f7f2;
+  color: var(--orbit-primary);
+}
+
+.ticket-timer-alert-icon svg { width: 1.45rem; height: 1.45rem; }
+.ticket-timer-alert h2 { margin: 0; font-size: 1rem; font-weight: 750; }
+.ticket-timer-alert p { margin: .55rem 0 1.2rem; color: var(--orbit-text-muted); font-size: .86rem; line-height: 1.5; }
+
+.ticket-timer-alert-action {
+  width: 100%;
+  padding: .65rem 1rem;
+  border: 0;
+  border-radius: var(--orbit-radius-sm);
+  background: var(--orbit-primary);
+  color: #fff;
+  font-size: .84rem;
+  font-weight: 700;
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.ticket-timer-alert-action:hover,
+.ticket-timer-alert-action:focus-visible { background: var(--orbit-primary-hover); transform: translateY(-1px); }
+
+body.night-mode .ticket-timer-alert { border-color: #3b4c63; background: #172033; color: #f1f5f9; }
+body.night-mode .ticket-timer-alert-icon { background: rgba(15, 139, 118, .2); color: #67d6bf; }
+body.night-mode .ticket-timer-alert p { color: #b9c8d8; }
+
+/* Calendar uses explicit grid rules rather than utility-only column classes.
+   This keeps the seven-day layout intact in the generated production CSS. */
+.calendar-weekdays,
+.calendar-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  min-width: 700px;
+}
+
+.calendar-workspace-grid {
+  display: grid;
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.calendar-summary-card {
+  display: flex;
+  min-height: 74px;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  border: 1px solid #d8e3ee;
+  border-radius: 12px;
+  padding: .9rem 1rem;
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(25, 50, 78, .04);
+}
+
+.calendar-summary-label {
+  color: #516c88;
+  font-size: .65rem;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.calendar-summary-help {
+  margin-top: .2rem;
+  color: #8294a8;
+  font-size: .68rem;
+}
+
+.calendar-summary-value {
+  color: #14213d;
+  font-size: 1.45rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.calendar-summary-value--birthday { color: #db2777; }
+.calendar-summary-value--anniversary { color: #d97706; }
+.calendar-summary-value--leave { color: #0284c7; }
+
+.calendar-month-shell {
+  overflow-x: auto;
+}
+
+.calendar-day {
+  min-height: 4rem;
+}
+
+.calendar-upcoming-panel {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+}
+
+.calendar-upcoming-list {
+  overflow-y: auto;
+}
+
+.calendar-upcoming-empty {
+  display: grid;
+  min-height: 12rem;
+  place-items: center;
+}
+
+.calendar-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+}
+
+.calendar-controls .table-filter-input {
+  width: auto;
+}
+
+.calendar-controls select.table-filter-input {
+  min-width: 11.25rem;
+}
+
+body.night-mode .calendar-weekdays {
+  border-color: #33445c;
+  background: #172033;
+}
+
+body.night-mode .calendar-day {
+  border-color: #2b3a50;
+}
+
+body.night-mode .calendar-day.bg-white {
+  background: #172033;
+}
+
+body.night-mode .calendar-day.bg-slate-50\/70 {
+  background: #121b2b;
+}
+
+body.night-mode .calendar-summary-card {
+  border-color: #30425a;
+  background: #182338;
+  box-shadow: none;
+}
+
+body.night-mode .calendar-summary-label { color: #9eb2c8; }
+body.night-mode .calendar-summary-help { color: #7288a0; }
+body.night-mode .calendar-summary-value { color: #f1f5f9; }
+body.night-mode .calendar-summary-value--birthday { color: #f472b6; }
+body.night-mode .calendar-summary-value--anniversary { color: #fbbf24; }
+body.night-mode .calendar-summary-value--leave { color: #38bdf8; }
+
+body.night-mode .calendar-upcoming-panel .border-slate-200,
+body.night-mode .calendar-upcoming-panel .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #30425a;
+}
+
+body.night-mode .calendar-upcoming-panel .hover\:bg-slate-50\/60:hover {
+  background: rgba(37, 52, 73, .7);
+}
+
+@media (min-width: 1180px) {
+  .calendar-workspace-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(290px, 340px);
+  }
+
+  .calendar-upcoming-list {
+    max-height: 35.5rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .calendar-day {
+    min-height: 4.5rem;
+  }
+}
+
+/* Payroll is a working register, so the period and run state stay compact and
+   the actual employee rows appear without a large decorative preamble. */
+.payroll-page .payroll-page-header {
+  min-height: 0;
+  padding: .1rem 0;
+}
+
+.payroll-page-intro {
+  min-width: 0;
+}
+
+.payroll-page-intro > div {
+  max-width: 46rem;
+  color: #536b86;
+  font-size: .78rem;
+  line-height: 1.45;
+}
+
+.payroll-period-controls {
+  flex-shrink: 0;
+}
+
+.payroll-period-controls label {
+  min-width: 0;
+}
+
+.payroll-period-controls .table-filter-input {
+  height: 2.15rem;
+}
+
+.payroll-run-card {
+  padding: .8rem . тоғrem;
+}
+
+.payroll-run-card > div {
+  min-height: 2.4rem;
+}
+
+.payroll-run-card .text-sm.font-bold {
+  color: #14213d;
+}
+
+.payroll-run-card .text-xs {
+  line-height: 1.35;
+}
+
+.payroll-metrics .payroll-metric {
+  display: flex;
+  min-height: 4.65rem;
+  flex-direction: column;
+  justify-content: center;
+  padding: .72rem .85rem;
+}
+
+.payroll-metrics .payroll-metric .text-xs {
+  color: #637992;
+  font-size: .62rem;
+}
+
+.payroll-metrics .payroll-metric .mt-2 {
+  margin-top: .22rem;
+}
+
+.payroll-register-heading {
+  padding-top: .72rem;
+  padding-bottom: .68rem;
+}
+
+.payroll-register .table-tools {
+  min-height: 3.65rem;
+  padding-top: .55rem;
+  padding-bottom: .55rem;
+}
+
+.payroll-register .table-filter-input {
+  min-height: 2.1rem;
+}
+
+.payroll-register .orbit-data-table th,
+.payroll-register .orbit-data-table td {
+  padding-top: .66rem;
+  padding-bottom: .66rem;
+}
+
+body.night-mode .payroll-page-intro > div { color: #9db1c7; }
+body.night-mode .payroll-run-card .text-sm.font-bold { color: #f1f5f9; }
+body.night-mode .payroll-run-card .text-xs { color: #9db1c7; }
+body.night-mode .payroll-metrics .payroll-metric .text-xs { color: #9db1c7; }
+
+@media (max-width: 760px) {
+  .payroll-period-controls {
+    width: 100%;
+  }
+
+  .payroll-period-controls label:first-child {
+    flex: 1 1 10rem;
+  }
+
+  .payroll-period-controls label:first-child .table-filter-input {
+    max-width: none;
+    width: 100%;
+  }
+
+  .payroll-run-card {
+    padding: .8rem;
+  }
+}
+
+/* Frontend contract for the future profile effectiveness module. */
+.effectiveness-dashboard {
+  border-color: #dce9e5;
+  background: linear-gradient(135deg, #ffffff 0%, #f8fcfb 100%);
+}
+
+.effectiveness-preview-badge {
+  display: inline-flex;
+  border: 1px solid #bde2d7;
+  border-radius: 999px;
+  padding: .2rem .55rem;
+  background: #e8f7f2;
+  color: #08785c;
+  font-size: .67rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.effectiveness-period { min-width: 9.5rem; }
+.effectiveness-date-filter { display: flex; flex-wrap: wrap; align-items: end; justify-content: end; gap: .55rem; }
+.effectiveness-date-filter label { display: grid; gap: .28rem; color: #52677a; font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.effectiveness-date-filter input { min-height: 2.25rem; border: 1px solid #cbd9e2; border-radius: .55rem; background: #fff; padding: .35rem .55rem; color: #172033; font-size: .78rem; font-weight: 600; }
+.effectiveness-filter-error { border: 1px solid #fecaca; border-radius: .65rem; background: #fff1f2; padding: .65rem .8rem; color: #be123c; font-size: .78rem; font-weight: 700; }
+
+.effectiveness-preview-note {
+  border: 1px solid #cfe5dd;
+  border-radius: .75rem;
+  padding: .7rem .85rem;
+  background: #f0faf7;
+  color: #42655d;
+  font-size: .78rem;
+  line-height: 1.45;
+}
+
+.effectiveness-score-panel,
+.effectiveness-metric,
+.effectiveness-trend-card,
+.effectiveness-evidence {
+  border: 1px solid #e0ebe8;
+  border-radius: .9rem;
+  background: #fff;
+}
+
+.effectiveness-score-panel {
+  display: flex;
+  min-height: 15rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+
+.effectiveness-score-ring {
+  display: grid;
+  width: 8.5rem;
+  height: 8.5rem;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.effectiveness-score-inner {
+  display: flex;
+  width: 6.7rem;
+  height: 6.7rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.effectiveness-score-inner strong {
+  color: #0f172a;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.effectiveness-score-inner span { margin-top: .25rem; color: #64748b; font-size: .7rem; font-weight: 700; }
+.effectiveness-metric { padding: 1rem; }
+.effectiveness-progress { height: .45rem; overflow: hidden; border-radius: 999px; background: #e8f0ef; }
+.effectiveness-progress > div { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #0f8b76, #55bba6); }
+.effectiveness-trend-card,
+.effectiveness-evidence { padding: 1rem; }
+.effectiveness-bars { display: flex; height: 10.5rem; align-items: end; justify-content: space-between; gap: .8rem; margin-top: 1.2rem; }
+.effectiveness-bar-group { display: flex; height: 100%; min-width: 1.65rem; flex: 1; flex-direction: column; align-items: center; justify-content: end; gap: .38rem; }
+.effectiveness-bar-value { color: #52677a; font-size: .68rem; font-weight: 800; }
+.effectiveness-bar-track { display: flex; width: 100%; height: 7.2rem; align-items: end; overflow: hidden; border-radius: .35rem .35rem .2rem .2rem; background: #e8f0ef; }
+.effectiveness-bar { width: 100%; border-radius: inherit; background: linear-gradient(180deg, #5fc4b2, #0f8b76); }
+.effectiveness-evidence ul { padding: 0; list-style: none; }
+.effectiveness-evidence li { display: flex; align-items: flex-start; gap: .5rem; }
+.effectiveness-evidence li span { display: inline-grid; width: 1.2rem; height: 1.2rem; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #e7f6f1; color: #08785c; font-size: .65rem; font-weight: 800; }
+.effectiveness-cycle-panel { border: 1px solid #e0ebe8; border-radius: .9rem; background: #fff; padding: 1rem; }
+.effectiveness-cycle-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border: 1px solid #e7eef1; border-radius: .7rem; padding: .75rem .85rem; }
+.effectiveness-cycle-message { border-radius: .6rem; padding: .6rem .75rem; font-size: .78rem; font-weight: 700; }
+.effectiveness-cycle-message.success { border: 1px solid #bde2d7; background: #eefaf6; color: #08785c; }
+.effectiveness-cycle-message.error { border: 1px solid #fecaca; background: #fff1f2; color: #be123c; }
+
+body.night-mode .effectiveness-dashboard { border-color: #2c4a48; background: linear-gradient(135deg, #172033, #14252a); }
+body.night-mode .effectiveness-preview-note { border-color: #30544f; background: #18312f; color: #b8ded4; }
+body.night-mode .effectiveness-date-filter label { color: #b6c5d4; }
+body.night-mode .effectiveness-date-filter input { border-color: #304256; background: #172033; color: #edf5fc; }
+body.night-mode .effectiveness-score-panel,
+body.night-mode .effectiveness-metric,
+body.night-mode .effectiveness-trend-card,
+body.night-mode .effectiveness-evidence,
+body.night-mode .effectiveness-cycle-panel,
+body.night-mode .effectiveness-score-inner { border-color: #304256; background: #172033; }
+body.night-mode .effectiveness-score-inner strong,
+body.night-mode .effectiveness-dashboard .text-slate-900 { color: #edf5fc; }
+body.night-mode .effectiveness-dashboard .text-slate-600,
+body.night-mode .effectiveness-dashboard .text-slate-500,
+body.night-mode .effectiveness-dashboard .text-slate-700 { color: #b6c5d4; }
+body.night-mode .effectiveness-evidence .bg-slate-100 { background: #223149; color: #c8d5e2; }
+body.night-mode .effectiveness-cycle-row { border-color: #304256; }
+
+/* Navigation rail refresh -------------------------------------------------
+   A permanent deep rail creates the same dependable visual boundary in both
+   themes. The workspace can switch light/dark independently without the
+   application losing its navigation anchor. */
+.orbit-sidebar {
+  overflow: hidden;
+  border-right: 1px solid #24516c;
+  background:
+    radial-gradient(circle at 92% 4%, rgba(20, 184, 166, 0.3) 0, rgba(20, 184, 166, 0.08) 18%, transparent 36%),
+    linear-gradient(160deg, #123d59 0%, #0b2c46 43%, #071d31 100%) !important;
+  border-color: #24516c !important;
+  box-shadow: 10px 14px 30px rgba(7, 29, 49, 0.24) !important;
+}
+
+.orbit-sidebar .sidebar-brand-name { color: #f8fbff !important; }
+.orbit-sidebar .sidebar-brand-subtitle { color: #57d6d2 !important; }
+
+.orbit-sidebar .orbit-brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  color: #19b9b4;
+  background: rgba(13, 64, 88, 0.42) !important;
+  box-shadow: none;
+}
+
+.orbit-sidebar .orbit-sidebar-divider {
+  height: 1px;
+  background: rgba(179, 211, 227, 0.18) !important;
+}
+
+.orbit-sidebar .nav-section-label {
+  color: #8fb0c5 !important;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.orbit-sidebar .nav-item {
+  min-height: 34px;
+  border-radius: 9px !important;
+  padding-top: 0.45rem !important;
+  padding-bottom: 0.45rem !important;
+  font-size: 12px !important;
+}
+
+.orbit-sidebar nav button:not(.nav-item-active),
+.app-shell:not(.night-mode) .orbit-sidebar nav button:not(.nav-item-active) {
+  color: #d9e9f3 !important;
+}
+
+.orbit-sidebar nav button:not(.nav-item-active) svg,
+.app-shell:not(.night-mode) .orbit-sidebar nav button:not(.nav-item-active) svg {
+  color: #b5cfde !important;
+  stroke-width: 2;
+}
+
+.orbit-sidebar .orbit-nav-item-idle:hover,
+.app-shell:not(.night-mode) .orbit-sidebar nav button:not(.nav-item-active):hover,
+.app-shell.night-mode .orbit-sidebar nav button:not(.nav-item-active):hover {
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.09) !important;
+}
+
+.orbit-sidebar nav button:not(.nav-item-active):hover svg { color: #ffffff !important; }
+
+.orbit-sidebar .nav-item-active,
+.app-shell:not(.night-mode) .orbit-sidebar .nav-item-active,
+.app-shell.night-mode .orbit-sidebar .nav-item-active {
+  background: linear-gradient(90deg, #119e91, #0d8f8a) !important;
+  box-shadow: 0 7px 16px rgba(4, 31, 43, 0.35) !important;
+}
+
+.orbit-sidebar .nav-item-active,
+.orbit-sidebar .nav-item-active span,
+.orbit-sidebar .nav-item-active svg {
+  color: #ffffff !important;
+}
+
+.orbit-sidebar .nav-item-active:hover { background: linear-gradient(90deg, #0d9186, #087b78) !important; }
+
+.orbit-sidebar .sidebar-signout,
+.app-shell.night-mode .orbit-sidebar .sidebar-signout { color: #b8d0df !important; }
+
+.orbit-sidebar .sidebar-signout:hover,
+.app-shell.night-mode .orbit-sidebar .sidebar-signout:hover {
+  color: #ffd1c8 !important;
+  background: rgba(244, 104, 84, 0.15) !important;
+}
+
+.orbit-sidebar .bg-slate-200\/80 { background: rgba(179, 211, 227, 0.2) !important; }
+
+/* Collapsed mode keeps the same clear mark and active destination without
+   turning into a pale icon strip. */
+.orbit-sidebar .sidebar-nav-groups { padding-bottom: 0.8rem; }
+
+@media (min-width: 768px) {
+  .app-shell:not(.night-mode) .orbit-sidebar,
+  .app-shell.night-mode .orbit-sidebar {
+    border: 1px solid #24516c !important;
+    background:
+      radial-gradient(circle at 92% 4%, rgba(20, 184, 166, 0.3) 0, rgba(20, 184, 166, 0.08) 18%, transparent 36%),
+      linear-gradient(160deg, #123d59 0%, #0b2c46 43%, #071d31 100%) !important;
+    border-color: #24516c !important;
+    box-shadow: 10px 14px 30px rgba(7, 29, 49, 0.24) !important;
+  }
+}
+
+/* Reusable card empty state. A quiet queue or a new workspace should read as
+   an intentional outcome, not an unfinished panel. */
+.approvals-view-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  /* Do not inherit a delayed visual state while the app swaps theme. */
+  transition: none;
+}
+
+.approvals-view-all svg { width: 13px; height: 13px; }
+
+.card-empty-state {
+  min-height: 156px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.15rem 0.75rem;
+  text-align: center;
+}
+
+.card-empty-icon {
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.62rem;
+  border-radius: 14px;
+  color: #5f7891;
+  background: #edf4f8;
+}
+
+.card-empty-icon svg { width: 30px; height: 30px; }
+
+.card-empty-title {
+  color: #1d344e;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.card-empty-copy {
+  margin-top: 0.25rem;
+  color: #718399;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.effectiveness-empty-state {
+  min-height: 10.5rem;
+  margin-top: 0.9rem;
+}
+
+.card-empty-state--compact {
+  min-height: 118px;
+  padding: 0.9rem 0.75rem;
+}
+
+.card-empty-state--compact .card-empty-icon {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 0.5rem;
+  border-radius: 12px;
+}
+
+.card-empty-state--compact .card-empty-icon svg { width: 25px; height: 25px; }
+
+.app-shell.night-mode .card-empty-icon,
+body.night-mode .card-empty-icon {
+  color: #a9c2d5;
+  background: #24364c;
+}
+
+.app-shell.night-mode .card-empty-title,
+body.night-mode .card-empty-title { color: #edf5fc; }
+
+.app-shell.night-mode .card-empty-copy,
+body.night-mode .card-empty-copy { color: #9fb0c4; }
+
+/* Super Admin dashboard — light workspace system -------------------------
+   Keep colour on the navigation and small status surfaces. The working area
+   stays cool and calm, with white cards separated by a pale blue outline. */
+.app-shell:not(.night-mode) .super-admin-dashboard {
+  color: #172033;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpis {
+  gap: 0.8rem !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpi {
+  min-height: 94px;
+  border-color: #d7e4ee !important;
+  background: #ffffff !important;
+  box-shadow: 0 7px 18px rgba(30, 64, 91, 0.055) !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpi:nth-child(1) { background: #f4fffb !important; }
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpi:nth-child(2) { background: #fff9fa !important; }
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpi:nth-child(3) { background: #f6f9ff !important; }
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpi:nth-child(4) { background: #fffaf0 !important; }
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpi-label {
+  color: #49627c;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-kpi-context {
+  color: #6a8097;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .finance-overview,
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-panel,
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-card {
+  border-color: #d9e5ee !important;
+  background: #ffffff !important;
+  box-shadow: 0 7px 18px rgba(30, 64, 91, 0.045) !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .finance-overview {
+  border-radius: 16px !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .finance-overview-heading {
+  color: #167d91;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-card {
+  background: #fcfeff !important;
+  box-shadow: none !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-card-header,
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-finance-list > * {
+  border-color: #e3ebf2 !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-expense-row:hover {
+  background: #f4fafb;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .project-finance-panel,
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-attendance-panel,
+.app-shell:not(.night-mode) .super-admin-dashboard .approvals-panel {
+  border-radius: 16px !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .project-finance-panel > .flex:first-child,
+.app-shell:not(.night-mode) .super-admin-dashboard .super-admin-attendance-panel > .flex:first-child,
+.app-shell:not(.night-mode) .super-admin-dashboard .approvals-panel > .flex:first-child {
+  border-color: #e4ecf3;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .project-finance-stat {
+  box-shadow: none;
+}
+
+/* The lower dashboard sections use the exact same surface hierarchy as the
+   finance summary above, rather than falling back to the older flat slate
+   cards. This covers operational controls, delivery, audit, and trends. */
+.app-shell:not(.night-mode) .super-admin-dashboard section.bg-white.rounded-xl {
+  border-color: #d9e5ee !important;
+  background: #ffffff !important;
+  box-shadow: 0 7px 18px rgba(30, 64, 91, 0.045) !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .bg-slate-50.rounded-xl,
+.app-shell:not(.night-mode) .super-admin-dashboard .bg-slate-50.rounded-lg {
+  border-color: #deeaF2 !important;
+  background: #f7fbfd !important;
+  box-shadow: none !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard button.bg-slate-50:hover,
+.app-shell:not(.night-mode) .super-admin-dashboard a.bg-slate-50:hover {
+  border-color: #bed3df !important;
+  background: #ffffff !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .dashboard-stat-card {
+  min-height: 76px !important;
+  border-color: #d9e5ee !important;
+  background: #ffffff !important;
+  box-shadow: 0 5px 14px rgba(30, 64, 91, 0.04) !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .h-2.rounded-full.bg-slate-200 {
+  background: #dfeaf0 !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .h-2.rounded-full.bg-slate-200 > div {
+  background: #0f9d8b !important;
+}
+
+.app-shell:not(.night-mode) .super-admin-dashboard .border-dashed.border-slate-200 {
+  border-color: #dce8f0 !important;
 }

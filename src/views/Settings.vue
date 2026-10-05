@@ -4,7 +4,7 @@ import { useStore } from '../store/index.js'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { settingsService } from '../services/settingsService.js'
 
-const { state, can, logActivity, pushNotification, setServerSettings } = useStore()
+const { state, can, logActivity, setServerSettings } = useStore()
 
 /**
  * Which sections are stored server-side, keyed by the label the save buttons
@@ -12,15 +12,15 @@ const { state, can, logActivity, pushNotification, setServerSettings } = useStor
  * human label and the API takes a group key.
  */
 const SERVER_SECTIONS = {
-  Company: 'company',
-  Attendance: 'attendance',
-  'Leave policy': 'leave',
-  'Claims and finance': 'claims',
+  Company: ['company'],
+  Attendance: ['attendance'],
+  'Leave policy': ['leave'],
+  'Claims and finance': ['claims', 'finance'],
   // The API has accepted this group since petty cash was built; the mapping
   // was missing, so the approval threshold appeared to save and reverted on
   // refresh — while the API went on enforcing the old value.
-  'Petty cash': 'pettyCash',
-  Integrations: 'integrations'
+  'Petty cash': ['pettyCash'],
+  Integrations: ['integrations']
 }
 
 const saving = ref('')
@@ -83,7 +83,7 @@ function nonNegative(value) {
 }
 
 function validateSection(section) {
-  const { company, attendance, leave, claims, pettyCash } = state.settings
+  const { company, attendance, leave, claims, finance, pettyCash } = state.settings
 
   if (section === 'Company') {
     if (!String(company.name || '').trim()) return 'Company name cannot be empty.'
@@ -115,6 +115,11 @@ function validateSection(section) {
     if (Number(claims.receiptRequiredAbove) > Number(claims.annualMedicalLimit) && Number(claims.annualMedicalLimit) > 0) {
       return 'Receipt threshold cannot exceed the annual medical limit.'
     }
+    if (!['percent', 'fixed'].includes(finance.defaultCommissionType)) return 'Choose a valid default commission type.'
+    if (!nonNegative(finance.defaultCommissionValue)) return 'Default commission value cannot be negative.'
+    if (finance.defaultCommissionType === 'percent' && Number(finance.defaultCommissionValue) > 100) {
+      return 'Default commission percentage cannot exceed 100.'
+    }
   }
 
   if (section === 'Petty cash') {
@@ -134,11 +139,14 @@ async function saveSettings(section) {
   // marked late, the thresholds decide what needs approval — so a change that
   // only reached memory would leave the UI and the API disagreeing about the
   // rule.
-  const group = SERVER_SECTIONS[section]
-  if (group) {
+  const groups = SERVER_SECTIONS[section] || []
+  if (groups.length) {
     saving.value = section
     try {
-      setServerSettings({ [group]: await settingsService.putGroup(group, state.settings[group]) })
+      const savedGroups = await Promise.all(
+        groups.map(async group => [group, await settingsService.putGroup(group, state.settings[group])])
+      )
+      setServerSettings(Object.fromEntries(savedGroups))
     } catch (error) {
       settingsError.value = error?.message || `Unable to save ${section.toLowerCase()} settings.`
       return
@@ -152,13 +160,6 @@ async function saveSettings(section) {
     action: 'settings updated',
     details: `${section} settings were updated.`
   })
-  pushNotification({
-    title: 'Settings updated',
-    message: `${section} settings were updated by ${state.currentUser.name}.`,
-    type: 'settings',
-    roles: ['super_admin', 'hr', 'manager'],
-    route: { name: 'settings' }
-  })
   settingsSaved.value = `${section} settings saved.`
 }
 
@@ -166,16 +167,7 @@ async function addDesignation() {
   const value = newDesignation.value.trim()
   if (!value || state.settings.designations.includes(value)) return
 
-  settingsError.value = ''
-  try {
-    setServerSettings(await settingsService.addListItem('designations', value))
-  } catch (error) {
-    settingsError.value = error?.message || 'Unable to add that designation.'
-    return
-  }
-
-  logActivity({ module: 'settings', action: 'designation added', details: `${value} was added to designations.` })
-  newDesignation.value = ''
+  if (await addListItem('designations', value)) newDesignation.value = ''
 }
 
 // Designations and stacks are referenced by existing employee records, so
@@ -233,35 +225,41 @@ async function addStack() {
   const value = newStack.value.trim()
   if (!value || state.settings.stacks.includes(value)) return
 
+  if (await addListItem('stacks', value)) newStack.value = ''
+}
+
+async function addListItem(type, value) {
   settingsError.value = ''
   try {
-    setServerSettings(await settingsService.addListItem('stacks', value))
+    setServerSettings(await settingsService.addListItem(type, value))
   } catch (error) {
-    settingsError.value = error?.message || 'Unable to add that stack.'
-    return
+    settingsError.value = error?.message || `Unable to add that ${type === 'stacks' ? 'stack' : 'designation'}.`
+    return false
   }
 
-  logActivity({ module: 'settings', action: 'stack added', details: `${value} was added to onboarding stacks.` })
-  newStack.value = ''
+  logActivity({
+    module: 'settings',
+    action: type === 'stacks' ? 'stack added' : 'designation added',
+    details: `${value} was added to ${type === 'stacks' ? 'onboarding stacks' : 'designations'}.`
+  })
+  return true
 }
 
 
-function addPresetDesignation(value) {
+async function addPresetDesignation(value) {
   if (state.settings.designations.includes(value)) return
-  state.settings.designations.push(value)
-  logActivity({ module: 'settings', action: 'designation preset added', details: `${value} was added to designations.` })
+  await addListItem('designations', value)
 }
 
-function addPresetStack(value) {
+async function addPresetStack(value) {
   if (state.settings.stacks.includes(value)) return
-  state.settings.stacks.push(value)
-  logActivity({ module: 'settings', action: 'stack preset added', details: `${value} was added to onboarding stacks.` })
+  await addListItem('stacks', value)
 }
 </script>
 
 <template>
-  <div v-if="canAccess" class="space-y-6">
-    <div>
+  <div v-if="canAccess" class="orbit-page space-y-6">
+    <div class="orbit-page-header">
       <div class="text-sm text-slate-600 mt-1">Configure company policies, approval rules, and onboarding options.</div>
     </div>
 
@@ -273,7 +271,7 @@ function addPresetStack(value) {
     </div>
 
     <section class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div class="orbit-card p-5">
         <div class="text-lg font-bold text-slate-900">Company</div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
           <div>
@@ -290,8 +288,7 @@ function addPresetStack(value) {
           </div>
           <div class="md:col-span-2">
             <label class="block">
-            <span class="text-sm font-medium text-slate-700 block mb-1.5">Work week
-              <span class="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">Backend required</span></span>
+            <span class="text-sm font-medium text-slate-700 block mb-1.5">Work week</span>
             <input v-model="state.settings.company.workWeek" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
             </label>
           </div>
@@ -299,7 +296,7 @@ function addPresetStack(value) {
         <button @click="saveSettings('Company')" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">Save company</button>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div class="orbit-card p-5">
         <div class="text-lg font-bold text-slate-900">Attendance</div>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
           <div>
@@ -310,8 +307,7 @@ function addPresetStack(value) {
           </div>
           <div>
             <label class="block">
-            <span class="text-sm font-medium text-slate-700 block mb-1.5">End time
-              <span class="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">Backend required</span></span>
+            <span class="text-sm font-medium text-slate-700 block mb-1.5">End time</span>
             <input v-model="state.settings.attendance.endTime" type="time" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
             </label>
           </div>
@@ -329,7 +325,7 @@ function addPresetStack(value) {
         <button @click="saveSettings('Attendance')" :disabled="saving === 'Attendance'" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ saving === 'Attendance' ? 'Saving...' : 'Save attendance' }}</button>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div class="orbit-card p-5">
         <div class="text-lg font-bold text-slate-900">Leave Policy</div>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
           <div>
@@ -362,7 +358,7 @@ function addPresetStack(value) {
         <button @click="saveSettings('Leave policy')" :disabled="saving === 'Leave policy'" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ saving === 'Leave policy' ? 'Saving...' : 'Save leave policy' }}</button>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div class="orbit-card p-5">
         <div class="text-lg font-bold text-slate-900">Claims & Finance</div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
           <div>
@@ -378,8 +374,7 @@ function addPresetStack(value) {
           </div>
           <div>
             <label class="block">
-            <span class="text-sm font-medium text-slate-700 block mb-1.5">Default commission type
-              <span class="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">Backend required</span></span>
+            <span class="text-sm font-medium text-slate-700 block mb-1.5">Default commission type</span>
             <select v-model="state.settings.finance.defaultCommissionType" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
               <option value="percent">Percent</option>
               <option value="fixed">Fixed</option>
@@ -396,12 +391,11 @@ function addPresetStack(value) {
         <label class="mt-4 flex items-center gap-2 text-sm font-medium text-slate-700">
           <input v-model="state.settings.finance.superAdminApprovalRequired" type="checkbox" class="rounded border-slate-300" />
           Super Admin approval required for commission
-          <span class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">Backend required</span>
         </label>
         <button @click="saveSettings('Claims and finance')" :disabled="saving === 'Claims and finance'" class="mt-4 bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">{{ saving === 'Claims and finance' ? 'Saving...' : 'Save claims & finance' }}</button>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div class="orbit-card p-5">
         <div class="text-lg font-bold text-slate-900">Petty Cash</div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
           <div>

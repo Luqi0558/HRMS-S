@@ -4,27 +4,13 @@ import { useStore } from '../store/index.js'
 import { attendanceService } from '../services/attendanceService.js'
 import { ApiError } from '../services/apiClient.js'
 
-// Shared dashboard state and helpers.
-//
-// Dashboard.vue previously held five role dashboards in a single 3,200-line
-// file with one 1,380-line script block, so every role's logic was in scope for
-// every other role's template. That is how the super-admin `v-else` fallthrough
-// bug survived. Each role now has its own component; anything genuinely shared
-// lives here.
-// Camera state is module-level, not per-call: a role dashboard calls
-// openCamera() while CameraCheckInModal renders the result, and they must share
-// one instance. Per-call refs would leave the modal watching a ref nobody sets.
 const videoRef = ref(null)
 const showCameraModal = ref(false)
+const dashboardWorkMode = ref('office')
 const cameraError = ref('')
 const cameraLoading = ref(false)
-// In-flight guards, so a double-tap cannot send two punches — the API answers
-// the second with a 409 and the user would see an error for a check-in that
-// actually worked.
 const checkingIn = ref(false)
 const checkingOut = ref(false)
-// Check-out has no modal of its own to show a failure in, so its error surfaces
-// on the dashboard instead.
 const attendanceError = ref('')
 let cameraStream = null
 
@@ -45,12 +31,8 @@ export function useDashboard() {
    * employees table; currentUser.id is the user id.
    */
   const myEmployeeId = computed(() => state.currentUser.employeeId ?? state.currentUser.id)
-
-  // Ticks once a minute so "hours so far today" stays live without each
-  // component owning its own timer.
   const nowTick = ref(Date.now())
 
-  // --- naming/formatting helpers -------------------------------------------
   function projectName(id) {
     return state.projects.find(project => project.id === id)?.name ?? ''
   }
@@ -59,20 +41,7 @@ export function useDashboard() {
     return state.projects.find(project => project.id === ticket.projectId)?.name ?? '—'
   }
 
-  /**
-   * Where a dashboard tile should send someone to see the tickets behind it.
-   *
-   * Straight to the board when they work on exactly one module — which is the
-   * common case for an intern or a QA covering one area — and to the assigned
-   * modules list otherwise, since guessing which of several they meant would be
-   * worse than letting them pick.
-   *
-   * @param {string} filter one of the board's ticket filters: open, completed,
-   *   overdue, review, or all
-   */
   function myTicketsRoute(filter = 'all') {
-    // store.myModules, not a bare call: this composable destructures only a few
-    // names from the store and reaches the rest through `store`.
     const mine = store.myModules()
     const query = filter === 'all' ? {} : { tickets: filter }
 
@@ -91,20 +60,10 @@ export function useDashboard() {
     return state.employees.find(employee => employee.id === id)?.name ?? '—'
   }
 
-  /**
-   * A ticket's assignee by name, preferring what the API embedded on it.
-   *
-   * state.employees is populated from /employees, which only Employees-module
-   * holders may call — a team lead has no such row, so resolving the id through
-   * the roster always missed and every line read "—". The ticket payload has
-   * carried `assignee` all along.
-   */
   function ticketAssigneeName(ticket) {
     return ticket?.assignee?.name ?? employeeName(ticket?.assigneeId)
   }
 
-  // Default "12 Jul 2026" rendering. Use formatCompanyDate directly when a
-  // component needs its own Intl options.
   function formatDate(value) {
     return formatCompanyDate(value, { month: 'short', day: 'numeric', year: 'numeric' })
   }
@@ -128,8 +87,7 @@ export function useDashboard() {
     return (now.getHours() * 60) + now.getMinutes()
   }
 
-  // Days until the next occurrence of a month/day — birthdays and work
-  // anniversaries, which recur annually.
+
   function daysUntilMonthDay(value) {
     if (!value) return 999
     const now = new Date()
@@ -141,7 +99,6 @@ export function useDashboard() {
     return Math.ceil((target - now) / 86400000)
   }
 
-  // --- navigation -----------------------------------------------------------
   function goToRoute(route) {
     if (!route) return
     router.push(route)
@@ -161,28 +118,15 @@ export function useDashboard() {
     }
   }
 
-  // --- the current user's own work (every role has some) --------------------
-  // employeeId, not currentUser.id: assigneeId references the employees table
-  // while currentUser.id is the user id. They agree only when the two tables
-  // happen to have been filled in step.
   const myTickets = computed(() =>
     state.tickets.filter(ticket => ticket.assigneeId === myEmployeeId.value)
   )
 
-  // --- weekly timesheet (employee, manager, HR, team lead) ------------------
-  /**
-   * Which span the timesheet card is showing. Module-level rather than
-   * per-component so the choice survives moving between dashboards.
-   */
   const timesheetPeriod = ref('weekly')
 
   const dailyTimesheet = computed(() => {
     const dayShorts = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
     const today = new Date()
-
-    // Weekly starts on the Sunday just gone; monthly on the 1st. Both run to
-    // the end of their period, so the rest of the month reads as empty days
-    // rather than the axis stopping at today.
     const monthly = timesheetPeriod.value === 'monthly'
     const start = monthly
       ? new Date(today.getFullYear(), today.getMonth(), 1)
@@ -201,7 +145,6 @@ export function useDashboard() {
       const dayIndex = date.getDay()
       result.push({
         day: dayShorts[dayIndex],
-        // The month view labels by number: "Aug 4" does not fit 31 times.
         dayOfMonth: date.getDate(),
         date: formatCompanyDate(date, { day: 'numeric', month: 'short' }),
         dateStr: `${year}-${month}-${day}`,
@@ -249,13 +192,9 @@ export function useDashboard() {
   })
 
   const timesheetTitle = computed(() => {
-    // Roles that also oversee others see their OWN hours here, so say so.
     return isHR.value || isManager.value || isTeamLead.value ? 'My Timesheet Log' : 'Timesheet Log'
   })
 
-  // --- punch ledger ---------------------------------------------------------
-  // Which employees appear: super admin and HR see everyone, an employee sees
-  // only themselves, and a manager/lead sees their own team.
   function ledgerRowsFor(visibleIds) {
     return state.attendance
       .filter(row => row.date === todayKey())
@@ -269,7 +208,7 @@ export function useDashboard() {
           const end = row.checkOut ? timeToMinutes(row.checkOut) : currentTimeMinutes()
           const minutes = Math.max(0, (end ?? 0) - (start ?? 0))
           hours = `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
-          if (!row.checkOut) status = 'active'
+          if (!row.checkOut && status !== 'late') status = 'active'
         }
         return {
           id: row.id,
@@ -278,35 +217,27 @@ export function useDashboard() {
           department: employee?.department ?? '-',
           checkIn: row.checkIn,
           checkOut: row.checkOut,
+          workMode: row.workMode || 'office',
+          dayWorkMode: row.dayWorkMode || row.workMode || 'office',
           status,
           hours
         }
       })
   }
 
-  // --- self check-in (employee, manager, HR all have this widget) -----------
-  // Shared here rather than duplicated per role component.
-  // Team leads were missing from this list, so their dashboard had no check-in
-  // widget at all — they are staff who come to the office like everyone else.
-  // Super admins are excluded deliberately: the role is an administrative
-  // account rather than a person on the attendance register.
-  // Anyone with an employee record punches in, EXCEPT the super admin: that is
-  // an administrative account rather than somebody on the attendance register.
-  // Keyed on the employee record rather than a list of roles, so a new role
-  // does not need this touched again.
+
   const canSelfAttend = computed(() =>
     Boolean(state.currentUser.employeeId) && !isSuperAdmin.value
   )
-  // employeeId, not currentUser.id: attendance rows reference the employees
-  // table while currentUser.id is the user id.
+
   const dashboardAttendance = computed(() =>
     state.attendance.find(row => row.employeeId === state.currentUser.employeeId && row.date === todayKey())
   )
-  // From the server's open-session flag. A day can hold several sessions now,
-  // so having a last check-out no longer means the day is over — you are
-  // checked in only while a session is still open.
   const dashboardCheckedIn = computed(() => Boolean(dashboardAttendance.value?.isCheckedIn))
   const dashboardCheckInTime = computed(() => dashboardAttendance.value?.checkIn ?? null)
+  const dashboardWorkModeLabel = computed(() =>
+    dashboardAttendance.value?.workMode === 'remote' ? 'Working from home' : 'Working from office'
+  )
 
   function clearCamera() {
     if (cameraStream) {
@@ -321,6 +252,7 @@ export function useDashboard() {
   async function openCamera() {
     if (!canSelfAttend.value || dashboardCheckedIn.value) return
     cameraError.value = ''
+    dashboardWorkMode.value = dashboardAttendance.value?.workMode || 'office'
     showCameraModal.value = true
     cameraLoading.value = true
     await nextTick()
@@ -346,12 +278,7 @@ export function useDashboard() {
     cameraLoading.value = false
   }
 
-  /**
-   * The frame as a JPEG Blob.
-   *
-   * A Blob rather than the data URL this used to return: the photo is uploaded
-   * as a file now, and base64 is about a third larger for no benefit.
-   */
+
   function capturePhoto() {
     if (!videoRef.value || !videoRef.value.videoWidth || !videoRef.value.videoHeight) {
       return Promise.resolve(null)
@@ -366,16 +293,6 @@ export function useDashboard() {
     return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88))
   }
 
-  /**
-   * Records the punch on the server, then reflects what it returned.
-   *
-   * This used to write straight into state.attendance and close the modal
-   * without contacting the API at all — so the photo was captured, the UI said
-   * "checked in", and the whole thing was gone on the next refresh. The server
-   * also decides `status` (present vs late) from the company's start time and
-   * grace period, which is why the row is taken from the response rather than
-   * computed here.
-   */
   async function dashboardCheckInWithPhoto() {
     if (!canSelfAttend.value || dashboardCheckedIn.value || checkingIn.value) return
 
@@ -389,7 +306,11 @@ export function useDashboard() {
     cameraError.value = ''
 
     try {
-      applyAttendanceRow(await attendanceService.checkIn({ device: 'camera', photo }))
+      applyAttendanceRow(await attendanceService.checkIn({
+        device: 'camera',
+        photo,
+        workMode: dashboardWorkMode.value
+      }))
       closeCamera()
     } catch (error) {
       cameraError.value = error instanceof ApiError
@@ -417,13 +338,7 @@ export function useDashboard() {
     }
   }
 
-  /**
-   * Puts the server's row into the store, replacing today's if present.
-   *
-   * Matched on the row id, not on employeeId: the old code keyed new rows by
-   * `state.currentUser.id`, which is a user id, while attendance rows carry an
-   * employee id — the two only agree by coincidence.
-   */
+
   function applyAttendanceRow(row) {
     if (!row) return
     const index = state.attendance.findIndex(item => item.id === row.id)
@@ -438,6 +353,8 @@ export function useDashboard() {
     dashboardAttendance,
     dashboardCheckedIn,
     dashboardCheckInTime,
+    dashboardWorkMode,
+    dashboardWorkModeLabel,
     videoRef,
     showCameraModal,
     cameraError,
@@ -462,8 +379,6 @@ export function useDashboard() {
     myTicketsRoute,
     ticketAssigneeName,
     formatDate,
-    // The store's option-accepting formatter, for components that need a
-    // different date shape than the default above.
     formatCompanyDate,
     statusBadgeClass,
     timeToMinutes,

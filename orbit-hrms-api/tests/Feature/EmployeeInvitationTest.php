@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Mail\EmployeeInvitationMail;
 use App\Models\Employee;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
+use Illuminate\Support\Facades\Mail;
 use Tests\TenantTestCase;
 
 class EmployeeInvitationTest extends TenantTestCase
@@ -13,6 +15,7 @@ class EmployeeInvitationTest extends TenantTestCase
     {
         parent::setUp();
         $this->seed(RolePermissionSeeder::class);
+        Mail::fake();
     }
 
     private function signIn(string $role): string
@@ -73,7 +76,13 @@ class EmployeeInvitationTest extends TenantTestCase
         $response->assertCreated()
             ->assertJsonPath('employee.email', 'hina@test.com')
             ->assertJsonPath('employee.status', 'invited')
+            ->assertJsonPath('emailQueued', true)
             ->assertJsonStructure(['invite' => ['token', 'expiresAt', 'path']]);
+
+        Mail::assertQueued(EmployeeInvitationMail::class, function (EmployeeInvitationMail $mail): bool {
+            return $mail->hasTo('hina@test.com')
+                && str_contains($mail->inviteUrl, '/accept-invite?token=');
+        });
 
         $this->assertDatabaseHas('employees', [
             'email' => 'hina@test.com',
@@ -136,8 +145,31 @@ class EmployeeInvitationTest extends TenantTestCase
             ->assertJsonValidationErrors(['name', 'email']);
     }
 
+    /**
+     * With no mailer that can actually deliver, a resend is refused rather
+     * than revoking the invitee's only working link for one nobody receives.
+     */
+    public function test_a_resend_is_refused_when_email_cannot_be_delivered(): void
+    {
+        config(['mail.default' => 'array']);
+        $auth = $this->tenantHeaders(['Authorization' => 'Bearer '.$this->signIn('hr')]);
+
+        $first = $this->postJson('/api/employees/invite', $this->payload(), $auth);
+
+        $this->postJson("/api/employees/{$first->json('employee.id')}/resend-invite", [], $auth)
+            ->assertStatus(409)
+            ->assertJsonPath('error', 'mail_delivery_not_configured');
+
+        // The original link still works.
+        $this->postJson('/api/onboarding/resolve', ['token' => $first->json('invite.token')], $this->tenantHeaders())
+            ->assertOk();
+    }
+
     public function test_resending_replaces_the_previous_link(): void
     {
+        // A real transport, so the resend goes ahead. Mail::fake() in setUp
+        // still keeps anything from leaving the test.
+        config(['mail.default' => 'smtp']);
         $auth = $this->tenantHeaders(['Authorization' => 'Bearer '.$this->signIn('hr')]);
 
         $first = $this->postJson('/api/employees/invite', $this->payload(), $auth);

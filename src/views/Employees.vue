@@ -12,7 +12,8 @@ import { payrollService } from '../services/payrollService.js'
 const route = useRoute()
 const {
   state, can, logActivity, pushNotification,
-  setEmployees, setLeaveRequests, setMedicalClaims, setSalarySlipRequests
+  setEmployees, setLeaveRequests, setMedicalClaims, setSalarySlipRequests,
+  documentsByKey
 } = useStore()
 const loadError = ref('')
 
@@ -42,9 +43,15 @@ onMounted(async () => {
 const showForm = ref(false)
 const showDetails = ref(false)
 const selectedEmployee = ref(null)
-const form = ref({ name: '', email: '', department: 'Junior Software Engineer' })
+const form = ref({ name: '', email: '', designation: 'Junior Software Engineer' })
 const sent = ref(false)
 const inviteError = ref('')
+const inviteDeliveryWarning = ref('')
+const inviting = ref(false)
+const resendingInvitationId = ref(null)
+const invitationActionNotice = ref('')
+const invitationActionFailed = ref(false)
+const profileStatusSavingId = ref(null)
 const canInviteEmployees = () => can('Employees', 'create')
 const employeeContextFilter = ref('all')
 const employeeContextManagerId = ref(null)
@@ -72,7 +79,7 @@ const managerTeamMemberIds = computed(() => {
 })
 const employeeTable = useTableControls(
   employeeRows,
-  employee => `${employee.name} ${employee.email} ${employee.department} ${employee.role} ${employee.status}`
+  employee => `${employee.name} ${employee.email} ${employee.designation} ${employee.department} ${employee.role} ${employee.status}`
 )
 
 function applyRouteFilters(query = route.query) {
@@ -104,41 +111,73 @@ function validateInvite() {
   if (!EMAIL_PATTERN.test(email)) return 'Enter a valid email address, e.g. name@company.com.'
   const existing = findEmployeeByEmail(email)
   if (existing) return `${existing.name} already uses this email address.`
-  if (!form.value.department) return 'Please select a designation.'
+  if (!form.value.designation) return 'Please select a designation.'
   return ''
 }
 
 function openInviteForm() {
   inviteError.value = ''
-  form.value = { name: '', email: '', department: 'Junior Software Engineer' }
+  inviteDeliveryWarning.value = ''
+  sent.value = false
+  form.value = { name: '', email: '', designation: 'Junior Software Engineer' }
   showForm.value = true
 }
 
-function invite() {
+async function invite() {
   if (!canInviteEmployees()) return
   inviteError.value = validateInvite()
   if (inviteError.value) return
-  state.employees.push({
-    // Derive from the highest existing id so deletions can't cause a collision.
-    id: state.employees.reduce((max, employee) => Math.max(max, employee.id), 0) + 1,
-    name: form.value.name.trim(),
-    email: form.value.email.trim(),
-    role: 'employee',
-    department: form.value.department,
-    status: 'invited'
-  })
-  logActivity({
-    module: 'employees',
-    action: 'employee invited',
-    details: `${state.currentUser.name} invited ${form.value.name.trim()} (${form.value.email.trim()}).`
-  })
-  sent.value = true
-  setTimeout(() => {
-    showForm.value = false
-    sent.value = false
-    inviteError.value = ''
-    form.value = { name: '', email: '', department: 'Junior Software Engineer' }
-  }, 1400)
+
+  inviting.value = true
+  try {
+    const response = await employeeService.invite({
+      name: form.value.name.trim(),
+      email: form.value.email.trim(),
+      designation: form.value.designation
+    })
+
+    // The API is the source of truth. Never manufacture an id locally: it
+    // made the prior UI report success while no employee or invite existed.
+    setEmployees([...state.employees, response.employee])
+    logActivity({
+      module: 'employees',
+      action: 'employee invited',
+      details: `${state.currentUser.name} invited ${response.employee.name} (${response.employee.email}).`
+    })
+    inviteDeliveryWarning.value = !response.emailDeliveryEnabled
+      ? 'Employee was added, but this environment is configured to log emails only. No invitation email was sent. Configure SMTP, then resend the invitation.'
+      : !response.emailQueued
+        ? 'Employee was added, but the invitation email could not be queued. Check the mail configuration and resend the invitation.'
+        : ''
+    sent.value = true
+  } catch (error) {
+    inviteError.value = error?.fieldError?.('email') || error?.message || 'Unable to create the employee invitation.'
+  } finally {
+    inviting.value = false
+  }
+}
+
+async function resendInvitation(employee) {
+  if (!canInviteEmployees() || employee.status !== 'invited') return
+
+  resendingInvitationId.value = employee.id
+  invitationActionNotice.value = ''
+  invitationActionFailed.value = false
+
+  try {
+    const response = await employeeService.resendInvitation(employee.id)
+    invitationActionNotice.value = response.message || `A fresh invitation was sent to ${employee.email}.`
+    logActivity({
+      module: 'employees',
+      action: 'invitation resent',
+      details: `${state.currentUser.name} resent ${employee.name}'s onboarding invitation.`
+    })
+  } catch (error) {
+    invitationActionNotice.value = error?.message || 'The invitation could not be resent.'
+    invitationActionFailed.value = true
+  } finally {
+    resendingInvitationId.value = null
+  }
 }
 
 function openDetails(employee) {
@@ -188,19 +227,23 @@ function onboardingList(section, key) {
 }
 
 function documentRows(employee) {
-  const documents = employee?.onboarding?.documents || {}
+  const documents = documentsByKey(employee)
   return [
     { key: 'cv', label: 'CV / Resume', file: documents.cv },
     { key: 'cnicFront', label: 'CNIC front', file: documents.cnicFront },
     { key: 'cnicBack', label: 'CNIC back', file: documents.cnicBack },
     { key: 'education', label: 'Education documents', file: documents.education },
-    { key: 'experience', label: 'Experience letter', file: documents.experience }
+    { key: 'experience', label: 'Experience letter', file: documents.experience },
+    // The missing-documents check asks for a contract; HR needs to be able
+    // to open the one that was uploaded.
+    { key: 'contract', label: 'Employment contract', file: documents.contract },
+    { key: 'offerLetter', label: 'Offer letter', file: documents.offerLetter }
   ]
 }
 
 function missingDocuments(employee) {
   const personal = employee?.onboarding?.personal || {}
-  const documents = employee?.onboarding?.documents || {}
+  const documents = documentsByKey(employee)
   return [
     !personal.cnic && 'CNIC',
     !personal.bankAccount && 'Bank',
@@ -246,6 +289,7 @@ function canManageProfileStatus(employee) {
   return can('Employees', 'create')
     && ['employee', 'manager'].includes(employee.role)
     && employee.id !== state.currentUser.id
+    && ['active', 'blocked'].includes(employee.status)
 }
 
 // Blocking cuts off someone's access immediately, so it is confirmed first.
@@ -261,54 +305,75 @@ function askSetProfileBlocked(employee, blocked) {
   pendingBlock.value = employee
 }
 
-function confirmBlock() {
-  if (pendingBlock.value) setProfileBlocked(pendingBlock.value, true)
+async function confirmBlock() {
+  const employee = pendingBlock.value
   pendingBlock.value = null
+  if (employee) await setProfileBlocked(employee, true)
 }
 
-function setProfileBlocked(employee, blocked) {
+async function setProfileBlocked(employee, blocked) {
   if (!canManageProfileStatus(employee)) return
-  employee.status = blocked ? 'blocked' : 'active'
-  logActivity({
-    module: 'employee',
-    action: blocked ? 'profile blocked' : 'profile unblocked',
-    details: `${employee.name}'s profile was ${blocked ? 'blocked' : 'unblocked'} by ${state.currentUser.name}.`,
-    targetId: employee.id,
-    targetType: 'employee'
-  })
-  pushNotification({
-    title: blocked ? 'Profile blocked' : 'Profile restored',
-    message: blocked ? 'Your profile access has been blocked by administration.' : 'Your profile access has been restored.',
-    type: 'employee',
-    userIds: [employee.id],
-    route: { name: 'profile' }
-  })
+  profileStatusSavingId.value = employee.id
+  invitationActionNotice.value = ''
+  invitationActionFailed.value = false
+
+  try {
+    const response = await employeeService.setBlocked(employee.id, blocked)
+    const updated = response.employee
+    setEmployees(state.employees.map(row => row.id === updated.id ? updated : row))
+    if (selectedEmployee.value?.id === updated.id) selectedEmployee.value = updated
+
+    invitationActionNotice.value = response.message
+    logActivity({
+      module: 'employee',
+      action: blocked ? 'profile blocked' : 'profile unblocked',
+      details: `${employee.name}'s profile was ${blocked ? 'blocked' : 'unblocked'} by ${state.currentUser.name}.`,
+      targetId: employee.id,
+      targetType: 'employee'
+    })
+  } catch (error) {
+    invitationActionNotice.value = error?.message || 'The employee access status could not be updated.'
+    invitationActionFailed.value = true
+  } finally {
+    profileStatusSavingId.value = null
+  }
 }
 
-function downloadDocument(file, fallbackName) {
-  if (!file) return
-  const blob = file instanceof Blob ? file : new Blob([file.content || 'Demo document'])
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName(file, fallbackName)
-  link.click()
-  URL.revokeObjectURL(url)
+const documentError = ref('')
+
+/**
+ * Downloads the real file from the API.
+ *
+ * This used to build a Blob in the browser containing "Demo document", so HR
+ * could never open what an employee had actually uploaded.
+ */
+async function downloadDocument(documentRow) {
+  if (!documentRow?.file || !selectedEmployee.value) return
+  documentError.value = ''
+  try {
+    await employeeService.downloadDocument(
+      selectedEmployee.value.id,
+      documentRow.key,
+      fileName(documentRow.file, `${documentRow.key}.pdf`)
+    )
+  } catch (error) {
+    documentError.value = error?.message || 'That document could not be downloaded.'
+  }
 }
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
+  <div class="orbit-page space-y-6">
+    <div class="orbit-page-header flex items-center justify-between">
       <div>
         <div class="text-sm text-slate-600 mt-1">Manage team members and invitations</div>
       </div>
-      <button v-if="canInviteEmployees()" @click="openInviteForm()" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors shadow-sm">
+      <button v-if="canInviteEmployees()" @click="openInviteForm()" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
         + Add employee
       </button>
     </div>
 
-    <div class="employees-table-card bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+    <div class="orbit-table-card employees-table-card overflow-hidden">
       <div class="table-tools">
         <input v-model="employeeTable.query.value" type="search" placeholder="Filter employees..." class="table-filter-input" />
         <select v-model="employeeContextFilter" class="table-filter-input max-w-[210px]">
@@ -322,12 +387,21 @@ function downloadDocument(file, fallbackName) {
         </select>
         <div class="table-count">{{ employeeTable.filteredRows.value.length }} records</div>
       </div>
+      <div
+        v-if="invitationActionNotice"
+        class="mx-5 mb-3 rounded-lg border px-3 py-2 text-xs font-medium"
+        :class="invitationActionFailed ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'"
+        role="status"
+      >
+        {{ invitationActionNotice }}
+      </div>
       <div class="table-scroll" @scroll="employeeTable.loadMoreRows">
-      <table class="employees-table w-full text-sm">
+      <table class="orbit-data-table employees-table w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left bg-slate-50/80">
             <th class="px-5 py-4 font-semibold text-slate-500 text-xs uppercase tracking-wide">Employee</th>
             <th class="px-5 py-4 font-semibold text-slate-500 text-xs uppercase tracking-wide">Office email</th>
+            <th class="px-5 py-4 font-semibold text-slate-500 text-xs uppercase tracking-wide">Designation</th>
             <th class="px-5 py-4 font-semibold text-slate-500 text-xs uppercase tracking-wide">Department</th>
             <th class="px-5 py-4 font-semibold text-slate-500 text-xs uppercase tracking-wide">Role</th>
             <th class="px-5 py-4 font-semibold text-slate-500 text-xs uppercase tracking-wide">Status</th>
@@ -349,7 +423,10 @@ function downloadDocument(file, fallbackName) {
             </td>
             <td class="px-5 py-4 text-xs text-slate-600">{{ e.email }}</td>
             <td class="px-5 py-4">
-              <span class="employee-department-pill inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{{ e.department }}</span>
+              <span class="inline-flex rounded-full border border-sky-100 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-800">{{ e.designation || '—' }}</span>
+            </td>
+            <td class="px-5 py-4">
+              <span class="employee-department-pill inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{{ e.department || '—' }}</span>
             </td>
             <td class="px-5 py-4">
               <span class="inline-flex rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 capitalize">{{ roleLabel(e.role) }}</span>
@@ -366,6 +443,14 @@ function downloadDocument(file, fallbackName) {
             <td class="px-5 py-4 text-right">
               <div class="flex items-center justify-end gap-2">
                 <button
+                  v-if="e.status === 'invited' && canInviteEmployees()"
+                  :disabled="resendingInvitationId === e.id"
+                  @click="resendInvitation(e)"
+                  class="inline-flex h-9 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-3 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {{ resendingInvitationId === e.id ? 'Sending…' : 'Resend invite' }}
+                </button>
+                <button
                   @click="openDetails(e)"
                   title="View details"
                   class="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors shadow-sm"
@@ -378,10 +463,11 @@ function downloadDocument(file, fallbackName) {
                 <button
                   v-if="canManageProfileStatus(e)"
                   @click="askSetProfileBlocked(e, e.status !== 'blocked')"
+                  :disabled="profileStatusSavingId === e.id"
                   class="inline-flex h-9 items-center justify-center rounded-xl border px-3 text-xs font-bold transition-colors shadow-sm"
                   :class="e.status === 'blocked' ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'"
                 >
-                  {{ e.status === 'blocked' ? 'Unblock' : 'Block' }}
+                  {{ profileStatusSavingId === e.id ? 'Saving…' : (e.status === 'blocked' ? 'Unblock' : 'Block') }}
                 </button>
               </div>
             </td>
@@ -526,6 +612,7 @@ function downloadDocument(file, fallbackName) {
 
           <div class="rounded-xl border border-slate-200 p-3">
             <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Documents</div>
+            <div v-if="documentError" class="mb-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{{ documentError }}</div>
             <div v-if="!selectedEmployee.onboarding" class="text-sm text-slate-500">No documents submitted yet.</div>
             <div v-else class="space-y-2">
               <div v-for="document in documentRows(selectedEmployee)" :key="document.key" class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2">
@@ -534,7 +621,7 @@ function downloadDocument(file, fallbackName) {
                   <div class="text-xs text-slate-500 truncate">{{ document.file ? fileName(document.file, `${document.key}.pdf`) : 'Not uploaded' }}</div>
                 </div>
                 <button
-                  @click="downloadDocument(document.file, `${document.key}.pdf`)"
+                  @click="downloadDocument(document)"
                   :disabled="!document.file"
                   class="text-xs font-medium rounded-lg px-3 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                 >
@@ -599,7 +686,7 @@ function downloadDocument(file, fallbackName) {
             <div>
               <label class="block">
               <span class="text-[12px] text-slate-500 block mb-1.5">Designation</span>
-              <select v-model="form.department" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500">
+              <select v-model="form.designation" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500">
                 <option v-for="designation in state.settings.designations" :key="designation">{{ designation }}</option>
               </select>
               </label>
@@ -608,8 +695,8 @@ function downloadDocument(file, fallbackName) {
               {{ inviteError }}
             </div>
             <div class="flex gap-2 mt-1">
-              <button @click="showForm = false" class="flex-1 text-[13px] border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700">Cancel</button>
-              <button @click="invite" class="flex-1 bg-emerald-600 text-white text-[13px] font-medium rounded-lg py-2 hover:bg-emerald-700 transition-colors">Send invite</button>
+              <button :disabled="inviting" @click="showForm = false" class="flex-1 text-[13px] border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700 disabled:opacity-60">Cancel</button>
+              <button :disabled="inviting" @click="invite" class="flex-1 bg-emerald-600 text-white text-[13px] font-medium rounded-lg py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60">{{ inviting ? 'Sending...' : 'Send invite' }}</button>
             </div>
           </div>
         </div>
@@ -617,7 +704,10 @@ function downloadDocument(file, fallbackName) {
           <div class="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto mb-3">
             <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
           </div>
-          <div class="text-[13px] text-slate-800">Invitation sent to {{ form.email }}</div>
+          <div class="text-[13px] text-slate-800">
+            {{ inviteDeliveryWarning ? 'Employee added for ' + form.email : 'Employee added and invitation email queued for ' + form.email }}
+          </div>
+          <div v-if="inviteDeliveryWarning" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-left text-[12px] font-semibold text-amber-700">{{ inviteDeliveryWarning }}</div>
         </div>
       </div>
     </div>

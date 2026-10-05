@@ -2,11 +2,13 @@
 
 namespace App\Services;
 
+use App\Mail\MedicalClaimSubmittedMail;
 use App\Models\Employee;
 use App\Models\MedicalClaim;
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -29,7 +31,7 @@ class MedicalClaimService
             throw new AccessDeniedHttpException('You do not have permission to do that.');
         }
 
-        $query = MedicalClaim::with(['employee:id,name,department', 'reviewer:id,name']);
+        $query = MedicalClaim::with(['employee:id,name,department', 'reviewer:id,name', 'viewer:id,name', 'processor:id,name']);
 
         $visibleIds = $this->scopes->visibleEmployeeIds($user, $row['scope']);
         if ($visibleIds !== null) {
@@ -50,6 +52,11 @@ class MedicalClaimService
     public function create(User $user, array $attributes): MedicalClaim
     {
         $employee = $this->requireEmployee($user);
+        $permission = collect($this->permissions->forUser($user))->firstWhere('module', 'Medical Request');
+        if (! $permission || ! ($permission['create'] ?? false)) {
+            throw new AccessDeniedHttpException('You may not submit a medical claim.');
+        }
+
         $amount = (float) $attributes['amount'];
 
         $claims = $this->settings->group('claims');
@@ -77,15 +84,26 @@ class MedicalClaimService
             'status' => 'pending',
         ]);
 
+        $usage = $this->annualUsage($employee);
+        // HR may claim its own reimbursement, but must not receive or act on
+        // its own approval request. Those claims are an escalation for Super
+        // Admin. Everyone else's claims remain visible to HR and Super Admin.
+        $isHrOwnClaim = $user->role === 'hr';
+        $recipientIds = $this->messages->employeeIdsForRoles(
+            $isHrOwnClaim ? ['super_admin'] : ['hr', 'super_admin']
+        );
+
         $this->messages->notify(
-            $this->messages->employeeIdsForRoles(['hr', 'super_admin']),
+            $recipientIds,
             [
-                'title' => 'Medical claim submitted',
+                'title' => $isHrOwnClaim ? 'HR medical claim submitted' : 'Medical claim submitted',
                 'body' => sprintf('%s claimed %s for %s.', $employee->name, number_format($amount), $claim->type),
                 'type' => 'medical',
                 'routeName' => 'medical-claims',
             ],
         );
+
+        $this->queueMedicalClaimEmails($recipientIds, $claim, $employee, $usage);
 
         return $claim;
     }
@@ -97,26 +115,7 @@ class MedicalClaimService
         ?float $approvedAmount = null,
         ?string $comment = null
     ): MedicalClaim {
-        $claim = MedicalClaim::find($claimId);
-
-        if (! $claim) {
-            throw new NotFoundHttpException('Claim not found.');
-        }
-
-        $row = collect($this->permissions->forUser($user))->firstWhere('module', 'Medical Request');
-
-        if (! $row || ! ($row['approve'] ?? false)) {
-            throw new AccessDeniedHttpException('You may not review claims.');
-        }
-
-        $visibleIds = $this->scopes->visibleEmployeeIds($user, $row['scope']);
-        if ($visibleIds !== null && ! in_array($claim->employee_id, $visibleIds, true)) {
-            throw new AccessDeniedHttpException('You may not review this claim.');
-        }
-
-        if ($claim->status !== 'pending') {
-            throw new ConflictHttpException('This claim has already been reviewed.');
-        }
+        $claim = $this->claimUnderReview($user, $claimId);
 
         // A partial approval settles less than claimed; without an explicit
         // amount the full claim is authorised.
@@ -151,7 +150,90 @@ class MedicalClaimService
             'routeName' => 'medical-claims',
         ]);
 
-        return $claim->refresh()->load('reviewer:id,name');
+        return $claim->refresh()->load(['reviewer:id,name', 'viewer:id,name', 'processor:id,name']);
+    }
+
+    /**
+     * Records a review step short of a decision: the claim has been opened
+     * ('view'), or is being processed ('processing').
+     *
+     * The same checks as a decision apply - whoever may not decide a claim
+     * may not mark it in progress either. Steps only move forward, and
+     * jumping straight to processing records the view too, so the timeline
+     * never shows processing without someone having opened it.
+     */
+    public function advanceStage(User $user, int $claimId, string $stage): MedicalClaim
+    {
+        $claim = $this->claimUnderReview($user, $claimId);
+        $reviewer = $this->employeeFor($user);
+
+        if ($stage === 'view' && $claim->viewed_at) {
+            throw new ConflictHttpException('This claim is already under review.');
+        }
+
+        if ($stage === 'processing' && $claim->processing_at) {
+            throw new ConflictHttpException('This claim is already being processed.');
+        }
+
+        $now = now();
+        $changes = $claim->viewed_at ? [] : ['viewed_at' => $now, 'viewed_by' => $reviewer?->id];
+
+        if ($stage === 'processing') {
+            $changes += ['processing_at' => $now, 'processing_by' => $reviewer?->id];
+        }
+
+        $claim->update($changes);
+
+        // Processing is the step an employee wants to hear about: someone is
+        // acting on their money. Merely opening it is not worth a ping.
+        if ($stage === 'processing') {
+            $this->messages->notify([$claim->employee_id], [
+                'title' => 'Medical claim in processing',
+                'body' => sprintf('Your %s claim for %s is being processed.', $claim->type, number_format((float) $claim->amount)),
+                'type' => 'medical',
+                'routeName' => 'medical-claims',
+            ]);
+        }
+
+        return $claim->refresh()->load(['reviewer:id,name', 'viewer:id,name', 'processor:id,name']);
+    }
+
+    /**
+     * A pending claim this user may act on as a reviewer.
+     *
+     * Permission, scope, and the rule that nobody reviews their own claim -
+     * shared by every step of review so none of them can drift apart.
+     */
+    private function claimUnderReview(User $user, int $claimId): MedicalClaim
+    {
+        $claim = MedicalClaim::find($claimId);
+
+        if (! $claim) {
+            throw new NotFoundHttpException('Claim not found.');
+        }
+
+        $row = collect($this->permissions->forUser($user))->firstWhere('module', 'Medical Request');
+
+        if (! $row || ! ($row['approve'] ?? false)) {
+            throw new AccessDeniedHttpException('You may not review claims.');
+        }
+
+        $visibleIds = $this->scopes->visibleEmployeeIds($user, $row['scope']);
+        if ($visibleIds !== null && ! in_array($claim->employee_id, $visibleIds, true)) {
+            throw new AccessDeniedHttpException('You may not review this claim.');
+        }
+
+        if ($claim->status !== 'pending') {
+            throw new ConflictHttpException('This claim has already been reviewed.');
+        }
+
+        $reviewer = $this->employeeFor($user);
+
+        if ($reviewer && $reviewer->id === $claim->employee_id) {
+            throw new AccessDeniedHttpException('You cannot review your own medical claim. It requires Super Admin approval.');
+        }
+
+        return $claim;
     }
 
     /**
@@ -244,5 +326,49 @@ class MedicalClaimService
     private function employeeFor(User $user): ?Employee
     {
         return Employee::where('user_id', $user->id)->first();
+    }
+
+    /**
+     * Email each approver privately. The annual figures are calculated from
+     * approved/paid claims only: a pending request does not consume allowance
+     * until someone authorises it.
+     *
+     * @param array{limit: float, used: float, remaining: float} $usage
+     */
+    private function queueMedicalClaimEmails(array $recipientIds, MedicalClaim $claim, Employee $requester, array $usage): void
+    {
+        $currency = (string) $this->settings->get('company', 'currency', 'PKR');
+        $format = fn (float $amount): string => sprintf('%s %s', $currency, number_format($amount, 2));
+        $reviewUrl = rtrim((string) config('app.frontend_url'), '/').'/medical-claims';
+        $remainingIfApproved = max(0, $usage['remaining'] - (float) $claim->amount);
+
+        Employee::query()
+            ->with('user:id,email')
+            ->whereIn('id', $recipientIds)
+            ->get()
+            ->each(function (Employee $recipient) use ($claim, $requester, $usage, $format, $reviewUrl, $remainingIfApproved): void {
+                $email = $recipient->user?->email ?? $recipient->email;
+                if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    return;
+                }
+
+                try {
+                    Mail::to($email)->queue(new MedicalClaimSubmittedMail(
+                        requesterName: $requester->name,
+                        claimType: $claim->type,
+                        incurredOn: $claim->incurred_on->toDateString(),
+                        claimAmount: $format((float) $claim->amount),
+                        description: $claim->description,
+                        annualAllowance: $format($usage['limit']),
+                        usedThisYear: $format($usage['used']),
+                        remainingBeforeClaim: $format($usage['remaining']),
+                        remainingIfApproved: $format($remainingIfApproved),
+                        hasReceipt: filled($claim->receipt_path),
+                        reviewUrl: $reviewUrl,
+                    ));
+                } catch (\Throwable $exception) {
+                    report($exception);
+                }
+            });
     }
 }

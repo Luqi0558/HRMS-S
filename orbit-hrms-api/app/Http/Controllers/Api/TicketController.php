@@ -78,6 +78,28 @@ class TicketController extends Controller
         ], 201);
     }
 
+    public function attach(Request $request, int $ticket): JsonResponse
+    {
+        $validated = $request->validate([
+            // Documents, images and archives a ticket typically carries; no
+            // executables or HTML, which a teammate's browser might run.
+            'file' => ['required', 'file', 'max:20480', 'mimes:pdf,doc,docx,xls,xlsx,csv,txt,png,jpg,jpeg,gif,webp,zip'],
+        ]);
+
+        return response()->json([
+            'ticket' => new TicketResource(
+                $this->tickets->attach($request->user(), $ticket, $validated['file'])
+            ),
+        ], 201);
+    }
+
+    public function downloadAttachment(Request $request, int $ticket, int $attachment): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $record = $this->tickets->findAttachment($request->user(), $ticket, $attachment);
+
+        return \Illuminate\Support\Facades\Storage::disk('local')->download($record->path, $record->original_name);
+    }
+
     public function startTimer(Request $request, int $ticket): JsonResponse
     {
         return response()->json([

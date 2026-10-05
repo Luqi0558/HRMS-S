@@ -406,8 +406,8 @@ async function addProject() {
 </script>
 
 <template>
-  <div v-if="!isHR" class="space-y-6">
-    <div class="flex items-start justify-between gap-4">
+  <div v-if="!isHR" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex items-start justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">
           {{ pageSubtitle }}
@@ -416,7 +416,7 @@ async function addProject() {
       <button
         v-if="canCreateProject"
         @click="openAddProject"
-        class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors shadow-sm"
+        class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2"
       >
         + Add category
       </button>
@@ -468,7 +468,7 @@ async function addProject() {
         v-for="{ project, module } in visibleModuleResults"
         :key="`${project.id}-${module.id}`"
         @click="openModuleResult(project, module)"
-        class="bg-white border border-slate-200 rounded-xl p-4 text-left hover:border-emerald-300 hover:shadow-md transition-all shadow-sm"
+        class="orbit-card orbit-card-interactive p-4 text-left"
       >
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
@@ -512,7 +512,7 @@ async function addProject() {
       <div
         v-for="p in visibleProjects"
         :key="p.id"
-        class="bg-white border border-slate-200 rounded-xl overflow-hidden hover:border-emerald-300 hover:shadow-md transition-all shadow-sm"
+        class="orbit-card orbit-card-interactive overflow-hidden"
       >
         <div class="p-4 space-y-4">
           <button

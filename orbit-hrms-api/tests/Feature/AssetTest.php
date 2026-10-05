@@ -8,6 +8,7 @@ use App\Models\Employee;
 use App\Models\User;
 use App\Services\AssetService;
 use Database\Seeders\RolePermissionSeeder;
+use Illuminate\Support\Facades\DB;
 use Tests\TenantTestCase;
 
 class AssetTest extends TenantTestCase
@@ -46,6 +47,12 @@ class AssetTest extends TenantTestCase
         $token = $this->postJson('/api/login', [
             'email' => $email, 'password' => 'password123',
         ], $this->tenantHeaders())->json('token');
+
+        // The guard caches the first user it resolves for the life of the test
+        // process, so without this a second sign-in keeps acting as the first —
+        // which made "the worker reads someone else's history" actually run as
+        // HR, and pass or fail for reasons unrelated to the worker.
+        $this->app['auth']->forgetGuards();
 
         return $this->tenantHeaders(['Authorization' => "Bearer {$token}"]);
     }
@@ -215,6 +222,55 @@ class AssetTest extends TenantTestCase
 
         $this->assertNull($history[0]['employeeId']);
         $this->assertSame('worker@test.com', $history[0]['employeeName']);
+    }
+
+    /**
+     * A self-scoped employee must not enumerate other people's asset history.
+     *
+     * Employees hold no Assets row by default — a company grants one, self
+     * scoped, from Access Control when staff should see their own equipment.
+     * That grant is the case the record check exists for, so it is set up
+     * here; without it the worker is refused outright (covered below).
+     */
+    public function test_an_employee_can_only_read_history_for_an_asset_they_currently_hold(): void
+    {
+        DB::table('role_permissions')->updateOrInsert(
+            ['role' => 'employee', 'module' => 'Assets'],
+            ['view' => true, 'create' => false, 'approve' => false, 'finance' => false, 'scope' => 'self'],
+        );
+
+        $ownAsset = $this->anAsset();
+        $otherAsset = $this->anAsset();
+        $other = $this->makeEmployee('other@test.com', 'employee');
+        $headers = $this->auth('hr@test.com');
+
+        $this->postJson("/api/assets/{$ownAsset->id}/assign", ['employeeId' => $this->worker->id], $headers)
+            ->assertOk();
+        $this->postJson("/api/assets/{$otherAsset->id}/assign", ['employeeId' => $other->id], $headers)
+            ->assertOk();
+
+        $workerHeaders = $this->auth('worker@test.com');
+
+        $this->getJson("/api/assets/{$ownAsset->id}/history", $workerHeaders)->assertOk();
+        $this->getJson("/api/assets/{$otherAsset->id}/history", $workerHeaders)->assertNotFound();
+        // An asset in nobody's hands is no more theirs than one in a colleague's.
+        $this->getJson("/api/assets/{$this->anAsset()->id}/history", $workerHeaders)->assertNotFound();
+
+        $listed = collect($this->getJson('/api/assets', $workerHeaders)->assertOk()->json('data'))->pluck('id');
+        $this->assertEquals([$ownAsset->id], $listed->all());
+    }
+
+    /** With the default grid an employee has no Assets access at all. */
+    public function test_an_employee_without_an_assets_grant_is_refused(): void
+    {
+        $asset = $this->anAsset();
+        $this->postJson("/api/assets/{$asset->id}/assign", ['employeeId' => $this->worker->id], $this->auth('hr@test.com'))
+            ->assertOk();
+
+        $workerHeaders = $this->auth('worker@test.com');
+
+        $this->getJson("/api/assets/{$asset->id}/history", $workerHeaders)->assertForbidden();
+        $this->getJson('/api/assets', $workerHeaders)->assertForbidden();
     }
 
     // --- retiring --------------------------------------------------------

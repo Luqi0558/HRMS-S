@@ -118,7 +118,7 @@ class PettyCashService
         $employee = $this->employeeFor($user);
         $approves = $this->permissions->can($user, 'Petty Cash', 'approve');
 
-        return PettyCashTopUp::create([
+        $topUp = PettyCashTopUp::create([
             'amount' => (float) $attributes['amount'],
             'date' => $attributes['date'] ?? now()->toDateString(),
             'reference' => $attributes['reference'] ?? null,
@@ -128,6 +128,23 @@ class PettyCashService
             'approved_by' => $approves ? $employee?->id : null,
             'approved_at' => $approves ? now() : null,
         ]);
+
+        // A request nobody hears about waits forever; one that signed itself
+        // off needs no-one.
+        if ($topUp->status === 'pending') {
+            $this->messages->notifyOthers(
+                $user,
+                $this->messages->employeeIdsForRoles(['super_admin']),
+                [
+                    'title' => 'Petty cash top-up requested',
+                    'body' => sprintf('%s requested a %s top-up.', $employee?->name ?? 'Someone', number_format((float) $topUp->amount)),
+                    'type' => 'finance',
+                    'routeName' => 'petty-cash',
+                ],
+            );
+        }
+
+        return $topUp;
     }
 
     public function decideTopUp(User $user, int $id, string $decision): PettyCashTopUp
@@ -273,7 +290,7 @@ class PettyCashService
         $counted = (float) $attributes['countedAmount'];
         $book = $this->rawBalance();
 
-        return PettyCashReconciliation::create([
+        $reconciliation = PettyCashReconciliation::create([
             'date' => $attributes['date'] ?? now()->toDateString(),
             'counted_amount' => $counted,
             'book_balance' => $book,
@@ -283,6 +300,30 @@ class PettyCashService
             'note' => $attributes['note'] ?? null,
             'counted_by' => $this->employeeFor($user)?->id,
         ]);
+
+        // A mismatch means cash is missing or unrecorded — always escalate it.
+        // Rounded to the cent so float noise in the subtraction is not a
+        // variance.
+        $variance = round($counted - $book, 2);
+
+        if ($variance !== 0.0) {
+            $this->messages->notifyOthers(
+                $user,
+                $this->messages->employeeIdsForRoles(['super_admin']),
+                [
+                    'title' => 'Petty cash variance found',
+                    'body' => sprintf(
+                        'Counted cash is %s %s the ledger.',
+                        number_format(abs($variance), 2),
+                        $variance < 0 ? 'short of' : 'over',
+                    ),
+                    'type' => 'finance',
+                    'routeName' => 'petty-cash',
+                ],
+            );
+        }
+
+        return $reconciliation;
     }
 
     // --- internals -------------------------------------------------------

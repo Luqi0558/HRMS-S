@@ -5,7 +5,7 @@ import { assetService } from '../services/assetService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
-const { state, can, logActivity, pushNotification,
+const { state, can, logActivity,
   setEmployees,
   setAssets
 } = useStore()
@@ -43,7 +43,9 @@ const totals = computed(() => ({
   total: visibleAssets.value.length,
   assigned: visibleAssets.value.filter(asset => asset.status === 'assigned').length,
   available: visibleAssets.value.filter(asset => asset.status === 'available').length,
-  maintenance: visibleAssets.value.filter(asset => asset.status === 'maintenance').length
+  // The register has no 'maintenance' status, so this tile always read 0.
+  // What it meant — kit that needs fixing — is recorded as its condition.
+  maintenance: visibleAssets.value.filter(asset => asset.status !== 'retired' && asset.condition === 'Needs repair').length
 }))
 
 function employeeName(id) {
@@ -94,19 +96,30 @@ async function saveAsset() {
     ...form.value,
     assignedTo: form.value.assignedTo ? Number(form.value.assignedTo) : null
   }
+  const currentHolder = selectedAsset.value?.assignedTo ? Number(selectedAsset.value.assignedTo) : null
 
   // Assignment is its own action, not a field on the asset: the API records a
   // handover so the register keeps who held what, which an overwritten column
   // could never do.
+  //
+  // Only a CHANGE of holder is a handover. This used to assign on every save
+  // with someone selected — so editing an issued laptop's name failed with
+  // "already issued" — and choosing Unassigned sent nothing at all, leaving
+  // the handover open while the form closed as if it had been recorded.
   saving.value = true
   try {
     const saved = selectedAsset.value
       ? await assetService.update(selectedAsset.value.id, payload)
       : await assetService.create(payload)
 
-    if (payload.assignedTo) {
+    if (currentHolder && payload.assignedTo !== currentHolder) {
+      await assetService.returnAsset(saved.id, { condition: payload.condition })
+    }
+
+    if (payload.assignedTo && payload.assignedTo !== currentHolder) {
       await assetService.assign(saved.id, {
         employeeId: payload.assignedTo,
+        issuedOn: payload.issuedAt || undefined,
         returnDue: payload.returnDue || undefined,
         condition: payload.condition
       })
@@ -126,21 +139,37 @@ async function saveAsset() {
     details: `${payload.name} was ${selectedAsset.value ? 'updated' : 'added to inventory'}.`
   })
 
-  if (payload.assignedTo) {
-    pushNotification({
-      title: 'Asset assigned',
-      message: `${payload.name} has been assigned to you.`,
-      type: 'assets',
-      userIds: [payload.assignedTo],
-      route: { name: 'assets' }
-    })
+  showForm.value = false
+}
+
+/**
+ * Takes an asset out of service.
+ *
+ * The form's "Inventory status" select offered this, but its value was never
+ * sent — the API derives assigned/available from handovers and retires
+ * through its own endpoint, which nothing called.
+ */
+async function retireAsset() {
+  const asset = selectedAsset.value
+  if (!asset || !canManage.value || saving.value) return
+  if (!window.confirm(`Retire ${asset.name}? It stays in the register with its history, but cannot be issued again.`)) return
+
+  assetError.value = ''
+  saving.value = true
+  try {
+    await assetService.retire(asset.id)
+    await loadAssets()
+  } catch (error) {
+    assetError.value = error?.message || 'Unable to retire that asset.'
+    return
+  } finally {
+    saving.value = false
   }
+
   showForm.value = false
 }
 
 async function markReturned(asset) {
-  const previousEmployee = asset.assignedTo
-
   assetError.value = ''
   try {
     // The API closes the open assignment, so the history keeps who had it.
@@ -152,15 +181,6 @@ async function markReturned(asset) {
   }
 
   logActivity({ module: 'assets', action: 'asset returned', details: `${asset.name} was returned to inventory.` })
-  if (previousEmployee) {
-    pushNotification({
-      title: 'Asset return recorded',
-      message: `${asset.name} has been marked returned.`,
-      type: 'assets',
-      userIds: [previousEmployee],
-      route: { name: 'assets' }
-    })
-  }
 }
 /**
  * Assets are assigned to people, so the roster has to be real. The assets
@@ -186,42 +206,54 @@ onMounted(loadAssets)
 </script>
 
 <template>
-  <div v-if="canAccess" class="space-y-6">
-    <div class="flex flex-col md:flex-row md:items-end justify-between gap-4">
+  <div v-if="canAccess" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex flex-col md:flex-row md:items-end justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">Track laptops, accessories, and assigned company equipment.</div>
       </div>
-      <button v-if="canManage" @click="openForm()" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">
+      <button v-if="canManage" @click="openForm()" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
         Add asset
       </button>
     </div>
 
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Total assets</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ totals.total }}</div>
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="asset-summary-card">
+        <div>
+          <div class="asset-summary-label">Total assets</div>
+          <div class="asset-summary-help">Registered inventory</div>
+        </div>
+        <div class="asset-summary-value text-slate-900">{{ totals.total }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Assigned</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ totals.assigned }}</div>
+      <div class="asset-summary-card">
+        <div>
+          <div class="asset-summary-label">Assigned</div>
+          <div class="asset-summary-help">With an employee</div>
+        </div>
+        <div class="asset-summary-value text-blue-600">{{ totals.assigned }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Available</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ totals.available }}</div>
+      <div class="asset-summary-card">
+        <div>
+          <div class="asset-summary-label">Available</div>
+          <div class="asset-summary-help">Ready to issue</div>
+        </div>
+        <div class="asset-summary-value text-emerald-600">{{ totals.available }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Maintenance</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ totals.maintenance }}</div>
+      <div class="asset-summary-card">
+        <div>
+          <div class="asset-summary-label">Needs repair</div>
+          <div class="asset-summary-help">Unavailable for repair</div>
+        </div>
+        <div class="asset-summary-value text-amber-600">{{ totals.maintenance }}</div>
       </div>
     </section>
 
-    <section class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+    <section class="orbit-table-card overflow-hidden">
       <div class="table-tools">
         <input v-model="assetTable.query.value" type="search" placeholder="Filter assets..." class="table-filter-input" />
         <div class="table-count">{{ assetTable.filteredRows.value.length }} records</div>
       </div>
       <div class="table-scroll" @scroll="assetTable.loadMoreRows">
-        <table class="w-full text-sm">
+        <table class="orbit-data-table w-full text-sm">
           <thead>
             <tr class="border-b border-slate-200 text-left bg-slate-50/80">
               <th class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Asset</th>
@@ -264,8 +296,8 @@ onMounted(loadAssets)
     </section>
 
     <Teleport to="body">
-      <div v-if="showForm" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showForm = false">
-        <div class="bg-white rounded-xl p-6 w-full max-w-2xl border border-slate-200 shadow-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
+      <div v-if="showForm" class="orbit-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showForm = false">
+        <div class="orbit-modal p-6 w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
           <div class="flex items-start justify-between gap-4 mb-4">
             <div>
               <div class="font-semibold text-[15px] text-slate-900">{{ selectedAsset ? 'Asset details' : 'Add asset' }}</div>
@@ -333,20 +365,19 @@ onMounted(loadAssets)
               </label>
             </div>
             <div>
-              <label class="block">
+              <!-- Read-only: status follows the handover (assigned/available)
+                   or the Retire action below. The editable select it replaced
+                   was never sent, and its "Maintenance" option is not a status
+                   the register has — "Needs repair" condition covers that. -->
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Inventory status</span>
-              <select v-model="form.status" :disabled="!canManage" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
-                <option value="available">Available</option>
-                <option value="assigned">Assigned</option>
-                <option value="maintenance">Maintenance</option>
-                <option value="retired">Retired</option>
-              </select>
-              </label>
+              <div class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm capitalize text-slate-700">
+                {{ selectedAsset ? selectedAsset.status : 'available' }}
+              </div>
             </div>
             <div>
               <label class="block">
               <span class="text-xs font-bold uppercase tracking-wide text-slate-500 block mb-1.5">Issue date</span>
-              <input v-model="form.issuedAt" :disabled="!canManage" type="date" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+              <input v-model="form.issuedAt" :disabled="!canManage || Number(form.assignedTo || 0) === Number(selectedAsset?.assignedTo || 0)" type="date" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" />
               </label>
             </div>
             <div>
@@ -367,7 +398,17 @@ onMounted(loadAssets)
           </div>
           <div class="flex gap-2 mt-5">
             <button @click="showForm = false" class="flex-1 text-sm border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700">Cancel</button>
-            <button v-if="canManage" @click="saveAsset" class="flex-1 bg-emerald-600 text-white text-sm font-medium rounded-lg py-2 hover:bg-emerald-700 transition-colors">Save</button>
+            <button
+              v-if="canManage && selectedAsset && selectedAsset.status === 'available'"
+              @click="retireAsset"
+              :disabled="saving"
+              class="flex-1 text-sm border border-rose-200 text-rose-700 rounded-lg py-2 hover:bg-rose-50 transition-colors disabled:opacity-60"
+            >
+              Retire
+            </button>
+            <button v-if="canManage" @click="saveAsset" :disabled="saving" class="flex-1 bg-emerald-600 text-white text-sm font-medium rounded-lg py-2 hover:bg-emerald-700 transition-colors disabled:opacity-60">
+              {{ saving ? 'Saving…' : 'Save' }}
+            </button>
           </div>
         </div>
       </div>

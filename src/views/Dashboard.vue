@@ -20,6 +20,7 @@ import EmployeeDashboard from '../components/EmployeeDashboard.vue'
 import ManagerDashboard from '../components/ManagerDashboard.vue'
 import HrDashboard from '../components/HrDashboard.vue'
 import SuperAdminDashboard from '../components/SuperAdminDashboard.vue'
+import EffectivenessSnapshot from '../components/EffectivenessSnapshot.vue'
 
 const router = useRouter()
 const {
@@ -170,6 +171,11 @@ function closeDashboardTicket() {
       </button>
     </div>
   </div>
+
+  <!-- Operational roles see a personal insight; Super Admin sees the company
+       view. Both are intentionally preview-only until the backend owns the
+       scoring policy and historical snapshots. -->
+  <EffectivenessSnapshot v-if="state.currentUser?.id" :scope="isSuperAdmin ? 'organisation' : 'personal'" class="mt-5" />
 
   <CameraCheckInModal />
 

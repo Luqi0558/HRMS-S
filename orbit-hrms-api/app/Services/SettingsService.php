@@ -17,12 +17,7 @@ class SettingsService
             'currency' => 'PKR',
             'currencyDisplay' => 'code',
         ],
-        // Outbound integrations. The Teams URL comes from the channel's
-        // Workflows menu ("Post to a channel when a webhook request is
-        // received"); leaving it blank switches the announcements off.
         'integrations' => [
-            // One URL per Teams channel: a workflow is bound to the channel it
-            // was created in, so the destination cannot be chosen per message.
             'teamsAttendanceWebhookUrl' => '',
             'teamsAnnouncementsWebhookUrl' => '',
         ],
@@ -43,6 +38,15 @@ class SettingsService
             'annualMedicalLimit' => 100000,
             'receiptRequiredAbove' => 5000,
             'approvalFlow' => 'HR + Super Admin',
+        ],
+        'finance' => [
+            // Applied to a newly created module unless its editor deliberately
+            // supplies different commission terms.
+            'defaultCommissionType' => 'percent',
+            'defaultCommissionValue' => 8,
+            // When disabled, a new or materially changed commission is ready
+            // for settlement without a separate Super Admin approval step.
+            'superAdminApprovalRequired' => true,
         ],
         'pettyCash' => [
             'approvalThreshold' => 5000,

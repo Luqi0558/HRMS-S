@@ -3,12 +3,18 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\ActivityLogController;
+use App\Http\Controllers\Api\AccessControlController;
 use App\Http\Controllers\Api\AssetController;
 use App\Http\Controllers\Api\AttendanceController;
+use App\Http\Controllers\Api\AttendanceFollowUpController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CalendarController;
 use App\Http\Controllers\Api\CompanyHubController;
 use App\Http\Controllers\Api\EmployeeController;
+use App\Http\Controllers\Api\EmployeeDocumentReviewController;
 use App\Http\Controllers\Api\EmployeeInvitationController;
+use App\Http\Controllers\Api\EffectivenessController;
+use App\Http\Controllers\Api\FinanceController;
 use App\Http\Controllers\Api\LeaveRequestController;
 use App\Http\Controllers\Api\MedicalClaimController;
 use App\Http\Controllers\Api\MessageController;
@@ -18,6 +24,7 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\PettyCashController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\ProjectController;
+use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\TicketController;
 use Illuminate\Http\Request;
@@ -74,6 +81,35 @@ Route::middleware([
         Route::get('/me/permissions', [PermissionController::class, 'mine'])
             ->name('api.me.permissions');
 
+        // Informational effectiveness reporting. Personal scores are private;
+        // the company-wide view is deliberately restricted to Super Admin.
+        Route::get('/effectiveness/me', [EffectivenessController::class, 'mine'])
+            ->name('api.effectiveness.mine');
+        Route::get('/effectiveness/workforce', [EffectivenessController::class, 'workforce'])
+            ->name('api.effectiveness.workforce');
+        Route::get('/effectiveness/history', [EffectivenessController::class, 'history'])
+            ->name('api.effectiveness.history');
+        Route::get('/effectiveness/cycles', [EffectivenessController::class, 'cycles'])
+            ->name('api.effectiveness.cycles');
+        Route::post('/effectiveness/cycles/{cycle}/review', [EffectivenessController::class, 'review'])
+            ->whereNumber('cycle')->name('api.effectiveness.cycles.review');
+        Route::post('/effectiveness/cycles/{cycle}/finalize', [EffectivenessController::class, 'finalize'])
+            ->whereNumber('cycle')->name('api.effectiveness.cycles.finalize');
+
+        Route::get('/access-control/permissions', [PermissionController::class, 'index'])
+            ->middleware('can.module:Access Control,view')
+            ->name('api.access-control.permissions.index');
+        Route::put('/access-control/permissions', [PermissionController::class, 'update'])
+            ->middleware('can.module:Access Control,create')
+            ->name('api.access-control.permissions.update');
+        Route::get('/access-control/people', [AccessControlController::class, 'people'])
+            ->middleware('can.module:Access Control,view')
+            ->name('api.access-control.people.index');
+        Route::patch('/access-control/people/{employee}/role', [AccessControlController::class, 'assignRole'])
+            ->whereNumber('employee')
+            ->middleware('can.module:Access Control,create')
+            ->name('api.access-control.people.role');
+
         /*
          * Own profile. No module guard: the subject is the bearer token, not a
          * route parameter, so there is no other record these can reach. The
@@ -85,6 +121,9 @@ Route::middleware([
             ->name('api.profile.show');
         Route::patch('/profile', [ProfileController::class, 'update'])
             ->name('api.profile.update');
+        // Multipart, so separate from the JSON update above.
+        Route::post('/profile/documents', [ProfileController::class, 'uploadDocuments'])
+            ->name('api.profile.documents');
 
         // Throttled harder than the rest: this endpoint verifies a password, so
         // it is worth guessing against.
@@ -105,6 +144,23 @@ Route::middleware([
             ->middleware('can.module:Employees,create')
             ->name('api.employees.update');
 
+        Route::patch('/employees/{employee}/blocked', [EmployeeController::class, 'setBlocked'])
+            ->whereNumber('employee')
+            ->middleware('can.module:Employees,create')
+            ->name('api.employees.blocked');
+
+        // Gated in the service rather than by middleware: the owner may always
+        // download their own file, whatever their Employees permission.
+        Route::get('/employees/{employee}/documents/{key}', [EmployeeDocumentReviewController::class, 'download'])
+            ->whereNumber('employee')
+            ->whereAlpha('key')
+            ->name('api.employees.documents.download');
+
+        Route::post('/employees/{employee}/document-review', [EmployeeDocumentReviewController::class, 'store'])
+            ->whereNumber('employee')
+            ->middleware('can.module:Employees,create')
+            ->name('api.employees.document-review');
+
 
         Route::get('/projects', [ProjectController::class, 'index'])
             ->middleware('can.module:Projects,view')
@@ -121,6 +177,13 @@ Route::middleware([
         Route::patch('/projects/{project}', [ProjectController::class, 'update'])
             ->middleware('can.module:Projects,create')
             ->name('api.projects.update');
+
+        // Staffing has a dedicated endpoint because a new manager's ordinary
+        // Employees list is intentionally scoped to the people they already
+        // manage. That list cannot be used to form their first project team.
+        Route::get('/projects/{project}/staffing-candidates', [ProjectController::class, 'staffingCandidates'])
+            ->middleware('can.module:Projects,create')
+            ->name('api.projects.staffing-candidates');
 
         Route::put('/projects/{project}/members', [ProjectController::class, 'syncMembers'])
             ->middleware('can.module:Projects,create')
@@ -149,6 +212,31 @@ Route::middleware([
             ->whereNumber('module')
             ->middleware('can.module:Projects,approve')
             ->name('api.modules.delivery');
+
+        Route::patch('/modules/{module}/commission', [ProjectController::class, 'decideModuleCommission'])
+            ->whereNumber('module')
+            // The service enforces the Super Admin role itself. Keeping that
+            // invariant there means a legacy permission grid without a
+            // Finance row cannot make this genuine approval endpoint fail.
+            ->name('api.modules.commission.decision');
+
+        /*
+         * Client payments. The Finance 'finance' right reads and logs them
+         * (scoped: a manager sees their own projects); removing one takes
+         * 'approve', so nobody can delete the payments their own commission
+         * is calculated from.
+         */
+        Route::get('/finance/payments', [FinanceController::class, 'payments'])
+            ->middleware('can.module:Finance,finance')
+            ->name('api.finance.payments.index');
+        Route::post('/modules/{module}/payments', [FinanceController::class, 'storePayment'])
+            ->whereNumber('module')
+            ->middleware('can.module:Finance,finance')
+            ->name('api.finance.payments.store');
+        Route::delete('/finance/payments/{payment}', [FinanceController::class, 'destroyPayment'])
+            ->whereNumber('payment')
+            ->middleware('can.module:Finance,approve')
+            ->name('api.finance.payments.destroy');
 
         /*
          * Tickets. `update` is deliberately gated only on view: an assignee may
@@ -181,6 +269,17 @@ Route::middleware([
             ->whereNumber('ticket')
             ->middleware('can.module:Tickets,view')
             ->name('api.tickets.comment');
+
+        // Same gate as comments; TicketService checks the ticket is visible.
+        Route::post('/tickets/{ticket}/attachments', [TicketController::class, 'attach'])
+            ->whereNumber('ticket')
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.attachments.store');
+        Route::get('/tickets/{ticket}/attachments/{attachment}', [TicketController::class, 'downloadAttachment'])
+            ->whereNumber('ticket')
+            ->whereNumber('attachment')
+            ->middleware('can.module:Tickets,view')
+            ->name('api.tickets.attachments.download');
 
         Route::post('/tickets/{ticket}/start-timer', [TicketController::class, 'startTimer'])
             ->whereNumber('ticket')
@@ -226,11 +325,22 @@ Route::middleware([
             ->name('api.attendance.check-in');
         Route::post('/attendance/check-out', [AttendanceController::class, 'checkOut'])
             ->name('api.attendance.check-out');
-        // Below check-in/check-out so those literal segments are never mistaken
-        // for an {attendance} id.
         Route::get('/attendance/{attendance}/photo', [AttendanceController::class, 'photo'])
             ->whereNumber('attendance')
             ->name('api.attendance.photo');
+
+        // HR's internal follow-up notes. The service also requires a scope
+        // wider than 'self', so an employee cannot read notes about themselves.
+        Route::get('/attendance/follow-ups', [AttendanceFollowUpController::class, 'index'])
+            ->middleware('can.module:Attendance,view')
+            ->name('api.attendance.follow-ups.index');
+        Route::post('/attendance/follow-ups', [AttendanceFollowUpController::class, 'store'])
+            ->middleware('can.module:Attendance,view')
+            ->name('api.attendance.follow-ups.store');
+        Route::patch('/attendance/follow-ups/{followUp}/resolve', [AttendanceFollowUpController::class, 'resolve'])
+            ->whereNumber('followUp')
+            ->middleware('can.module:Attendance,view')
+            ->name('api.attendance.follow-ups.resolve');
 
         /*
          * Leave. Fixed segments precede the wildcard so /leave-requests/balance
@@ -244,12 +354,24 @@ Route::middleware([
         Route::post('/leave-requests', [LeaveRequestController::class, 'store'])
             ->middleware('can.module:Leave Request,create')
             ->name('api.leave.store');
+        // Gated in the service: the owner always may, others need the request
+        // within their Leave Request scope.
+        Route::get('/leave-requests/{leaveRequest}/attachment', [LeaveRequestController::class, 'attachment'])
+            ->whereNumber('leaveRequest')
+            ->name('api.leave.attachment');
         Route::post('/leave-requests/{leaveRequest}/decision', [LeaveRequestController::class, 'decide'])
             ->whereNumber('leaveRequest')
             ->name('api.leave.decide');
         Route::post('/leave-requests/{leaveRequest}/cancel', [LeaveRequestController::class, 'cancel'])
             ->whereNumber('leaveRequest')
             ->name('api.leave.cancel');
+
+        // The company calendar is its own read model: it returns only
+        // approved absences and current people milestones inside
+        // one explicit date range.
+        Route::get('/calendar-events', [CalendarController::class, 'index'])
+            ->middleware('can.module:Calendar,view')
+            ->name('api.calendar.index');
 
         /*
          * Medical claims.
@@ -270,6 +392,11 @@ Route::middleware([
             ->whereNumber('claim')
             ->middleware('can.module:Medical Request,approve')
             ->name('api.claims.decide');
+        // The review steps before a decision; same right as deciding.
+        Route::post('/medical-claims/{claim}/stage', [MedicalClaimController::class, 'advanceStage'])
+            ->whereNumber('claim')
+            ->middleware('can.module:Medical Request,approve')
+            ->name('api.claims.stage');
 
         /*
          * Payroll. Every route is ungated at the middleware: Payroll scope is
@@ -281,6 +408,17 @@ Route::middleware([
          * Fixed segments precede the wildcards so /salary-slips/cost is not
          * parsed as an id.
          */
+        Route::get('/payroll-runs', [PayrollController::class, 'runs'])
+            ->name('api.payroll.runs');
+        Route::post('/payroll-runs', [PayrollController::class, 'openRun'])
+            ->name('api.payroll.runs.open');
+        Route::post('/payroll-runs/{run}/submit', [PayrollController::class, 'submitRun'])
+            ->whereNumber('run')
+            ->name('api.payroll.runs.submit');
+        Route::post('/payroll-runs/{run}/release', [PayrollController::class, 'releaseRun'])
+            ->whereNumber('run')
+            ->name('api.payroll.runs.release');
+
         Route::get('/salary-slip-requests', [PayrollController::class, 'requests'])
             ->name('api.payroll.requests');
         Route::post('/salary-slip-requests', [PayrollController::class, 'storeRequest'])
@@ -293,9 +431,21 @@ Route::middleware([
             ->name('api.payroll.cost');
         Route::get('/salary-slips', [PayrollController::class, 'slips'])
             ->name('api.payroll.slips');
+        Route::get('/salary-slips/{slip}/pdf', [PayrollController::class, 'downloadSlip'])
+            ->whereNumber('slip')
+            ->name('api.payroll.slips.pdf');
         Route::get('/salary-slips/{slip}', [PayrollController::class, 'showSlip'])
             ->whereNumber('slip')
             ->name('api.payroll.slips.show');
+
+        // Both the screen data and CSV download are generated from the same
+        // server-side scope rules; exports never trust browser-held rows.
+        Route::get('/reports/{type}/csv', [ReportController::class, 'csv'])
+            ->whereIn('type', \App\Services\ReportService::TYPES)
+            ->name('api.reports.csv');
+        Route::get('/reports/{type}', [ReportController::class, 'index'])
+            ->whereIn('type', \App\Services\ReportService::TYPES)
+            ->name('api.reports.index');
 
         Route::post('/salary-slips/{slip}/approve', [PayrollController::class, 'approveSlip'])
             ->whereNumber('slip')
@@ -306,6 +456,11 @@ Route::middleware([
         Route::post('/salary-slips/{slip}/reopen', [PayrollController::class, 'reopenSlip'])
             ->whereNumber('slip')
             ->name('api.payroll.slips.reopen');
+        // Corrects a slip once reopened. The service checks the pay right and
+        // that the slip is generated in a draft run, as reopen does.
+        Route::patch('/salary-slips/{slip}', [PayrollController::class, 'amendSlip'])
+            ->whereNumber('slip')
+            ->name('api.payroll.slips.amend');
 
         Route::get('/employees/{employee}/salaries', [PayrollController::class, 'salaryHistory'])
             ->whereNumber('employee')
@@ -454,9 +609,6 @@ Route::middleware([
 
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])
             ->name('api.activity-logs.index');
-        Route::post('/activity-logs', [ActivityLogController::class, 'store'])
-            ->middleware('throttle:120,1')
-            ->name('api.activity-logs.store');
 
         Route::post('/employees/invite', [EmployeeInvitationController::class, 'store'])
             ->middleware('can.module:Employees,create')

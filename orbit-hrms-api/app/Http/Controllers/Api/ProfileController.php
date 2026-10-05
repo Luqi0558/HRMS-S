@@ -64,6 +64,34 @@ class ProfileController extends Controller
         ]);
     }
 
+    /**
+     * Uploads or replaces the signed-in user's own documents. Same file rules
+     * as onboarding, plus the four the Profile screen adds.
+     */
+    public function uploadDocuments(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'documents' => ['required', 'array', 'min:1'],
+            'documents.photo' => ['nullable', 'file', 'image', 'max:5120'],
+            'documents.cv' => ['nullable', 'file', 'mimes:pdf,doc,docx', 'max:10240'],
+            'documents.cnicFront' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            'documents.cnicBack' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            'documents.education' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            'documents.experience' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            'documents.offerLetter' => ['nullable', 'file', 'mimes:pdf,doc,docx', 'max:10240'],
+            'documents.contract' => ['nullable', 'file', 'mimes:pdf,doc,docx', 'max:10240'],
+            'documents.certificates' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            'documents.experienceLetters' => ['nullable', 'file', 'mimes:pdf,doc,docx', 'max:10240'],
+        ]);
+
+        return response()->json([
+            'message' => 'Documents uploaded. HR will review them.',
+            'employee' => new EmployeeResource(
+                $this->profiles->uploadOwnDocuments($request->user(), $validated['documents'])
+            ),
+        ]);
+    }
+
     public function update(UpdateProfileRequest $request): JsonResponse
     {
         return response()->json([

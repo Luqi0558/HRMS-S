@@ -14,6 +14,7 @@ class SalarySlipResource extends JsonResource
         return [
             'id' => $this->id,
             'employeeId' => $this->employee_id,
+            'payrollRunId' => $this->payroll_run_id,
             'requestId' => $this->salary_slip_request_id,
             'period' => $this->period?->toDateString(),
             // What SalarySlips.vue labels a slip with.
@@ -27,6 +28,7 @@ class SalarySlipResource extends JsonResource
             'bonus' => (string) $this->bonus,
             'taxDeduction' => (string) $this->tax_deduction,
             'attendanceDeduction' => (string) $this->attendance_deduction,
+            'attendanceSummary' => $this->attendance_summary,
             'advanceDeduction' => (string) $this->advance_deduction,
 
             'allowances' => (string) $totals['allowances'],

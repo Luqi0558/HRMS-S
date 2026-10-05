@@ -158,6 +158,7 @@ class TicketRepository implements TicketRepositoryInterface
             'module:id,name,slug,project_id',
             'project:id,name,slug',
             'comments.author:id,name',
+            'attachments.uploader:id,name',
             'timeLogs' => fn ($q) => $q->latest('started_at')->limit(50),
         ])
             // Summed separately from the loaded rows, which stop at 50: a ticket

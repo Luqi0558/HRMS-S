@@ -51,6 +51,7 @@ class TicketResource extends JsonResource
             ]),
 
             'comments' => TicketCommentResource::collection($this->whenLoaded('comments')),
+            'attachments' => TicketAttachmentResource::collection($this->whenLoaded('attachments')),
             'timeLogs' => TicketTimeLogResource::collection($this->whenLoaded('timeLogs')),
 
             // Total of every *finished* log, summed in SQL. The board is not

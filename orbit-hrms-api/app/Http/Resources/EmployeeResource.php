@@ -32,6 +32,12 @@ class EmployeeResource extends JsonResource
             'employmentType' => $this->employment_type,
             'probationStatus' => $this->probation_status,
             'status' => $this->status,
+            'role' => $this->user?->role ?? 'employee',
+            'onboardingReview' => [
+                'status' => $this->onboarding_review_status ?? 'pending',
+                'reviewedAt' => $this->onboarding_reviewed_at?->toIso8601String(),
+                'correctionNote' => $this->onboarding_correction_note,
+            ],
 
             // Nested under `onboarding` to mirror the frontend's existing
             // employee.onboarding shape rather than inventing a new one.

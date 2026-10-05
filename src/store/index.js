@@ -63,6 +63,10 @@ const state = reactive({
   employees: [],
   attendance: [],
   projects: [],
+  // Client payments against modules, from /finance/payments. Kept beside the
+  // projects rather than inside them: modules go to everyone who can view a
+  // project, payments only to holders of the Finance right.
+  modulePayments: [],
   tickets: [],
   medicalClaims: [],
   leaveRequests: [],
@@ -105,8 +109,9 @@ const state = reactive({
   // people a conversation that does not exist and then replacing it.
   messages: [],
 
-  // Single source of truth for role permissions. `can(module, action, resource)`
-  // reads this table — editing a row in Access Control changes real behaviour.
+  // Effective permissions for the signed-in user. `can(module, action,
+  // resource)` reads this table; the Super Admin configuration matrix is
+  // loaded and saved separately by Access Control, never edited in this cache.
   //
   // scope narrows *which records* a role may act on:
   //   'all'   - every record in the module
@@ -178,7 +183,7 @@ const state = reactive({
     { role: 'hr', module: 'Employees', view: true, create: true, approve: false, finance: false, scope: 'all' },
     { role: 'hr', module: 'Attendance', view: true, create: false, approve: false, finance: false, scope: 'all' },
     { role: 'hr', module: 'Leave Request', view: true, create: true, approve: true, finance: false, scope: 'all' },
-    { role: 'hr', module: 'Medical Request', view: true, create: false, approve: true, finance: false, scope: 'all' },
+    { role: 'hr', module: 'Medical Request', view: true, create: true, approve: true, finance: false, scope: 'all' },
     { role: 'hr', module: 'Payroll', view: true, create: true, approve: false, finance: false, scope: 'all' },
     { role: 'hr', module: 'Assets', view: true, create: true, approve: false, finance: false, scope: 'all' },
     // HR runs the petty cash tin: records spend, requests top-ups, reconciles.
@@ -504,30 +509,17 @@ function scopedList(module, list, action = 'view', user = state.currentUser) {
 // manager, not revenue earned in.
 // ---------------------------------------------------------------------------
 
-const BASE_SALARY_BY_ROLE = {
-  employee: 95000,
-  manager: 180000,
-  hr: 130000,
-  team_lead: 150000
-}
-
-// Mirrors SalarySlips.vue defaultPayrollDetails() — kept here so the dashboard
-// and the payroll page cannot drift apart.
-function monthlyPayrollCost() {
-  return state.employees
-    .filter(employee => employee.status === 'active')
-    .reduce((total, employee) => {
-      const request = state.salarySlipRequests.find(item => item.employeeId === employee.id)
-      const base = Number(request?.details?.baseSalary ?? employee.salary ?? BASE_SALARY_BY_ROLE[employee.role] ?? 90000)
-      const details = request?.details || {}
-      const allowances = Number(details.houseAllowance ?? Math.round(base * 0.12))
-        + Number(details.medicalAllowance ?? Math.round(base * 0.06))
-        + Number(details.bonus || 0)
-      const deductions = Number(details.taxDeduction ?? Math.round(base * 0.05))
-        + Number(details.attendanceDeduction ?? Math.round(base * 0.03))
-        + Number(details.advanceDeduction || 0)
-      return total + (base + allowances - deductions)
-    }, 0)
+/**
+ * Cash has not left the company merely because a person has been added to the
+ * employee directory. A salary becomes an outgoing amount only after its
+ * issued payslip is explicitly marked paid. This deliberately uses the
+ * server-calculated net pay on the immutable payslip rather than UI defaults
+ * such as a role's suggested salary.
+ */
+function paidPayrollCost() {
+  return state.salarySlipRequests
+    .filter(request => request.status === 'paid' && request.netPay !== null)
+    .reduce((total, request) => total + Number(request.netPay || 0), 0)
 }
 
 // Only approved claims are a real liability; pending ones may be rejected.
@@ -551,7 +543,7 @@ function companyMoneyIn() {
 function companyMoneyOut() {
   const modules = allProjectModules()
   const commissions = modules.reduce((total, module) => total + projectCommissionOwed(module), 0)
-  const payroll = monthlyPayrollCost()
+  const payroll = paidPayrollCost()
   const claims = approvedClaimsCost()
   const petty = pettyCashTotalSpent()
   return { payroll, claims, petty, commissions, total: payroll + claims + petty + commissions }
@@ -769,6 +761,44 @@ function squadCapacityToday(employeeId = state.currentUser.employeeId ?? state.c
 
 // Leave requests from this lead's squad that still need their stage-one
 // approval. Surfaced on the Team Lead dashboard.
+/**
+ * An employee's uploaded documents keyed the way the screens read them
+ * (`documents.cv`, `documents.offerLetter`).
+ *
+ * The API sends a list — [{ key: 'cv', type: 'cv', name, status }] — and
+ * every screen indexed it like an object, so `documents.cv` was always
+ * undefined: CV and contract read "missing" for every employee, even after
+ * they uploaded them. Accepts the object shape too, for anything still built
+ * that way.
+ */
+function documentsByKey(employee) {
+  const documents = employee?.onboarding?.documents
+  if (!Array.isArray(documents)) return documents || {}
+
+  return documents.reduce((keyed, document) => {
+    if (document?.hasFile === false) return keyed
+    keyed[document.key || document.type] = document
+    return keyed
+  }, {})
+}
+
+/**
+ * Whether an employee belongs in an onboarding queue: invited and not yet
+ * signed up, or signed up with documents HR has not reviewed.
+ *
+ * The dashboards used to test `employee.onboarding`, which is present on
+ * every employee whose profile was loaded — so the queue listed the whole
+ * company. A correction request waits on the employee, not HR, so it is out.
+ */
+function isAwaitingOnboardingReview(employee) {
+  if (employee?.status === 'invited') return true
+
+  const documents = Array.isArray(employee?.onboarding?.documents) ? employee.onboarding.documents : []
+
+  return (employee?.onboardingReview?.status || 'pending') === 'pending'
+    && documents.some(document => document.status === 'submitted')
+}
+
 function squadLeaveAwaitingLead(employeeId = state.currentUser.employeeId ?? state.currentUser.id) {
   const memberIds = new Set(squadMemberIds(employeeId))
   return state.leaveRequests.filter(request =>
@@ -788,13 +818,6 @@ function roleLabel(role) {
   if (role === 'super_admin') return 'Super Admin'
   if (role === 'hr') return 'HR'
   return String(role || '').replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase())
-}
-
-function setCurrentUserRole(role) {
-  if (availableRoles.value.includes(role)) {
-    state.currentUser.role = role
-    persistCurrentUser(state.currentUser)
-  }
 }
 
 /**
@@ -835,13 +858,19 @@ async function startTicketTimer(ticketId) {
   // which silently did nothing for QA and interns — both work the board, and the
   // API has never restricted the timer by role, only by whether you can see the
   // ticket.
-  if (!can('Tickets', 'create')) return
-  // Stop any timer currently running for this user before starting a new one.
-  if (state.activeTimer) {
-    stopTicketTimer(state.activeTimer.ticketId)
+  if (!can('Tickets', 'create')) {
+    return { ok: false, message: 'You do not have permission to start a ticket timer.' }
   }
+  // Close any running session on screen. Only on screen: the API's start
+  // stops the previous timer itself, in the same transaction. This used to
+  // fire a separate, un-awaited stop request — and when that one landed after
+  // the start, it stopped the timer that had just begun.
+  const previousTicketId = state.activeTimer?.ticketId ?? null
+  const previousLog = previousTicketId ? closeOpenLog(previousTicketId) : null
+  state.activeTimer = null
   const ticket = state.tickets.find(t => t.id === ticketId)
-  if (!ticket) return
+  if (!ticket) return { ok: false, message: 'This ticket is no longer available.' }
+  const previousStatus = ticket.status
   if (!ticket.timeLogs) ticket.timeLogs = []
   ticket.timeLogs.push({ start: new Date().toISOString(), end: null, employeeId: state.currentUser.employeeId })
   if (ticket.status === 'todo') ticket.status = 'in_progress'
@@ -850,22 +879,46 @@ async function startTicketTimer(ticketId) {
   try {
     const { ticketService } = await import('../services/ticketService.js')
     upsertTicket(await ticketService.startTimer(ticketId))
-  } catch {
+    return { ok: true }
+  } catch (error) {
     // Roll back the optimistic log so the UI does not show time that is not
-    // being recorded.
+    // being recorded. The server can also reject the request when the person
+    // has not checked in, so restore the status that the optimistic start
+    // changed as well.
     ticket.timeLogs = (ticket.timeLogs || []).filter(log => log.end !== null)
+    ticket.status = previousStatus
     state.activeTimer = null
+    // The start rolled back on the server, so the previous timer is still
+    // running there — show it running here too.
+    if (previousLog) {
+      previousLog.end = null
+      state.activeTimer = { ticketId: previousTicketId }
+    }
+    return { ok: false, message: error?.message || 'Unable to start the ticket timer.' }
   }
 }
 
+/** Ends a ticket's open session in local state. Returns the log it closed. */
+function closeOpenLog(ticketId) {
+  const ticket = state.tickets.find(t => t.id === ticketId)
+  const openLog = (ticket?.timeLogs || []).find(l => l.end === null)
+  if (openLog) openLog.end = new Date().toISOString()
+  return openLog || null
+}
+
+/**
+ * Stops the running timer.
+ *
+ * Optimistic, like the start — but now rolled back on failure. It used to
+ * swallow the error, so the screen showed the timer stopped while the
+ * server's session stayed open and kept counting into the timesheet.
+ */
 async function stopTicketTimer(ticketId) {
   const ticket = state.tickets.find(t => t.id === ticketId)
-  if (!ticket) return
-  const openLog = (ticket.timeLogs || []).find(l => l.end === null)
-  if (openLog) openLog.end = new Date().toISOString()
-  if (state.activeTimer && state.activeTimer.ticketId === ticketId) {
-    state.activeTimer = null
-  }
+  if (!ticket) return { ok: false, message: 'This ticket is no longer available.' }
+  const openLog = closeOpenLog(ticketId)
+  const wasActive = state.activeTimer?.ticketId === ticketId
+  if (wasActive) state.activeTimer = null
 
   try {
     const { ticketService } = await import('../services/ticketService.js')
@@ -874,8 +927,11 @@ async function stopTicketTimer(ticketId) {
     // until the next full load.
     const stopped = await ticketService.stopTimer()
     if (stopped) upsertTicket(stopped)
-  } catch {
-    /* the log is closed locally; a reload will reconcile from the server */
+    return { ok: true }
+  } catch (error) {
+    if (openLog) openLog.end = null
+    if (wasActive) state.activeTimer = { ticketId }
+    return { ok: false, message: error?.message || 'Unable to stop the timer. It is still running.' }
   }
 }
 
@@ -899,8 +955,49 @@ function projectBudget(project) {
   return Number(project?.budget || 0)
 }
 
+// Payments grouped by module id, rebuilt only when the list changes — every
+// finance figure on a page reads through this, many times per render.
+const paymentsByModule = computed(() => {
+  const grouped = new Map()
+  state.modulePayments.forEach(payment => {
+    if (!grouped.has(payment.moduleId)) grouped.set(payment.moduleId, [])
+    grouped.get(payment.moduleId).push(payment)
+  })
+  return grouped
+})
+
+/** A module's payments, newest first. Takes the module's id. */
+function paymentsForModule(moduleId) {
+  return paymentsByModule.value.get(moduleId) || []
+}
+
+/**
+ * What the client has paid on a module.
+ *
+ * Read from the server-loaded ledger by module id. It used to read
+ * `module.payments`, which the API never sent — so received, pending and
+ * every commission figure on the dashboards were zero for every module.
+ */
 function projectReceived(project) {
-  return (project?.payments || []).reduce((total, payment) => total + Number(payment.amount || 0), 0)
+  return paymentsForModule(project?.id).reduce((total, payment) => total + Number(payment.amount || 0), 0)
+}
+
+function mapModulePayment(row) {
+  return { ...row, amount: Number(row.amount || 0) }
+}
+
+function setModulePayments(rows) {
+  state.modulePayments = (rows || []).map(mapModulePayment)
+}
+
+/** Adds a just-logged payment at the top, where the newest-first list keeps it. */
+function addModulePayment(row) {
+  if (!row) return
+  state.modulePayments = [mapModulePayment(row), ...state.modulePayments.filter(payment => payment.id !== row.id)]
+}
+
+function removeModulePayment(paymentId) {
+  state.modulePayments = state.modulePayments.filter(payment => payment.id !== paymentId)
 }
 
 function projectPending(project) {
@@ -1028,6 +1125,19 @@ const unreadNotifications = computed(() =>
   visibleNotifications.value.filter(notification => !(notification.readBy || []).includes(state.currentUser.id))
 )
 
+/**
+ * The bell's badge.
+ *
+ * Server rows are counted by the API, which sees every unread notification.
+ * The list in memory holds at most the newest hundred, so counting it capped
+ * the badge and drifted once anyone had older unread rows. Local toasts have
+ * no server record, so those alone are counted from the list.
+ */
+const unreadNotificationCount = computed(() =>
+  (state.unreadCounts.notifications || 0)
+  + unreadNotifications.value.filter(notification => !notification.fromServer).length
+)
+
 function pushNotification({ title, message, type = 'system', roles = [], userIds = [], route = null }) {
   state.notifications.unshift({
     id: Date.now() + Math.floor(Math.random() * 1000),
@@ -1070,47 +1180,40 @@ function markNotificationRead(notificationId) {
     .catch(() => {})
 }
 
+/**
+ * One request for the lot, rather than one per row.
+ *
+ * Looping markNotificationRead() sent a request per unread notification — and
+ * could only reach the rows in memory, so anything older than the newest
+ * hundred stayed unread on the server and the badge came back on next load.
+ */
 function markAllNotificationsRead() {
-  visibleNotifications.value.forEach(notification => markNotificationRead(notification.id))
+  const userId = state.currentUser.id
+
+  visibleNotifications.value.forEach(notification => {
+    if (!notification.readBy) notification.readBy = []
+    if (!notification.readBy.includes(userId)) notification.readBy.push(userId)
+  })
+
+  if (!state.unreadCounts.notifications) return
+
+  state.unreadCounts.notifications = 0
+
+  // Fire and forget, as above: the next poll with news recounts from the
+  // server, which corrects the badge if this write failed.
+  import('../services/messageService.js')
+    .then(({ messageService }) => messageService.markAllNotificationsRead())
+    .catch(() => {})
 }
 
 /**
- * Records one action in the audit trail.
+ * Compatibility hook for existing screens.
  *
- * Seventeen modules call this. It used to write only to the reactive array
- * below, so every leave approval, payroll release and petty-cash decision was
- * lost on refresh — the one log an HR system actually has to keep.
- *
- * Added locally first so an administrator watching the page sees it at once,
- * then persisted. Fire-and-forget on purpose: the action being logged has
- * already happened, so failing the log would only lose the record of it, and
- * interrupting the user over a failed audit write helps nobody. The server
- * copy is authoritative and replaces this row on the next load.
+ * Audit records are deliberately server-authored alongside the transaction
+ * that changed data. A browser cannot truthfully prove an action occurred, so
+ * this must never write a local or remote audit entry.
  */
-function logActivity({ module, action, details, targetId = null, targetType = '' }) {
-  state.activityLogs.unshift({
-    id: `local:${Date.now()}`,
-    actorId: state.currentUser.id,
-    actorName: state.currentUser.name,
-    actorRole: state.currentUser.role,
-    module,
-    action,
-    details,
-    targetId,
-    targetType,
-    createdAt: new Date().toISOString()
-  })
-
-  // Skipped when signed out: there is no token to attribute the action to, and
-  // the request would only 401.
-  if (!state.currentUser.id) return
-
-  import('../services/activityLogService.js')
-    .then(({ activityLogService }) =>
-      activityLogService.record({ module, action, details, targetId, targetType }))
-    .catch(() => {
-      /* the local entry stands; the next load reads the server's copy */
-    })
+function logActivity() {
 }
 
 /** Replaces the local trail with the server's, newest first. */
@@ -1193,12 +1296,19 @@ function setProjects(rows) {
 }
 
 function setTickets(rows) {
+  // Detail-only threads already fetched for a ticket are kept when a list
+  // reload arrives without them. The project board reloads the list every
+  // five seconds, and replacing them with [] emptied an open ticket's
+  // comments and attachments while someone was reading them.
+  const known = new Map(state.tickets.map(ticket => [ticket.id, ticket]))
+
   state.tickets = (rows || []).map(ticket => ({
     ...ticket,
     // The views read `comments` and `timeLogs` unconditionally; the list
     // endpoint omits them (they are detail-only), so default them here rather
     // than guarding every `.length` in the templates.
-    comments: ticket.comments || [],
+    comments: ticket.comments || known.get(ticket.id)?.comments || [],
+    attachments: ticket.attachments || known.get(ticket.id)?.attachments || [],
     timeLogs: ticket.timeLogs || []
   }))
 
@@ -1224,7 +1334,11 @@ function setAttendance(rows) {
     // rows loaded from the server have no inline photo — only a punch made in
     // this session does.
     checkInPhoto: row.checkInPhoto || null,
-    wfh: Boolean(row.wfh)
+    // `wfh` existed only in older mock rows. The API now returns the explicit
+    // attendance work mode, while this fallback keeps historical local data
+    // readable during the transition.
+    workMode: row.workMode || (row.wfh ? 'remote' : 'office'),
+    dayWorkMode: row.dayWorkMode || row.workMode || (row.wfh ? 'remote' : 'office')
   }))
 }
 
@@ -1232,7 +1346,12 @@ function setAttendance(rows) {
 function upsertAttendance(row) {
   if (!row) return
   const index = state.attendance.findIndex(a => a.id === row.id)
-  if (index === -1) state.attendance.unshift({ ...row, checkInPhoto: row.checkInPhoto || null })
+  if (index === -1) state.attendance.unshift({
+    ...row,
+    checkInPhoto: row.checkInPhoto || null,
+    workMode: row.workMode || 'office',
+    dayWorkMode: row.dayWorkMode || row.workMode || 'office'
+  })
   // Merge rather than replace: a check-out response carries no photo, and
   // overwriting would drop the one captured at check-in.
   else state.attendance[index] = { ...state.attendance[index], ...row }
@@ -1264,11 +1383,24 @@ function mapLeaveRequest(request) {
     managerApproval: stage('lead'),
     hrApproval: stage('hr'),
     superAdminApproval: stage('escalation'),
+    // Built from the server's approval rows, newest first. It used to be
+    // pushed in the browser as decisions were made, so it was empty after
+    // every reload.
+    timeline: [...approvals]
+      .sort((a, b) => new Date(b.decidedAt) - new Date(a.decidedAt))
+      .map(row => ({
+        status: `${LEAVE_STAGE_LABELS[row.stage] || row.stage} ${row.decision}`,
+        note: row.comment || '',
+        by: row.approverName || 'Approver',
+        at: row.decidedAt
+      })),
     // The list renders 'half' vs 'full' from a duration field the API does not
     // store — it keeps `days`, which is the figure the balance is drawn from.
     duration: request.days % 1 !== 0 ? 'half' : 'full'
   }
 }
+
+const LEAVE_STAGE_LABELS = { lead: 'team lead', hr: 'hr', escalation: 'super admin' }
 
 function setLeaveRequests(rows) {
   state.leaveRequests = (rows || []).map(mapLeaveRequest)
@@ -1282,23 +1414,45 @@ function upsertLeaveRequest(request) {
   else state.leaveRequests[index] = { ...state.leaveRequests[index], ...mapped }
 }
 
-function setMedicalClaims(rows) {
-  state.medicalClaims = (rows || []).map(claim => ({
+/**
+ * One claim as the views read it.
+ *
+ * `status` is shown as the review stage while the claim is undecided: the API
+ * keeps status 'pending' through review (it is what moves money) and reports
+ * the stage separately. `timeline` is built from the server's timestamps —
+ * it used to be pushed in the browser and was gone on the next load.
+ */
+function mapMedicalClaim(claim) {
+  const timeline = [
+    claim.reviewedAt && {
+      status: claim.status,
+      note: claim.reviewComment || '',
+      by: claim.reviewerName || 'Reviewer',
+      at: claim.reviewedAt
+    },
+    claim.processingAt && { status: 'processing', note: '', by: claim.processingByName || 'Reviewer', at: claim.processingAt },
+    claim.viewedAt && { status: 'view', note: '', by: claim.viewedByName || 'Reviewer', at: claim.viewedAt }
+  ].filter(Boolean)
+
+  return {
     ...claim,
+    serverStatus: claim.status,
+    status: claim.status === 'pending' && claim.reviewStage ? claim.reviewStage : claim.status,
+    timeline,
     // Amounts arrive as strings to protect precision in transit. The views
     // format and total them, so they are numbers from here on.
     amount: Number(claim.amount),
-    approvedAmount: claim.approvedAmount === null ? null : Number(claim.approvedAmount)
-  }))
+    approvedAmount: claim.approvedAmount === null || claim.approvedAmount === undefined ? null : Number(claim.approvedAmount)
+  }
+}
+
+function setMedicalClaims(rows) {
+  state.medicalClaims = (rows || []).map(mapMedicalClaim)
 }
 
 function upsertMedicalClaim(claim) {
   if (!claim) return
-  const mapped = {
-    ...claim,
-    amount: Number(claim.amount),
-    approvedAmount: claim.approvedAmount === null ? null : Number(claim.approvedAmount)
-  }
+  const mapped = mapMedicalClaim(claim)
   const index = state.medicalClaims.findIndex(c => c.id === mapped.id)
   if (index === -1) state.medicalClaims.unshift(mapped)
   else state.medicalClaims[index] = { ...state.medicalClaims[index], ...mapped }
@@ -1307,10 +1461,9 @@ function upsertMedicalClaim(claim) {
 /**
  * Merges the server-held policy groups into settings.
  *
- * Only attendance, leave and claims are stored server-side. The remaining
- * groups (company, finance, pettyCash, designations, stacks) are still local
- * and belong to later phases, so this merges per group instead of replacing
- * `state.settings` wholesale — a replace would erase them.
+ * Settings responses are merged per group instead of replacing
+ * `state.settings` wholesale. Lists are arrays while policy groups are keyed
+ * objects, and integrations are supplied through a protected endpoint.
  */
 function setServerSettings(groups) {
   Object.entries(groups || {}).forEach(([group, values]) => {
@@ -1342,12 +1495,18 @@ function mapSlipRequest(request) {
 
   return {
     ...request,
+    payrollRunId: request.payrollRunId || slip?.payrollRunId || null,
     month: request.month,
     slipNo: slip ? `SLP-${String(slip.id).padStart(5, '0')}` : '',
+    // The backend calculates this from protected salary components. Keep it
+    // with the flattened request so finance views never recreate payroll
+    // using a browser-only default salary.
+    netPay: slip ? Number(slip.netPay) : null,
     generatedAt: slip?.issuedAt || '',
     approvedAt: slip?.approvedAt || '',
     paidAt: slip?.paidAt || '',
     payment: slip?.payment || null,
+    attendanceSummary: slip?.attendanceSummary || null,
     // The slip's own state is the real one once issued; before that the
     // request is merely pending or rejected.
     status: slip?.status || request.status,
@@ -1364,8 +1523,50 @@ function mapSlipRequest(request) {
         }
       : null,
     slipId: slip?.id || null,
-    history: request.history || []
+    history: slipRequestHistory(request, slip)
   }
+}
+
+/**
+ * The payroll audit timeline, newest first, from the server's own records.
+ *
+ * It used to be written in the browser as actions happened, so it was empty
+ * after every reload — and several entries went onto a request object that
+ * had already been replaced, so they never showed at all.
+ */
+function slipRequestHistory(request, slip) {
+  const money = value => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })
+
+  return [
+    slip?.paidAt && {
+      id: `paid-${slip.id}`,
+      action: 'Paid',
+      detail: slip.payment?.method ? `Paid by ${slip.payment.method}.` : 'Marked paid.',
+      by: slip.paidByName || 'Payroll',
+      at: slip.paidAt
+    },
+    slip?.approvedAt && {
+      id: `released-${slip.id}`,
+      action: 'Released',
+      detail: 'Released for payment.',
+      by: slip.approvedByName || 'Super Admin',
+      at: slip.approvedAt
+    },
+    slip?.issuedAt && {
+      id: `issued-${slip.id}`,
+      action: 'Generated',
+      detail: `Payslip issued. Net pay ${money(slip.netPay)}.`,
+      by: slip.issuedByName || request.reviewedByName || 'HR',
+      at: slip.issuedAt
+    },
+    request.status === 'rejected' && request.reviewedAt && {
+      id: `rejected-${request.id}`,
+      action: 'Rejected',
+      detail: request.reviewComment || 'Payslip request rejected.',
+      by: request.reviewedByName || 'HR',
+      at: request.reviewedAt
+    }
+  ].filter(Boolean)
 }
 
 function setSalarySlipRequests(rows) {
@@ -1729,6 +1930,8 @@ function clearCurrentUser() {
   state.currentUser = { ...guestUser }
   state.messages = []
   state.notifications = []
+  // Finance figures must not survive into the next person's session.
+  state.modulePayments = []
   state.unreadCounts = { messages: 0, notifications: 0 }
   state.presence = { online: {}, chosen: {} }
   state.syncStatus = 'idle'
@@ -1764,12 +1967,17 @@ export function useStore() {
     currencyCode,
     projectBudget,
     projectReceived,
+    paymentsForModule,
+    setModulePayments,
+    addModulePayment,
+    removeModulePayment,
     projectPending,
     projectCommissionEarned,
     projectCommissionPaid,
     projectCommissionOwed,
     visibleNotifications,
     unreadNotifications,
+    unreadNotificationCount,
     pushNotification,
     markNotificationRead,
     markAllNotificationsRead,
@@ -1779,7 +1987,7 @@ export function useStore() {
     companyMoneyIn,
     companyMoneyOut,
     companyNetPosition,
-    monthlyPayrollCost,
+    paidPayrollCost,
     approvedClaimsCost,
     pettyCashTotalFloat,
     pettyCashTotalSpent,
@@ -1800,6 +2008,8 @@ export function useStore() {
     mySupervisors,
     myModules,
     squadLeaveAwaitingLead,
+    isAwaitingOnboardingReview,
+    documentsByKey,
     isTicketOverdue,
     can,
     scopedList,
@@ -1807,7 +2017,6 @@ export function useStore() {
     canSignOffTickets,
     permissionsLoaded,
     permissionRow,
-    setCurrentUserRole,
     setCurrentUser,
     clearCurrentUser,
     isAuthenticated,

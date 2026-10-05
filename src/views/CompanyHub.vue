@@ -5,7 +5,7 @@ import { companyHubService } from '../services/companyHubService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
-const { state, can, formatDate: formatCompanyDate, logActivity, pushNotification,
+const { state, can, formatDate: formatCompanyDate, logActivity,
   setEmployees,
   setCompanyHub
 } = useStore()
@@ -117,13 +117,6 @@ async function publishAnnouncement() {
   }
 
   logActivity({ module: 'announcements', action: 'announcement published', details: `${announcementForm.value.title} was published.` })
-  pushNotification({
-    title: 'New announcement',
-    message: announcementForm.value.title,
-    type: 'announcement',
-    roles: ['employee', 'manager', 'hr', 'super_admin'],
-    route: { name: 'company-hub' }
-  })
   announcementForm.value = { title: '', audience: 'All company', priority: 'normal', body: '' }
   showAnnouncementForm.value = false
 }
@@ -147,13 +140,6 @@ async function savePolicy() {
   }
 
   logActivity({ module: 'policies', action: 'policy added', details: `${policyForm.value.title} was added.` })
-  pushNotification({
-    title: 'Policy updated',
-    message: policyForm.value.title,
-    type: 'policy',
-    roles: ['employee', 'manager', 'hr', 'super_admin'],
-    route: { name: 'company-hub' }
-  })
   policyForm.value = { title: '', category: 'HR', version: '1.0', summary: '', acknowledgmentRequired: true }
   showPolicyForm.value = false
 }
@@ -188,13 +174,25 @@ onMounted(loadHub)
  * The badge on a policy has always said "Acknowledgment required" — until now
  * nothing could satisfy it.
  */
+const acknowledgingId = ref(null)
+
 async function acknowledgePolicy(policy) {
+  if (!policy || acknowledgingId.value) return
+
   hubError.value = ''
+  acknowledgingId.value = policy.id
   try {
     await companyHubService.acknowledge(policy.id)
     await loadHub()
+    // The open dialog holds the object from before the reload; point it at
+    // the fresh one so it shows the acknowledgement.
+    if (selectedItemType.value === 'policy' && selectedItem.value?.id === policy.id) {
+      selectedItem.value = state.policies.find(item => item.id === policy.id) || selectedItem.value
+    }
   } catch (error) {
     hubError.value = error?.message || 'Unable to record that acknowledgement.'
+  } finally {
+    acknowledgingId.value = null
   }
 }
 </script>
@@ -303,8 +301,9 @@ async function acknowledgePolicy(policy) {
                 <div class="flex flex-wrap items-center gap-2 mb-3">
                   <span class="company-hub-badge company-hub-badge-neutral">{{ policy.category }}</span>
                   <span class="company-hub-badge company-hub-badge-info">v{{ policy.version }}</span>
-                  <span class="company-hub-badge" :class="policy.acknowledgmentRequired ? 'company-hub-badge-warning' : 'company-hub-badge-muted'">
-                    {{ policy.acknowledgmentRequired ? 'Ack required' : 'Optional ack' }}
+                  <span v-if="policy.acknowledgedByMe" class="company-hub-badge company-hub-badge-success">Acknowledged</span>
+                  <span v-else class="company-hub-badge" :class="policy.acknowledgmentRequired ? 'company-hub-badge-warning' : 'company-hub-badge-muted'">
+                    {{ policy.acknowledgmentRequired ? 'Needs your acknowledgement' : 'Optional ack' }}
                   </span>
                 </div>
                 <h3 class="text-lg font-extrabold text-slate-900 leading-tight">{{ policy.title }}</h3>
@@ -369,6 +368,24 @@ async function acknowledgePolicy(policy) {
               <div class="text-sm font-extrabold text-slate-900 mt-1">{{ selectedItemType === 'announcement' ? selectedItem.audience : selectedItem.category }}</div>
             </div>
           </div>
+          <!-- The badge has always said "acknowledgement required"; until now
+               nothing on screen could satisfy it. -->
+          <div v-if="selectedItemType === 'policy'" class="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div class="text-sm text-slate-700">
+              <template v-if="selectedItem.acknowledgedByMe">You have acknowledged version {{ selectedItem.version }}.</template>
+              <template v-else>Confirm you have read and agree to version {{ selectedItem.version }}.</template>
+            </div>
+            <button
+              v-if="!selectedItem.acknowledgedByMe"
+              @click="acknowledgePolicy(selectedItem)"
+              :disabled="acknowledgingId !== null"
+              class="flex-shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {{ acknowledgingId === selectedItem.id ? 'Saving…' : 'I have read and agree' }}
+            </button>
+            <span v-else class="company-hub-badge company-hub-badge-success flex-shrink-0">Acknowledged</span>
+          </div>
+          <div v-if="hubError && selectedItem" class="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{{ hubError }}</div>
         </div>
       </div>
     </Teleport>

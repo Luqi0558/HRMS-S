@@ -1,0 +1,23 @@
+# EC2 layout override for direct uploads:
+#   ~/hrms/frontend  -> Vue project files
+#   ~/hrms/backend   -> Laravel project files
+#   ~/hrms/docker    -> deployment files from this repository
+#
+# Use together with docker-compose.yml; it changes only the Docker build
+# source directories and keeps the production services/volumes identical.
+services:
+  api:
+    build:
+      args:
+        BACKEND_DIR: backend
+
+  api-web:
+    build:
+      args:
+        BACKEND_DIR: backend
+
+  frontend:
+    build:
+      args:
+        FRONTEND_DIR: frontend
+

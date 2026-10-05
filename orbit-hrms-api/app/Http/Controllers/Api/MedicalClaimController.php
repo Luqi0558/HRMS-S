@@ -102,6 +102,19 @@ class MedicalClaimController extends Controller
         ]);
     }
 
+    public function advanceStage(Request $request, int $claim): JsonResponse
+    {
+        $validated = $request->validate([
+            'stage' => ['required', Rule::in(['view', 'processing'])],
+        ]);
+
+        return response()->json([
+            'claim' => new MedicalClaimResource(
+                $this->claims->advanceStage($request->user(), $claim, $validated['stage'])
+            ),
+        ]);
+    }
+
     public function usage(Request $request): JsonResponse
     {
         $employee = Employee::where('user_id', $request->user()->id)->firstOrFail();

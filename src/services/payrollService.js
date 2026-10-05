@@ -15,6 +15,31 @@ import { apiClient } from './apiClient.js'
  * deliberately different people in most companies.
  */
 export const payrollService = {
+  /** Company-level monthly payroll registers. HR prepares; Super Admin releases. */
+  async runs() {
+    const data = await apiClient.get('/payroll-runs')
+
+    return data.runs || []
+  },
+
+  async openRun(period, notes) {
+    const data = await apiClient.post('/payroll-runs', { period, notes })
+
+    return data.run
+  },
+
+  async submitRun(id) {
+    const data = await apiClient.post('/payroll-runs/' + id + '/submit', {})
+
+    return data.run
+  },
+
+  async releaseRun(id) {
+    const data = await apiClient.post('/payroll-runs/' + id + '/release', {})
+
+    return data.run
+  },
+
   /** Pay history for one employee, newest first. Self or HR only. */
   async salaries(employeeId) {
     const data = await apiClient.get(`/employees/${employeeId}/salaries`)
@@ -44,9 +69,9 @@ export const payrollService = {
     return data.data || []
   },
 
-  /** @param {string} period any date in the month being requested */
-  async requestSlip(period) {
-    const data = await apiClient.post('/salary-slip-requests', { period })
+  /** HR prepares a selected employee's payroll record for a pay period. */
+  async requestSlip(period, employeeId) {
+    const data = await apiClient.post('/salary-slip-requests', { period, employeeId })
 
     return data.request
   },
@@ -74,6 +99,17 @@ export const payrollService = {
     return data.data || []
   },
 
+  /** Downloads the server-rendered, access-controlled payslip snapshot. */
+  async downloadSlip(id) {
+    const blob = await apiClient.blob(`/salary-slips/${id}/pdf`)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `payslip-${id}.pdf`
+    link.click()
+    URL.revokeObjectURL(url)
+  },
+
   /** Releases a generated slip for payment. Needs 'Payroll Approval'. */
   async approveSlip(id) {
     const data = await apiClient.post(`/salary-slips/${id}/approve`, {})
@@ -98,6 +134,18 @@ export const payrollService = {
     const data = await apiClient.post(`/salary-slips/${id}/reopen`, {})
 
     return data.slip
+  },
+
+  /**
+   * Corrects the figures on a slip that is open for correction ('generated'
+   * in a draft run). Returns the slip and the request it belongs to.
+   */
+  async amendSlip(id, { baseSalary, houseAllowance, medicalAllowance, bonus, taxDeduction, advanceDeduction, notes }) {
+    const data = await apiClient.patch(`/salary-slips/${id}`, {
+      baseSalary, houseAllowance, medicalAllowance, bonus, taxDeduction, advanceDeduction, notes
+    })
+
+    return { slip: data.slip, request: data.request }
   },
 
   /** Company payroll cost for a month. HR and super admin only. */

@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import CardEmptyState from './CardEmptyState.vue'
 import PunchLedger from './PunchLedger.vue'
 import TimesheetChart from './TimesheetChart.vue'
 import { useDashboard } from '../composables/useDashboard.js'
@@ -62,7 +63,7 @@ function managerTicketScope() {
 </script>
 
 <template>
-  <div class="space-y-6 dashboard-inline-attendance">
+  <div class="orbit-dashboard role-dashboard manager-dashboard space-y-5 dashboard-inline-attendance">
     <div class="space-y-6">
       <!-- Header -->
       <div class="mb-8">
@@ -70,7 +71,7 @@ function managerTicketScope() {
         <p class="text-slate-600 mt-1">Team performance and operations overview</p> -->
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl p-5 flex items-center justify-between shadow-sm">
+      <div class="orbit-attendance-panel p-5 flex items-center justify-between">
         <div>
           <div class="text-sm font-medium text-slate-900 mb-1">Today attendance</div>
           <div class="text-xs text-slate-600" v-if="dashboardCheckedIn">Checked in at <span class="font-mono text-emerald-700">{{ dashboardCheckInTime }}</span></div>
@@ -94,20 +95,20 @@ function managerTicketScope() {
 
       <!-- Key Metrics -->
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <div role="button" tabindex="0" @click="goToRoute({ name: 'employees', query: { filter: 'team' } })" @keydown.enter="goToRoute({ name: 'employees', query: { filter: 'team' } })" @keydown.space.prevent="goToRoute({ name: 'employees', query: { filter: 'team' } })" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute({ name: 'employees', query: { filter: 'team' } })" @keydown.enter="goToRoute({ name: 'employees', query: { filter: 'team' } })" @keydown.space.prevent="goToRoute({ name: 'employees', query: { filter: 'team' } })" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">Team Members</div>
           <div class="kpi-value text-slate-900">{{ managerTeamMembers }}</div>
         </div>
-        <div role="button" tabindex="0" @click="goToRoute({ name: 'projects' })" @keydown.enter="goToRoute({ name: 'projects' })" @keydown.space.prevent="goToRoute({ name: 'projects' })" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute({ name: 'projects' })" @keydown.enter="goToRoute({ name: 'projects' })" @keydown.space.prevent="goToRoute({ name: 'projects' })" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">Projects</div>
           <div class="kpi-value text-slate-900">{{ managerProjects.length }}</div>
         </div>
-        <div class="dashboard-stat-card bg-white rounded-xl p-3 border border-slate-200 shadow-sm min-h-[84px]">
+        <div class="dashboard-stat-card orbit-kpi p-3 min-h-[84px]">
           <div class="text-slate-600 text-xs font-medium mb-1">Completed Tasks</div>
           <div class="text-2xl font-bold text-emerald-600 leading-none">{{ managerCompletedTickets }}</div>
           <div class="text-emerald-600 text-[11px] mt-1">{{ managerTicketScope('completed') }}</div>
         </div>
-        <div role="button" tabindex="0" @click="goToRoute(managerOpenTicketRoute())" @keydown.enter="goToRoute(managerOpenTicketRoute())" @keydown.space.prevent="goToRoute(managerOpenTicketRoute())" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(managerOpenTicketRoute())" @keydown.enter="goToRoute(managerOpenTicketRoute())" @keydown.space.prevent="goToRoute(managerOpenTicketRoute())" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">Open Tickets</div>
           <div class="text-2xl font-bold text-blue-600 leading-none">{{ managerOpenTickets }}</div>
           <div class="text-emerald-600 text-[11px] mt-1">{{ managerTicketScope('open') }}</div>
@@ -160,7 +161,14 @@ function managerTicketScope() {
       <!-- Projects Overview -->
       <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm">
         <h2 class="text-lg font-bold text-slate-900 mb-4">Projects Overview</h2>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <CardEmptyState
+          v-if="managerProjects.length === 0"
+          compact
+          variant="projects"
+          title="No projects assigned yet"
+          description="Projects you manage will appear here once assigned."
+        />
+        <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <button
             v-for="p in managerProjects"
             :key="p.id"

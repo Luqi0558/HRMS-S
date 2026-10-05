@@ -113,12 +113,24 @@ class MessageService
         // Notifications DO replay on a first poll: unlike messages they have
         // no page of their own to load from, so the bell would be empty until
         // something new happened.
-        $notifications = Notification::query()
-            ->where('employee_id', $employee->id)
-            ->when($sinceNotification, fn ($query) => $query->where('id', '>', $sinceNotification))
-            ->orderBy('id')
-            ->limit(100)
-            ->get();
+        //
+        // The replay is the NEWEST hundred. Ascending with a limit is right for
+        // catching up from a cursor, but on a first poll it handed anyone with
+        // a long history their oldest hundred — the bell opened on last year.
+        $notifications = $sinceNotification
+            ? Notification::query()
+                ->where('employee_id', $employee->id)
+                ->where('id', '>', $sinceNotification)
+                ->orderBy('id')
+                ->limit(100)
+                ->get()
+            : Notification::query()
+                ->where('employee_id', $employee->id)
+                ->orderByDesc('id')
+                ->limit(100)
+                ->get()
+                ->reverse()
+                ->values();
 
         // Read state on messages this person SENT. Their own poll would never
         // surface these — it reads rows addressed to them, and a sender is not
@@ -427,6 +439,38 @@ class MessageService
         $this->announce($employeeIds, 'notification');
 
         return count($employeeIds);
+    }
+
+    /**
+     * notify(), minus the person who caused it.
+     *
+     * Nobody needs telling about their own action — they are looking at the
+     * result. Most callers build their list from roles on a record (assignee,
+     * creator, manager) and the actor is routinely one of them.
+     *
+     * @param  array<int, int|null>  $employeeIds
+     */
+    public function notifyOthers(User $actor, array $employeeIds, array $attributes): int
+    {
+        $actorId = $this->employeeFor($actor)?->id;
+
+        return $this->notify(
+            array_filter($employeeIds, fn ($id) => $id && (int) $id !== $actorId),
+            $attributes,
+        );
+    }
+
+    /**
+     * Everyone currently employed, for company-wide notices.
+     *
+     * By status rather than by a list of roles: a role list is what silently
+     * dropped qa and intern from announcements when those roles were added.
+     *
+     * @return array<int, int>
+     */
+    public function activeEmployeeIds(): array
+    {
+        return Employee::where('status', 'active')->pluck('id')->all();
     }
 
     /**

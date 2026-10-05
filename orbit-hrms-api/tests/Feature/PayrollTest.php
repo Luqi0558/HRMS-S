@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Employee;
+use App\Models\Attendance;
 use App\Models\Salary;
 use App\Models\SalarySlip;
 use App\Models\SalarySlipRequest;
@@ -158,26 +159,28 @@ class PayrollTest extends TenantTestCase
 
     // --- slip requests ---------------------------------------------------
 
-    public function test_an_employee_can_request_a_slip(): void
+    public function test_an_employee_cannot_request_payroll_for_themselves(): void
     {
         $this->postJson('/api/salary-slip-requests', [
             'period' => now()->subMonth()->toDateString(),
+            'employeeId' => $this->employee->id,
         ], $this->auth('worker@test.com'))
-            ->assertCreated()
-            ->assertJsonPath('request.status', 'pending');
+            ->assertStatus(403);
     }
 
     public function test_a_duplicate_request_for_the_same_month_is_refused(): void
     {
         $period = now()->subMonth()->startOfMonth()->toDateString();
 
-        $this->postJson('/api/salary-slip-requests', ['period' => $period], $this->auth('worker@test.com'))
+        $payload = ['period' => $period, 'employeeId' => $this->employee->id];
+        $this->postJson('/api/salary-slip-requests', $payload, $this->auth('hr@test.com'))
             ->assertCreated();
 
         // A different day in the same month is still the same pay period.
         $this->postJson('/api/salary-slip-requests', [
             'period' => now()->subMonth()->startOfMonth()->addDays(9)->toDateString(),
-        ], $this->auth('worker@test.com'))->assertStatus(409);
+            'employeeId' => $this->employee->id,
+        ], $this->auth('hr@test.com'))->assertStatus(409);
 
         $this->assertSame(1, SalarySlipRequest::count());
     }
@@ -186,7 +189,8 @@ class PayrollTest extends TenantTestCase
     {
         $this->postJson('/api/salary-slip-requests', [
             'period' => now()->addMonths(2)->toDateString(),
-        ], $this->auth('worker@test.com'))->assertStatus(409);
+            'employeeId' => $this->employee->id,
+        ], $this->auth('hr@test.com'))->assertStatus(409);
     }
 
     // --- issuing ---------------------------------------------------------
@@ -205,10 +209,102 @@ class PayrollTest extends TenantTestCase
         ], $this->auth('hr@test.com'))
             ->assertOk()
             ->assertJsonPath('request.status', 'approved')
-            // 100000 + 12000 + 6000 - 5000 - 3000 = 110000
-            ->assertJsonPath('request.slip.netPay', '110000');
+            // No explicit absence means no attendance deduction:
+            // 100000 + 12000 + 6000 - 5000 = 113000.
+            ->assertJsonPath('request.slip.netPay', '113000');
 
         $this->assertSame(1, SalarySlip::count());
+    }
+
+    public function test_hr_prepares_payroll_for_the_selected_employee_not_itself(): void
+    {
+        $request = $this->postJson('/api/salary-slip-requests', [
+            'period' => now()->subMonth()->toDateString(),
+            'employeeId' => $this->employee->id,
+        ], $this->auth('hr@test.com'))
+            ->assertCreated()
+            ->json('request');
+
+        $this->assertSame($this->employee->id, $request['employeeId']);
+        $this->assertDatabaseMissing('salary_slip_requests', ['employee_id' => $this->hr->id]);
+    }
+
+    /**
+     * Payroll is authorised as one monthly register, not as a confusing
+     * sequence of per-employee approval clicks. HR prepares and submits it;
+     * Super Admin independently releases every included generated slip.
+     */
+    public function test_a_monthly_payroll_run_requires_hr_submission_and_super_admin_release(): void
+    {
+        $this->giveSalary($this->employee);
+        $period = now()->subMonth()->startOfMonth()->toDateString();
+        $hrUser = User::where('email', 'hr@test.com')->firstOrFail();
+        $payroll = app(PayrollService::class);
+        $run = $payroll->openRun($hrUser, $period);
+        $request = $payroll->requestSlip($hrUser, [
+            'period' => $period,
+            'employeeId' => $this->employee->id,
+        ]);
+
+        $this->assertSame($run->id, $request->payroll_run_id);
+        $payroll->decideRequest($hrUser, $request->id, 'approved');
+        $this->assertSame('submitted', $payroll->submitRun($hrUser, $run->id)->status);
+
+        try {
+            $payroll->releaseRun($hrUser, $run->id);
+            $this->fail('HR must not release a submitted payroll run.');
+        } catch (AccessDeniedHttpException) {
+            // The separate Super Admin authorisation is expected.
+        }
+
+        $this->makeEmployee('boss@test.com', 'super_admin');
+        $this->postJson("/api/payroll-runs/{$run->id}/release", [], $this->auth('boss@test.com'))
+            ->assertOk()
+            ->assertJsonPath('run.status', 'released');
+
+        $slip = SalarySlip::firstOrFail();
+        $this->assertSame('approved', $slip->status);
+
+        $payroll->markPaid($hrUser, $slip->id, ['method' => 'Bank transfer']);
+        $this->assertSame('paid', $run->fresh()->status);
+    }
+
+    public function test_an_employee_cannot_view_company_payroll_runs(): void
+    {
+        $this->getJson('/api/payroll-runs', $this->auth('worker@test.com'))->assertStatus(403);
+    }
+
+    public function test_hr_receives_a_flat_monthly_run_list_for_the_register(): void
+    {
+        app(PayrollService::class)->openRun(
+            User::where('email', 'hr@test.com')->firstOrFail(),
+            now()->subMonth()->startOfMonth()->toDateString(),
+        );
+
+        $this->getJson('/api/payroll-runs', $this->auth('hr@test.com'))
+            ->assertOk()
+            ->assertJsonPath('runs.0.status', 'draft');
+    }
+
+    public function test_attendance_deduction_is_calculated_from_explicit_absence_records(): void
+    {
+        $this->giveSalary($this->employee, 93000, '2026-01-01');
+        Attendance::create(['employee_id' => $this->employee->id, 'date' => '2026-06-03', 'status' => 'absent']);
+        Attendance::create(['employee_id' => $this->employee->id, 'date' => '2026-06-04', 'status' => 'half_day']);
+        $request = SalarySlipRequest::create([
+            'employee_id' => $this->employee->id,
+            'period' => '2026-06-01',
+            'status' => 'pending',
+        ]);
+
+        $this->postJson("/api/salary-slip-requests/{$request->id}/decision", ['decision' => 'approved'], $this->auth('hr@test.com'))
+            ->assertOk()
+            ->assertJsonPath('request.slip.attendanceDeduction', '4650');
+
+        $summary = SalarySlip::firstOrFail()->attendance_summary;
+        $this->assertSame(1, $summary['absentDays']);
+        $this->assertSame(1, $summary['halfDays']);
+        $this->assertSame(1.5, $summary['unpaidDays']);
     }
 
     public function test_rejecting_a_request_issues_no_slip(): void
@@ -243,7 +339,7 @@ class PayrollTest extends TenantTestCase
             'bonus' => 25000,
         ], $this->auth('hr@test.com'))
             ->assertOk()
-            ->assertJsonPath('request.slip.netPay', '135000');
+            ->assertJsonPath('request.slip.netPay', '138000');
 
         // The salary on record is untouched.
         $this->assertSame(100000.0, (float) Salary::first()->base_salary);
@@ -486,6 +582,87 @@ class PayrollTest extends TenantTestCase
         $this->assertSame('paid', $slip->fresh()->status);
     }
 
+    // --- correcting a slip ----------------------------------------------
+
+    /**
+     * Corrections used to be saved only in the browser, so the screen showed
+     * one net pay and the slip the employee downloaded another.
+     */
+    public function test_an_open_slip_can_be_corrected_and_its_net_pay_follows(): void
+    {
+        $slip = $this->issuedSlip();
+
+        $this->patchJson("/api/salary-slips/{$slip->id}", [
+            'bonus' => 20000,
+            'advanceDeduction' => 4000,
+            'notes' => 'Q2 bonus; advance recovered',
+        ], $this->auth('hr@test.com'))
+            ->assertOk()
+            ->assertJsonPath('slip.status', 'generated');
+
+        $slip->refresh();
+        // 110000 + 20000 bonus - 4000 advance; the attendance deduction stays.
+        $this->assertSame(126000.0, (float) $slip->net_pay);
+        $this->assertSame(3000.0, (float) $slip->attendance_deduction);
+        $this->assertSame('Q2 bonus; advance recovered', $slip->notes);
+    }
+
+    public function test_a_corrected_net_pay_is_announced_to_the_employee(): void
+    {
+        $slip = $this->issuedSlip();
+        $payroll = app(PayrollService::class);
+        $hr = User::where('email', 'hr@test.com')->firstOrFail();
+
+        // Notes alone leave the money unchanged — nothing to announce.
+        $payroll->amendSlip($hr, $slip->id, ['notes' => 'Typo fixed']);
+        $this->assertSame(0, \App\Models\Notification::where('employee_id', $this->employee->id)->count());
+
+        $payroll->amendSlip($hr, $slip->id, ['bonus' => 5000]);
+        $this->assertSame(
+            ['Payslip corrected'],
+            \App\Models\Notification::where('employee_id', $this->employee->id)->pluck('title')->all(),
+        );
+    }
+
+    /** A released slip is an authorisation already given: reopen it first. */
+    public function test_a_released_or_paid_slip_cannot_be_corrected(): void
+    {
+        $released = $this->issuedSlip();
+        $released->update(['status' => 'approved', 'approved_at' => now()]);
+        $paid = $this->issuedSlip($this->makeEmployee('second@test.com', 'employee'));
+        $paid->update(['status' => 'paid', 'paid_at' => now()]);
+
+        $headers = $this->auth('hr@test.com');
+
+        $this->patchJson("/api/salary-slips/{$released->id}", ['bonus' => 1], $headers)->assertStatus(409);
+        $this->patchJson("/api/salary-slips/{$paid->id}", ['bonus' => 1], $headers)->assertStatus(409);
+
+        $this->assertSame(110000.0, (float) $released->fresh()->net_pay);
+        $this->assertSame(110000.0, (float) $paid->fresh()->net_pay);
+    }
+
+    public function test_a_correction_cannot_push_net_pay_below_zero(): void
+    {
+        $slip = $this->issuedSlip();
+
+        $this->patchJson("/api/salary-slips/{$slip->id}", ['taxDeduction' => 500000], $this->auth('hr@test.com'))
+            ->assertStatus(422);
+
+        $this->assertSame(110000.0, (float) $slip->fresh()->net_pay);
+    }
+
+    public function test_an_employee_cannot_correct_their_own_slip(): void
+    {
+        $slip = $this->issuedSlip();
+
+        $this->expectException(AccessDeniedHttpException::class);
+        app(PayrollService::class)->amendSlip(
+            User::where('email', 'worker@test.com')->firstOrFail(),
+            $slip->id,
+            ['bonus' => 99999],
+        );
+    }
+
     // --- payroll cost ----------------------------------------------------
 
     public function test_monthly_cost_sums_active_employees(): void
@@ -494,11 +671,11 @@ class PayrollTest extends TenantTestCase
         $this->giveSalary($this->employee, 100000);
         $this->giveSalary($second, 200000);
 
-        // 110000 + 220000, and HR has no salary on record so is skipped.
+        // No explicit absence means no deduction: 113000 + 226000.
         $this->getJson('/api/salary-slips/cost', $this->auth('hr@test.com'))
             ->assertOk()
             ->assertJsonPath('cost.employees', 2)
-            ->assertJsonPath('cost.total', 330000);
+            ->assertJsonPath('cost.total', 339000);
     }
 
     public function test_an_employee_may_not_read_the_payroll_cost(): void

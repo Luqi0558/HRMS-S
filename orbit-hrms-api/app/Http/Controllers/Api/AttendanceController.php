@@ -5,14 +5,20 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\AttendanceResource;
 use App\Services\AttendanceService;
+use App\Services\SettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AttendanceController extends Controller
 {
-    public function __construct(private readonly AttendanceService $attendance)
+    public function __construct(
+        private readonly AttendanceService $attendance,
+        private readonly SettingsService $settings,
+    )
     {
     }
 
@@ -49,11 +55,24 @@ class AttendanceController extends Controller
     {
         $validated = $request->validate([
             'device' => ['nullable', 'string', 'max:40'],
+            // This is a work location, not leave. It remains paid attendance
+            // and is deliberately stored with the day's punch record.
+            'workMode' => ['nullable', Rule::in(['office', 'remote'])],
             // The photo arrives as an uploaded file, not a path. photoPath is a
             // 255-character column, and the camera produces a JPEG — the client
             // was never in a position to name its own storage path anyway.
             'photo' => ['nullable', 'image', 'mimes:jpg,jpeg,png', 'max:5120'],
         ]);
+
+        // The UI already opens the camera when this policy is enabled, but a
+        // browser check alone can be bypassed by posting directly to the API.
+        // Enforce the same company policy at the boundary before a record (or
+        // an orphaned upload) is created.
+        if ($this->settings->get('attendance', 'cameraCheckinRequired', true) && ! $request->hasFile('photo')) {
+            throw ValidationException::withMessages([
+                'photo' => 'A camera photo is required for check-in.',
+            ]);
+        }
 
         if ($request->hasFile('photo')) {
             // Private disk, as with claim receipts: a check-in photo is a
