@@ -25,7 +25,6 @@ const {
   formatDuration,
   formatDateTime,
   formatDate: formatCompanyDate,
-  pushNotification,
   logActivity,
   upsertTicket
 } = useStore()
@@ -43,7 +42,9 @@ const dashboardTicket = computed(() => {
 })
 const dashboardTicketDraft = ref(null)
 const dashboardNewComment = ref('')
-const dashboardNewAttachmentName = ref('')
+const dashboardNewAttachmentFile = ref(null)
+const dashboardAttachmentInputKey = ref(0)
+const dashboardUploadingAttachment = ref(false)
 
 const isEmployee = computed(() => state.currentUser.role === 'employee')
 
@@ -79,7 +80,7 @@ watch(
     } catch {
       /* the thread stays empty; the rest of the modal is usable */
     }
-    dashboardNewAttachmentName.value = ''
+    dashboardNewAttachmentFile.value = null
   },
   { immediate: true }
 )
@@ -120,17 +121,6 @@ function dashboardModuleAssignedEmployees(ticket = dashboardTicket.value) {
   return ids.map(id => state.employees.find(employee => employee.id === id)).filter(Boolean)
 }
 
-function dashboardAssignedByOptions(ticket = dashboardTicket.value) {
-  const ids = new Set()
-  const project = ticketProject(ticket)
-  if (project?.managerId) ids.add(project.managerId)
-  state.employees
-    .filter(employee => employee.role === 'manager' || employee.role === 'super_admin')
-    .forEach(employee => ids.add(employee.id))
-  return Array.from(ids)
-    .map(id => state.employees.find(employee => employee.id === id))
-    .filter(Boolean)
-}
 
 function dashboardTicketComments(ticket) {
   return [...(ticket?.comments || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -186,13 +176,6 @@ async function saveDashboardTicketChanges() {
   }
   isSaving.value = false
 
-  pushNotification({
-    title: 'Ticket updated',
-    message: `${state.currentUser.name} updated "${dashboardTicket.value.title}".`,
-    type: 'ticket',
-    userIds: [...new Set([dashboardTicket.value.assigneeId, dashboardTicket.value.assignedById, ticketProject(dashboardTicket.value)?.managerId].filter(id => id && id !== state.currentUser.id))],
-    route: moduleKanbanRouteForTicket(dashboardTicket.value, { ticket: dashboardTicket.value.id })
-  })
   logActivity({
     module: 'ticket',
     action: 'ticket updated',
@@ -220,13 +203,6 @@ async function addDashboardTicketComment() {
     return
   }
 
-  pushNotification({
-    title: 'New ticket comment',
-    message: `${state.currentUser.name} commented on "${dashboardTicket.value.title}".`,
-    type: 'ticket',
-    userIds: [...new Set([dashboardTicket.value.assigneeId, dashboardTicket.value.assignedById, ticketProject(dashboardTicket.value)?.managerId].filter(id => id && id !== state.currentUser.id))],
-    route: moduleKanbanRouteForTicket(dashboardTicket.value, { ticket: dashboardTicket.value.id })
-  })
   logActivity({
     module: 'ticket',
     action: 'ticket comment added',
@@ -237,32 +213,44 @@ async function addDashboardTicketComment() {
   dashboardNewComment.value = ''
 }
 
-function addDashboardTicketAttachment() {
-  if (!dashboardTicket.value || !dashboardNewAttachmentName.value.trim()) return
-  if (!dashboardTicket.value.attachments) dashboardTicket.value.attachments = []
-  const attachmentName = dashboardNewAttachmentName.value.trim()
-  dashboardTicket.value.attachments.unshift({
-    id: Date.now(),
-    name: attachmentName,
-    uploadedBy: state.currentUser.name,
-    uploadedAt: new Date().toISOString()
-  })
-  logActivity({
-    module: 'ticket',
-    action: 'ticket attachment added',
-    details: `${state.currentUser.name} attached ${attachmentName} to "${dashboardTicket.value.title}" from the dashboard.`,
-    targetId: dashboardTicket.value.id,
-    targetType: 'ticket'
-  })
-  dashboardNewAttachmentName.value = ''
+/**
+ * Uploads the picked file. Used to push a typed name with a timestamp id
+ * into the ticket in memory — no file, nothing saved, gone on refresh.
+ */
+async function addDashboardTicketAttachment() {
+  if (!dashboardTicket.value || !dashboardNewAttachmentFile.value || dashboardUploadingAttachment.value) return
+
+  saveError.value = ''
+  dashboardUploadingAttachment.value = true
+  try {
+    upsertTicket(await ticketService.attach(dashboardTicket.value.id, dashboardNewAttachmentFile.value))
+    dashboardNewAttachmentFile.value = null
+    dashboardAttachmentInputKey.value += 1
+  } catch (error) {
+    saveError.value = error instanceof ApiError
+      ? error.message
+      : 'Could not upload that file. Please try again.'
+  } finally {
+    dashboardUploadingAttachment.value = false
+  }
+}
+
+async function downloadDashboardAttachment(attachment) {
+  if (!dashboardTicket.value) return
+  saveError.value = ''
+  try {
+    await ticketService.downloadAttachment(dashboardTicket.value.id, attachment)
+  } catch (error) {
+    saveError.value = error?.message || 'That attachment could not be downloaded.'
+  }
 }
 
 </script>
 
 <template>
   <Teleport to="body">
-    <div v-if="dashboardTicket && dashboardTicketDraft" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="closeDashboardTicket">
-      <div class="w-full max-w-2xl rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden max-h-[calc(100vh-2rem)] flex flex-col">
+    <div v-if="dashboardTicket && dashboardTicketDraft" class="orbit-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="closeDashboardTicket">
+      <div class="orbit-modal w-full max-w-2xl overflow-hidden max-h-[calc(100vh-2rem)] flex flex-col">
         <div class="flex items-start justify-between gap-4 p-5 border-b border-slate-200 shrink-0">
           <div class="min-w-0">
             <div class="text-[11px] uppercase tracking-[0.18em] text-slate-500 font-semibold">Ticket Details</div>
@@ -278,13 +266,13 @@ function addDashboardTicketAttachment() {
               <div>
                 <label class="block">
                 <span class="text-[11px] uppercase tracking-[0.16em] text-slate-500 font-semibold block mb-2">Title</span>
-                <input v-model="dashboardTicketDraft.title" type="text" :disabled="!dashboardCanEditTicketFields" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-500" />
+                <input v-model="dashboardTicketDraft.title" type="text" :disabled="!dashboardCanEditTicketFields" class="orbit-field w-full px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500" />
                 </label>
               </div>
               <div>
                 <label class="block">
                 <span class="text-[11px] uppercase tracking-[0.16em] text-slate-500 font-semibold block mb-2">Description</span>
-                <textarea v-model="dashboardTicketDraft.description" rows="3" :disabled="!dashboardCanEditTicketFields" class="w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-500" placeholder="Add ticket details, blockers, or acceptance notes..."></textarea>
+                <textarea v-model="dashboardTicketDraft.description" rows="3" :disabled="!dashboardCanEditTicketFields" class="orbit-field w-full resize-none px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500" placeholder="Add ticket details, blockers, or acceptance notes..."></textarea>
                 </label>
               </div>
               <div class="flex items-center justify-between gap-3">
@@ -312,10 +300,12 @@ function addDashboardTicketAttachment() {
               </div>
               <div class="flex items-center justify-between gap-3">
                 <span class="text-sm text-slate-600">Assigned by</span>
-                <select v-model="dashboardTicketDraft.assignedById" :disabled="!dashboardCanEditTicketFields" class="text-sm font-medium rounded-lg border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500 max-w-[180px] disabled:bg-slate-100 disabled:text-slate-500">
-                  <option :value="null">Not specified</option>
-                  <option v-for="emp in dashboardAssignedByOptions(dashboardTicket)" :key="emp.id" :value="emp.id">{{ emp.name }}</option>
-                </select>
+                <!-- Read-only: this is whoever raised the ticket, which the API
+                     records once and never changes. The select it replaced let
+                     you pick someone else, then dropped the choice on save. -->
+                <span class="text-sm font-medium text-slate-800 truncate max-w-[180px]">
+                  {{ dashboardTicket.assignedBy?.name || state.employees.find(emp => emp.id === dashboardTicket.assignedById)?.name || 'Not specified' }}
+                </span>
               </div>
               <div class="flex items-center justify-between gap-3">
                 <span class="text-sm text-slate-600">Due date</span>
@@ -366,12 +356,24 @@ function addDashboardTicketAttachment() {
                     <div class="truncate text-sm font-semibold text-slate-900">{{ attachment.name }}</div>
                     <div class="text-[11px] text-slate-500">{{ attachment.uploadedBy }} - {{ formatCompanyDate(attachment.uploadedAt) }}</div>
                   </div>
-                  <span class="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold">File</span>
+                  <button @click="downloadDashboardAttachment(attachment)" class="text-[11px] uppercase tracking-[0.14em] text-emerald-700 hover:text-emerald-800 font-semibold">Download</button>
                 </div>
               </div>
               <div class="flex gap-2 mt-3">
-                <input v-model="dashboardNewAttachmentName" type="text" class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500" placeholder="Attachment name or reference" />
-                <button @click="addDashboardTicketAttachment" class="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 transition-colors">Add</button>
+                <input
+                  :key="dashboardAttachmentInputKey"
+                  type="file"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.gif,.webp,.zip"
+                  @change="dashboardNewAttachmentFile = $event.target.files[0] || null"
+                  class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                />
+                <button
+                  @click="addDashboardTicketAttachment"
+                  :disabled="!dashboardNewAttachmentFile || dashboardUploadingAttachment"
+                  class="orbit-button orbit-button-primary px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                >
+                  {{ dashboardUploadingAttachment ? 'Uploading…' : 'Upload' }}
+                </button>
               </div>
             </div>
 
@@ -422,7 +424,7 @@ function addDashboardTicketAttachment() {
               <textarea v-model="dashboardNewComment" rows="3" class="w-full resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500" placeholder="Write an update, mention blockers, or note next steps..."></textarea>
               </label>
               <div class="flex justify-end mt-3">
-                <button @click="addDashboardTicketComment" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">
+                <button @click="addDashboardTicketComment" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
                   Post comment
                 </button>
               </div>
@@ -435,12 +437,12 @@ function addDashboardTicketAttachment() {
             </div>
 
             <div class="flex items-center justify-end gap-2 mt-4 pt-4 border-t border-slate-200">
-              <button @click="closeDashboardTicket" class="text-sm border border-slate-200 rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
+              <button @click="closeDashboardTicket" class="orbit-button orbit-button-secondary text-sm font-medium px-4 py-2">Cancel</button>
               <button
                 v-if="dashboardCanEditTicketFields"
                 :disabled="isSaving"
                 @click="saveDashboardTicketChanges"
-                class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+                class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2"
               >
                 {{ isSaving ? 'Saving…' : 'Save changes' }}
               </button>

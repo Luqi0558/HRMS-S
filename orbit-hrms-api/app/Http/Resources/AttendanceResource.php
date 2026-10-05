@@ -10,6 +10,13 @@ class AttendanceResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
+        // A response normally carries sessions. Prefer the open session (or
+        // most recent closed one) so the dashboard can state where the person
+        // is working right now; `dayWorkMode` remains the auditable summary.
+        $latestSession = $this->relationLoaded('sessions') ? $this->sessions->last() : null;
+        $activeSession = $this->relationLoaded('sessions') ? $this->openSession() : null;
+        $sessionWorkMode = $activeSession?->work_mode ?? $latestSession?->work_mode;
+
         return [
             'id' => $this->id,
             'employeeId' => $this->employee_id,
@@ -19,6 +26,8 @@ class AttendanceResource extends JsonResource
             'checkIn' => $this->check_in ? substr($this->check_in, 0, 5) : null,
             'checkOut' => $this->check_out ? substr($this->check_out, 0, 5) : null,
             'status' => $this->status,
+            'workMode' => $sessionWorkMode ?? $this->work_mode ?? 'office',
+            'dayWorkMode' => $this->work_mode ?? 'office',
             'device' => $this->device,
             // Whether a check-in photo exists, never where it lives. The path is
             // a storage location on a private disk; handing it out would invite
@@ -38,6 +47,7 @@ class AttendanceResource extends JsonResource
                 'id' => $session->id,
                 'checkIn' => substr((string) $session->check_in, 0, 5),
                 'checkOut' => $session->check_out ? substr((string) $session->check_out, 0, 5) : null,
+                'workMode' => $session->work_mode ?? 'office',
                 'device' => $session->device,
                 'workedSeconds' => $session->workedSeconds(),
             ])->values()),

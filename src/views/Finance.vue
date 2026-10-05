@@ -2,6 +2,7 @@
 import { computed, ref, onMounted } from 'vue'
 import { projectService } from '../services/projectService.js'
 import { employeeService } from '../services/employeeService.js'
+import { financeService } from '../services/financeService.js'
 import { useStore } from '../store/index.js'
 import { useTableControls } from '../composables/useTableControls.js'
 
@@ -15,10 +16,12 @@ const {
   projectCommissionOwed,
   can,
   scopedList,
-  pushNotification,
-  logActivity,
   setProjects,
-  setEmployees
+  setEmployees,
+  paymentsForModule,
+  setModulePayments,
+  addModulePayment,
+  removeModulePayment
 } = useStore()
 
 const activeTab = ref('overview')
@@ -55,6 +58,7 @@ const financeModules = computed(() =>
     (project.modules || []).map(module => ({
       ...module,
       module,
+      payments: paymentsForModule(module.id),
       financeKey: `${project.id}-${module.id}`,
       projectId: project.id,
       categoryName: project.name,
@@ -87,6 +91,7 @@ const managerFinanceRows = computed(() => {
         (project.modules || []).map(module => ({
           ...module,
           module,
+          payments: paymentsForModule(module.id),
           financeKey: `${project.id}-${module.id}`,
           projectId: project.id,
           categoryName: project.name,
@@ -231,6 +236,7 @@ function resetPaymentForm() {
 
 function openProject(financeKey) {
   selectedFinanceKey.value = financeKey
+  financeError.value = ''
   resetPaymentForm()
   showProjectModal.value = true
 }
@@ -238,6 +244,7 @@ function openProject(financeKey) {
 function closeProject() {
   selectedFinanceKey.value = null
   showProjectModal.value = false
+  financeError.value = ''
   resetPaymentForm()
 }
 
@@ -253,55 +260,85 @@ function toggleManager(managerId) {
   expandedManagerIds.value = [...expandedManagerIds.value, managerId]
 }
 
-function logPayment() {
+const savingPayment = ref(false)
+const removingPaymentId = ref(null)
+const decidingCommissionId = ref(null)
+const financeError = ref('')
+
+/**
+ * Logs a client payment on the server.
+ *
+ * This used to push an object into the module in memory — nothing was saved,
+ * so the payment, and the commission it earned, vanished on refresh. The API
+ * now records it, writes the audit entry and tells the super admin and the
+ * project's manager.
+ */
+async function logPayment() {
   const project = selectedProject.value
   const amount = Number(paymentForm.value.amount)
-  if (!project || amount <= 0 || !paymentForm.value.date) return
-  if (!project.module.payments) project.module.payments = []
-  project.module.payments.unshift({
-    id: Date.now(),
-    amount,
-    date: paymentForm.value.date,
-    method: paymentForm.value.method,
-    payer: paymentForm.value.payer.trim() || 'Client',
-    reference: paymentForm.value.reference.trim() || 'N/A',
-    loggedById: state.currentUser.id
-  })
-  pushNotification({
-    title: 'Client payment logged',
-    message: `${formatCurrency(amount)} was logged for ${project.name}.`,
-    type: 'finance',
-    roles: ['super_admin'],
-    userIds: [project.managerId],
-    route: { name: 'finance' }
-  })
-  logActivity({
-    module: 'finance',
-    action: 'payment logged',
-    details: `${formatCurrency(amount)} was logged for ${project.name}.`,
-    targetId: project.id,
-    targetType: 'module'
-  })
-  resetPaymentForm()
+  if (!project || amount <= 0 || !paymentForm.value.date || savingPayment.value) return
+
+  savingPayment.value = true
+  financeError.value = ''
+  try {
+    addModulePayment(await financeService.logPayment(project.id, {
+      amount,
+      date: paymentForm.value.date,
+      method: paymentForm.value.method,
+      payer: paymentForm.value.payer.trim() || null,
+      reference: paymentForm.value.reference.trim() || null
+    }))
+    resetPaymentForm()
+  } catch (error) {
+    financeError.value = error?.message || 'Could not log that payment. Please try again.'
+  } finally {
+    savingPayment.value = false
+  }
 }
 
-function updateCommissionStatus(project, status) {
-  if (!can('Finance', 'approve') || !project?.commission) return
-  project.module.commission.status = status
-  pushNotification({
-    title: `Commission ${status}`,
-    message: `${project.name} commission is now ${status}.`,
-    type: 'finance',
-    userIds: [project.managerId],
-    route: { name: 'finance' }
-  })
-  logActivity({
-    module: 'finance',
-    action: `commission ${status}`,
-    details: `${project.name} commission was marked ${status}.`,
-    targetId: project.id,
-    targetType: 'module'
-  })
+/** Removes a payment logged in error. Super admin only — see FinanceService. */
+async function removePayment(payment) {
+  if (!isSuperAdmin.value || removingPaymentId.value) return
+  if (!window.confirm(`Remove the ${formatCurrency(payment.amount)} payment logged on ${payment.date}?`)) return
+
+  removingPaymentId.value = payment.id
+  financeError.value = ''
+  try {
+    await financeService.removePayment(payment.id)
+    removeModulePayment(payment.id)
+  } catch (error) {
+    financeError.value = error?.message || 'Could not remove that payment. Please try again.'
+  } finally {
+    removingPaymentId.value = null
+  }
+}
+
+/** Puts the server's copy of a module back into the project it belongs to. */
+function updateStoredModule(module) {
+  const project = state.projects.find(item => item.id === module?.projectId)
+  const index = project?.modules?.findIndex(item => item.id === module.id) ?? -1
+  if (index >= 0) project.modules[index] = { ...project.modules[index], ...module }
+}
+
+/**
+ * Approves or settles a commission through the API.
+ *
+ * The endpoint existed — the Super Admin dashboard uses it — but this page
+ * only flipped the status in memory, so an approval here was lost on refresh
+ * and the manager was never told.
+ */
+async function updateCommissionStatus(project, status) {
+  if (!can('Finance', 'approve') || !project?.commission || decidingCommissionId.value) return
+
+  decidingCommissionId.value = project.id
+  financeError.value = ''
+  try {
+    updateStoredModule(await projectService.decideModuleCommission(project.id, status))
+  } catch (error) {
+    financeError.value = error?.message || 'Could not update that commission. Please try again.'
+  } finally {
+    decidingCommissionId.value = null
+  }
 }
 /**
  * Every figure on this page is derived from projects and their modules, so
@@ -312,66 +349,73 @@ function updateCommissionStatus(project, status) {
  * should not blank the whole view.
  */
 onMounted(async () => {
-  const [projects, employees] = await Promise.allSettled([
+  const [projects, employees, payments] = await Promise.allSettled([
     projectService.list(),
-    employeeService.list()
+    employeeService.list(),
+    financeService.payments()
   ])
 
   if (projects.status === 'fulfilled') setProjects(projects.value)
   if (employees.status === 'fulfilled') setEmployees(employees.value.data)
+  if (payments.status === 'fulfilled') setModulePayments(payments.value)
+  else financeError.value = 'Client payments could not be loaded, so received and commission figures may read low.'
 })
 </script>
 
 <template>
-  <div v-if="canAccessFinance" class="space-y-6">
-    <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+  <div v-if="canAccessFinance" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex flex-col lg:flex-row lg:items-end justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">
           {{ isSuperAdmin ? 'Company-wide module budgets, payments, and manager commissions' : 'Your module budgets, payments, and commission summary' }}
         </div>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="orbit-tab-list flex flex-wrap gap-2">
         <button
           v-for="tab in tabs"
           :key="tab.id"
           @click="activeTab = tab.id"
-          :class="activeTab === tab.id ? 'bg-slate-950 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'"
-          class="rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
+          :class="activeTab === tab.id ? 'orbit-tab-active' : 'orbit-tab-idle'"
+          class="orbit-tab px-4 py-2 text-sm font-semibold"
         >
           {{ tab.label }}
         </button>
       </div>
     </div>
 
+    <div v-if="financeError && !showProjectModal" class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700" role="alert">
+      {{ financeError }}
+    </div>
+
     <section class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Total budgets</div>
         <div class="text-xl font-extrabold text-slate-900 mt-2">{{ formatCurrency(financeTotals.budget) }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Received</div>
         <div class="text-xl font-extrabold text-emerald-700 mt-2">{{ formatCurrency(financeTotals.received) }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Pending</div>
         <div class="text-xl font-extrabold text-orange-600 mt-2">{{ formatCurrency(financeTotals.pending) }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Commission earned</div>
         <div class="text-xl font-extrabold text-slate-900 mt-2">{{ formatCurrency(financeTotals.commissionEarned) }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Commission owed</div>
         <div class="text-xl font-extrabold text-orange-600 mt-2">{{ formatCurrency(financeTotals.commissionOwed) }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Commission paid</div>
         <div class="text-xl font-extrabold text-emerald-700 mt-2">{{ formatCurrency(financeTotals.commissionPaid) }}</div>
       </div>
     </section>
 
     <section v-if="activeTab === 'overview'" class="space-y-4">
-      <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+      <div class="orbit-card overflow-hidden">
         <div class="px-4 py-3 border-b border-slate-200">
           <div class="text-sm font-bold text-slate-900">Needs attention</div>
           <div class="text-xs text-slate-600 mt-1">Quick shortcuts to the finance work that needs review.</div>
@@ -390,7 +434,7 @@ onMounted(async () => {
       </div>
 
       <!-- "My ledger" is for roles with finance access but no approval rights. -->
-      <section v-if="canAccessFinance && !isSuperAdmin" class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+      <section v-if="canAccessFinance && !isSuperAdmin" class="orbit-table-card overflow-hidden">
         <div class="px-4 py-3 border-b border-slate-200">
           <div class="text-sm font-bold text-slate-900">My module financial ledger</div>
           <div class="text-xs text-slate-600 mt-1">Open a module/client project to log payments and review commission.</div>
@@ -400,7 +444,7 @@ onMounted(async () => {
           <div class="table-count">{{ projectLedgerTable.filteredRows.value.length }} records</div>
         </div>
         <div class="table-scroll" @scroll="projectLedgerTable.loadMoreRows">
-          <table class="w-full text-sm">
+          <table class="orbit-data-table w-full text-sm">
             <thead>
               <tr class="border-b border-slate-200 text-left bg-slate-50/80">
                 <th class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Module / Project</th>
@@ -616,7 +660,7 @@ onMounted(async () => {
                   <button
                     v-if="isSuperAdmin"
                     @click="updateCommissionStatus(row.project, 'approved')"
-                    :disabled="row.status === 'approved' || row.status === 'paid' || row.earned <= 0"
+                    :disabled="decidingCommissionId !== null || row.status === 'approved' || row.status === 'paid' || row.earned <= 0"
                     class="text-xs font-semibold rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
                   >
                     Approve
@@ -624,7 +668,7 @@ onMounted(async () => {
                   <button
                     v-if="isSuperAdmin"
                     @click="updateCommissionStatus(row.project, 'paid')"
-                    :disabled="row.status !== 'approved'"
+                    :disabled="decidingCommissionId !== null || row.status !== 'approved'"
                     class="text-xs font-semibold rounded-lg px-3 py-2 bg-slate-950 text-white hover:bg-black disabled:bg-slate-300 disabled:cursor-not-allowed"
                   >
                     Mark paid
@@ -644,8 +688,8 @@ onMounted(async () => {
     </section>
 
     <Teleport to="body">
-    <div v-if="showProjectModal && selectedProject" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="closeProject">
-      <div class="bg-white rounded-xl p-6 w-full max-w-4xl shadow-2xl border border-slate-200 max-h-[calc(100vh-2rem)] overflow-y-auto">
+    <div v-if="showProjectModal && selectedProject" class="orbit-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="closeProject">
+      <div class="orbit-modal p-6 w-full max-w-4xl max-h-[calc(100vh-2rem)] overflow-y-auto">
         <div class="flex items-start justify-between gap-4 mb-5">
           <div>
             <div class="font-semibold text-[15px] text-slate-900">Module financials</div>
@@ -694,9 +738,12 @@ onMounted(async () => {
               <input v-model="paymentForm.payer" type="text" placeholder="Client / payer" class="text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700" />
               <input v-model="paymentForm.reference" type="text" placeholder="Reference #" class="text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700" />
             </div>
-            <button @click="logPayment" :disabled="!paymentForm.amount || Number(paymentForm.amount) <= 0 || !paymentForm.date" class="mt-3 bg-emerald-600 text-white text-sm font-semibold rounded-lg px-4 py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors">
-              Log payment
+            <button @click="logPayment" :disabled="savingPayment || !paymentForm.amount || Number(paymentForm.amount) <= 0 || !paymentForm.date" class="mt-3 bg-emerald-600 text-white text-sm font-semibold rounded-lg px-4 py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors">
+              {{ savingPayment ? 'Logging…' : 'Log payment' }}
             </button>
+            <div v-if="financeError" class="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700" role="alert">
+              {{ financeError }}
+            </div>
 
             <div class="mt-4 rounded-xl border border-slate-200 overflow-hidden">
               <div class="px-4 py-3 text-sm font-bold text-slate-900 border-b border-slate-200">Payment timeline</div>
@@ -710,7 +757,17 @@ onMounted(async () => {
                         <div class="text-sm font-extrabold text-slate-900">{{ formatCurrency(payment.amount) }}</div>
                         <div class="text-xs font-semibold text-slate-600 mt-1">{{ payment.payer || 'Client' }} - {{ payment.method }}</div>
                       </div>
-                      <div class="text-xs font-bold text-slate-500">{{ payment.date }}</div>
+                      <div class="flex items-center gap-2">
+                        <div class="text-xs font-bold text-slate-500">{{ payment.date }}</div>
+                        <button
+                          v-if="isSuperAdmin"
+                          @click="removePayment(payment)"
+                          :disabled="removingPaymentId !== null"
+                          class="text-[11px] font-bold text-rose-600 hover:text-rose-700 disabled:opacity-50"
+                        >
+                          {{ removingPaymentId === payment.id ? 'Removing…' : 'Remove' }}
+                        </button>
+                      </div>
                     </div>
                     <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                       <div class="rounded-lg border border-slate-200 bg-white p-2">
@@ -719,7 +776,7 @@ onMounted(async () => {
                       </div>
                       <div class="rounded-lg border border-slate-200 bg-white p-2">
                         <div class="font-bold uppercase tracking-wide text-slate-500">Logged by</div>
-                        <div class="font-extrabold text-slate-900 mt-1">{{ employeeName(payment.loggedById) }}</div>
+                        <div class="font-extrabold text-slate-900 mt-1">{{ payment.loggedByName || employeeName(payment.loggedById) }}</div>
                       </div>
                     </div>
                   </div>
@@ -746,10 +803,10 @@ onMounted(async () => {
               </div>
             </div>
             <div v-if="isSuperAdmin" class="mt-4 grid grid-cols-2 gap-2">
-              <button @click="updateCommissionStatus(selectedProject, 'approved')" :disabled="selectedProject.commission?.status === 'approved' || selectedProject.commission?.status === 'paid' || projectCommissionEarned(selectedProject) <= 0" class="text-sm font-semibold rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed">
+              <button @click="updateCommissionStatus(selectedProject, 'approved')" :disabled="decidingCommissionId !== null || selectedProject.commission?.status === 'approved' || selectedProject.commission?.status === 'paid' || projectCommissionEarned(selectedProject) <= 0" class="text-sm font-semibold rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed">
                 Approve
               </button>
-              <button @click="updateCommissionStatus(selectedProject, 'paid')" :disabled="selectedProject.commission?.status !== 'approved'" class="text-sm font-semibold rounded-lg px-3 py-2 bg-slate-950 text-white hover:bg-black disabled:bg-slate-300 disabled:cursor-not-allowed">
+              <button @click="updateCommissionStatus(selectedProject, 'paid')" :disabled="decidingCommissionId !== null || selectedProject.commission?.status !== 'approved'" class="text-sm font-semibold rounded-lg px-3 py-2 bg-slate-950 text-white hover:bg-black disabled:bg-slate-300 disabled:cursor-not-allowed">
                 Mark paid
               </button>
             </div>

@@ -128,8 +128,9 @@ class AttendanceService
         $today = $this->companyNow()->toDateString();
 
         $now = $this->companyNow()->format('H:i');
+        $workMode = $attributes['workMode'] ?? 'office';
 
-        return DB::transaction(function () use ($employee, $today, $now, $attributes) {
+        return DB::transaction(function () use ($employee, $today, $now, $workMode, $attributes) {
             $record = Attendance::where('employee_id', $employee->id)
                 ->whereDate('date', $today)
                 ->lockForUpdate()
@@ -147,6 +148,15 @@ class AttendanceService
                 'employee_id' => $employee->id,
                 'date' => $today,
             ]);
+
+            // The parent is a day summary, while every punch session retains
+            // its own work location. Office -> home -> remote check-in is a
+            // normal day, not a conflict; the day summary becomes `mixed`.
+            if (blank($record->check_in)) {
+                $record->work_mode = $workMode;
+            } elseif (($record->work_mode ?? 'office') !== $workMode) {
+                $record->work_mode = 'mixed';
+            }
 
             // Status and the day's check_in are stamped from the FIRST session
             // only. Recomputing either on a later check-in would relabel a
@@ -182,6 +192,7 @@ class AttendanceService
 
             $record->sessions()->create([
                 'check_in' => $now,
+                'work_mode' => $workMode,
                 'device' => $attributes['device'] ?? 'laptop',
                 'photo_path' => $attributes['photoPath'] ?? null,
             ]);

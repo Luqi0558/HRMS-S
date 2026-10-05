@@ -1,12 +1,11 @@
 <script setup>
 import { computed } from 'vue'
+import CardEmptyState from './CardEmptyState.vue'
 import StatCard from './StatCard.vue'
 import TimesheetChart from './TimesheetChart.vue'
 import { useDashboard } from '../composables/useDashboard.js'
 import { statusMeta } from '../config/ticketStatus.js'
 
-// Employee: their own work only — tickets, hours, claims, leave, and the
-// self check-in widget. No team or company-wide data.
 const {
   state,
   todayKey,
@@ -29,6 +28,7 @@ const {
   myTickets,
   dashboardCheckedIn,
   dashboardCheckInTime,
+  dashboardWorkModeLabel,
   dashboardCheckOut,
   openCamera
 } = useDashboard()
@@ -42,19 +42,19 @@ function openDashboardTicket(ticket) {
 const myOpenTickets = computed(() => myTickets.value.filter(ticket => ticket.status !== 'done'))
 const myCompletedTasks = computed(() => myTickets.value.filter(ticket => ticket.status === 'done'))
 const myAttendance = computed(() =>
-  state.attendance.find(row => row.employeeId === state.currentUser.id && row.date === todayKey())
+  state.attendance.find(row => row.employeeId === (state.currentUser.employeeId ?? state.currentUser.id) && row.date === todayKey())
 )
 const myTotalHours = computed(() =>
   myTickets.value.reduce((sum, ticket) => sum + ticketSecondsToday(ticket), 0)
 )
 const myApprovedClaims = computed(() =>
-  state.medicalClaims.filter(claim => claim.employeeId === state.currentUser.id && claim.status === 'approved')
+  state.medicalClaims.filter(claim => claim.employeeId === (state.currentUser.employeeId ?? state.currentUser.id) && claim.status === 'approved')
 )
 const myApprovedClaimsTotal = computed(() =>
   myApprovedClaims.value.reduce((total, claim) => total + Number(claim.amount || 0), 0)
 )
 const myLeaveRequests = computed(() =>
-  state.leaveRequests.filter(request => request.employeeId === state.currentUser.id)
+  state.leaveRequests.filter(request => request.employeeId === (state.currentUser.employeeId ?? state.currentUser.id))
 )
 const myProjects = computed(() => {
   const projectIds = new Set(myTickets.value.map(ticket => ticket.projectId))
@@ -86,12 +86,12 @@ const upcomingDeadlines = computed(() =>
     .slice(0, 3)
 )
 
-// Scope labels describe which modules a "view all" link would open.
 function moduleLabelFor(modules, emptyLabel) {
   if (!modules.length) return emptyLabel
   if (modules.length === 1) return modules[0].name
   return `${modules.length} modules`
 }
+
 
 function assignedModulesRoute() {
   return { name: 'projects', query: { view: 'modules', filter: 'assigned' } }
@@ -110,7 +110,7 @@ function employeeTicketScope(filter) {
 </script>
 
 <template>
-  <div class="space-y-6 dashboard-inline-attendance">
+  <div class="orbit-dashboard role-dashboard employee-dashboard space-y-5 dashboard-inline-attendance">
     <div class="space-y-6">
       <!-- Header -->
       <div class="hidden">
@@ -126,10 +126,13 @@ function employeeTicketScope(filter) {
         </div>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl p-5 flex items-center justify-between shadow-sm">
+      <div class="orbit-attendance-panel p-5 flex items-center justify-between">
         <div>
           <div class="text-sm font-medium text-slate-900 mb-1">Today attendance</div>
-          <div class="text-xs text-slate-600" v-if="dashboardCheckedIn">Checked in at <span class="font-mono text-emerald-700">{{ dashboardCheckInTime }}</span></div>
+          <div class="text-xs text-slate-600" v-if="dashboardCheckedIn">
+            Checked in at <span class="font-mono text-emerald-700">{{ dashboardCheckInTime }}</span>
+            <span class="ml-1.5 font-semibold text-emerald-700">· {{ dashboardWorkModeLabel }}</span>
+          </div>
           <div class="text-xs text-slate-600" v-else>Check in from your dashboard before starting work</div>
         </div>
         <button
@@ -147,49 +150,37 @@ function employeeTicketScope(filter) {
           Check in
         </button>
       </div>
-
-      <!-- Key Metrics. Full width: the tiles are their own row now, so the
-           timesheet below is free to sit in a 50/50 split with the deadlines
-           panel rather than being dragged out to three-quarter width. -->
-      <!-- Five tiles, five columns — a 4-column grid always wrapped the fifth
-           onto its own row. The claims total is capped under 1,000,000, so
-           "PKR 999,999" is the widest value these narrower columns must hold;
-           .kpi-value scales down to keep it on one line. -->
       <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 mb-4">
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">Completed Tasks</div>
           <div class="kpi-value text-slate-900">{{ myCompletedTasks.length }}</div>
           <div class="text-emerald-600 text-[11px] mt-1">{{ employeeTicketScope('completed') }}</div>
         </div>
         
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">Hours This Week</div>
           <div class="kpi-value text-slate-900">{{ formatDuration(myTotalHours) }}</div>
           <div class="text-emerald-600 text-[11px] mt-1">Out of 45 hours</div>
         </div>
         
-        <div role="button" tabindex="0" @click="goToRoute(assignedModulesRoute(myModules))" @keydown.enter="goToRoute(assignedModulesRoute(myModules))" @keydown.space.prevent="goToRoute(assignedModulesRoute(myModules))" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(assignedModulesRoute(myModules))" @keydown.enter="goToRoute(assignedModulesRoute(myModules))" @keydown.space.prevent="goToRoute(assignedModulesRoute(myModules))" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">Assigned Modules</div>
           <div class="kpi-value text-slate-900">{{ myModules.length }}</div>
           <div class="text-emerald-600 text-[11px] mt-1">{{ assignedModulesScope(myModules) }}</div>
         </div>
 
-        <div role="button" tabindex="0" @click="goToRoute({ name: 'medical-claims', query: { filter: 'approved' } })" @keydown.enter="goToRoute({ name: 'medical-claims', query: { filter: 'approved' } })" @keydown.space.prevent="goToRoute({ name: 'medical-claims', query: { filter: 'approved' } })" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute({ name: 'medical-claims', query: { filter: 'approved' } })" @keydown.enter="goToRoute({ name: 'medical-claims', query: { filter: 'approved' } })" @keydown.space.prevent="goToRoute({ name: 'medical-claims', query: { filter: 'approved' } })" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">Claims</div>
           <div class="kpi-value text-slate-900">{{ formatCurrency(myApprovedClaimsTotal) }}</div>
           <div class="text-emerald-600 text-[11px] mt-1">{{ myApprovedClaims.length }} approved claims</div>
         </div>
 
-        <div role="button" tabindex="0" @click="goToRoute({ name: 'projects' })" @keydown.enter="goToRoute({ name: 'projects' })" @keydown.space.prevent="goToRoute({ name: 'projects' })" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute({ name: 'projects' })" @keydown.enter="goToRoute({ name: 'projects' })" @keydown.space.prevent="goToRoute({ name: 'projects' })" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-slate-600 text-xs font-medium mb-1">My Projects</div>
           <div class="kpi-value text-slate-900">{{ myProjects.length }}</div>
           <div class="text-emerald-600 text-[11px] mt-1">Active projects</div>
         </div>
       </div>
-
-      <!-- Timesheet and deadlines share the row 60/40 — five columns with the
-           chart taking three. The chart needs the extra width for seven
-           day-groups; the deadlines list is a narrow stack and does not. -->
       <div class="grid grid-cols-1 xl:grid-cols-5 gap-4 mb-8 items-stretch">
         <!-- Timesheet Chart -->
         <div class="xl:col-span-3 bg-white rounded-xl p-5 border border-slate-200 shadow-sm min-w-0">
@@ -221,11 +212,15 @@ function employeeTicketScope(filter) {
           <TimesheetChart :days="dailyTimesheet" :max-hours="weeklyTimesheetMaxHours" :format-duration="formatDuration" />
         </div>
 
-        <!-- "My Projects" lives in the stat row above rather than here. -->
-        <!-- Upcoming Deadlines -->
         <div class="xl:col-span-2 bg-white rounded-xl p-5 border border-slate-200 shadow-sm min-w-0 h-full">
           <h2 class="text-lg font-bold text-slate-900 mb-4">Upcoming Deadlines</h2>
-          <div v-if="upcomingDeadlines.length === 0" class="text-slate-600 text-sm italic py-4">No upcoming deadlines</div>
+          <CardEmptyState
+            v-if="upcomingDeadlines.length === 0"
+            compact
+            variant="calendar"
+            title="No upcoming deadlines"
+            description="Your assigned ticket due dates will appear here."
+          />
           <div v-else class="space-y-3">
             <button
               v-for="t in upcomingDeadlines"
@@ -253,7 +248,13 @@ function employeeTicketScope(filter) {
               <h2 class="text-lg font-bold text-slate-900">Assigned Projects</h2>
               <span class="company-hub-badge company-hub-badge-info">{{ myProjects.length }} projects</span>
             </div>
-            <div v-if="myProjects.length === 0" class="text-slate-600 text-sm italic py-4">No projects assigned</div>
+            <CardEmptyState
+              v-if="myProjects.length === 0"
+              compact
+              variant="projects"
+              title="No projects assigned"
+              description="Your manager will add you to a project when work is ready."
+            />
             <div v-else class="grid grid-cols-1 gap-4">
               <button
                 v-for="p in myProjects"
@@ -284,7 +285,13 @@ function employeeTicketScope(filter) {
               <h2 class="text-lg font-bold text-slate-900">Assigned Modules</h2>
               <span class="company-hub-badge company-hub-badge-info">{{ myModules.length }} modules</span>
             </div>
-            <div v-if="myModules.length === 0" class="text-slate-600 text-sm italic py-4">No modules assigned</div>
+            <CardEmptyState
+              v-if="myModules.length === 0"
+              compact
+              variant="projects"
+              title="No modules assigned"
+              description="Assigned project modules will appear here."
+            />
             <div v-else class="grid grid-cols-1 gap-4">
               <button
                 v-for="module in myModules"
@@ -316,7 +323,13 @@ function employeeTicketScope(filter) {
               <h2 class="text-lg font-bold text-slate-900">Leave History</h2>
               <span class="company-hub-badge company-hub-badge-info">{{ myLeaveRequests.length }} requests</span>
             </div>
-            <div v-if="myLeaveRequests.length === 0" class="text-slate-600 text-sm italic py-4">No leave requests yet</div>
+            <CardEmptyState
+              v-if="myLeaveRequests.length === 0"
+              compact
+              variant="calendar"
+              title="No leave requests yet"
+              description="Your submitted leave requests will be listed here."
+            />
             <div v-else class="space-y-3">
               <button
                 v-for="leave in myLeaveRequests.slice(0, 5)"

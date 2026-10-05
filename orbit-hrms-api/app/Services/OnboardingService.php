@@ -91,7 +91,14 @@ class OnboardingService
 
             // The employee's own designation is updated from what they
             // submitted only if HR left it blank — otherwise HR's value stands.
-            $employeeUpdates = ['status' => 'active'];
+            $employeeUpdates = [
+                'status' => 'active',
+                // A new or corrected submission needs a fresh HR decision.
+                'onboarding_review_status' => 'pending',
+                'onboarding_reviewed_by' => null,
+                'onboarding_reviewed_at' => null,
+                'onboarding_correction_note' => null,
+            ];
             if (blank($employee->designation) && filled($technical['designation'] ?? null)) {
                 $employeeUpdates['designation'] = $technical['designation'];
             }

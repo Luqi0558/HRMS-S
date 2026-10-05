@@ -14,6 +14,7 @@ class LeaveRequest extends Model
     protected $fillable = [
         'employee_id', 'type', 'from_date', 'to_date',
         'days', 'reason', 'status',
+        'contact', 'attachment_path', 'attachment_name',
     ];
 
     protected $casts = [

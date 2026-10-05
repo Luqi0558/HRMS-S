@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import CardEmptyState from './CardEmptyState.vue'
 import TimesheetChart from './TimesheetChart.vue'
 import { useDashboard } from '../composables/useDashboard.js'
 import { ticketService } from '../services/ticketService.js'
@@ -29,8 +30,7 @@ const {
   attendanceError,
   checkingOut,
   upsertTicket,
-  logActivity,
-  pushNotification
+  logActivity
 } = useDashboard()
 
 const emit = defineEmits(['open-ticket'])
@@ -92,15 +92,6 @@ async function decide(ticket, status, verb) {
     targetType: 'ticket'
   })
 
-  pushNotification({
-    title: status === 'done' ? 'Ticket passed QA' : 'Ticket sent back',
-    message: `"${ticket.title}" was ${verb} by ${state.currentUser.name}.`,
-    type: 'ticket',
-    userIds: [ticket.assigneeId, ticket.assignedById].filter(
-      id => id && id !== state.currentUser.employeeId
-    ),
-    route: { name: 'projects' }
-  })
 }
 </script>
 
@@ -110,7 +101,7 @@ async function decide(ticket, status, verb) {
        other dashboards use it; without it the attendance panel renders
        full width and dwarfs everything under it. Child order matters —
        header first, attendance second, everything else from third. -->
-  <div class="space-y-6 dashboard-inline-attendance">
+  <div class="orbit-dashboard role-dashboard qa-dashboard space-y-5 dashboard-inline-attendance">
     <div class="space-y-6">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -137,22 +128,22 @@ async function decide(ticket, status, verb) {
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('review'))" @keydown.enter="goToRoute(myTicketsRoute('review'))" @keydown.space.prevent="goToRoute(myTicketsRoute('review'))" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('review'))" @keydown.enter="goToRoute(myTicketsRoute('review'))" @keydown.space.prevent="goToRoute(myTicketsRoute('review'))" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Awaiting verification</div>
           <div class="kpi-value text-slate-900 mt-2">{{ queue.length }}</div>
           <div class="text-xs text-slate-600 mt-1">In the review column</div>
         </div>
-        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('overdue'))" @keydown.enter="goToRoute(myTicketsRoute('overdue'))" @keydown.space.prevent="goToRoute(myTicketsRoute('overdue'))" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('overdue'))" @keydown.enter="goToRoute(myTicketsRoute('overdue'))" @keydown.space.prevent="goToRoute(myTicketsRoute('overdue'))" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Overdue in review</div>
           <div class="text-2xl font-extrabold mt-2" :class="overdueInReview.length ? 'text-rose-600' : 'text-slate-900'">{{ overdueInReview.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Past their deadline</div>
         </div>
-        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('completed'))" @keydown.enter="goToRoute(myTicketsRoute('completed'))" @keydown.space.prevent="goToRoute(myTicketsRoute('completed'))" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('completed'))" @keydown.enter="goToRoute(myTicketsRoute('completed'))" @keydown.space.prevent="goToRoute(myTicketsRoute('completed'))" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Passed today</div>
           <div class="kpi-value text-slate-900 mt-2">{{ passedToday.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Signed off</div>
         </div>
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Logged today</div>
           <div class="kpi-value text-slate-900 mt-2">{{ formatDuration(myLoggedToday) }}</div>
           <div class="text-xs text-slate-600 mt-1">Your own time</div>
@@ -197,9 +188,13 @@ async function decide(ticket, status, verb) {
           <div class="px-5 py-4 border-b border-slate-200 flex-shrink-0">
             <div class="text-lg font-bold text-slate-900">Modules you cover</div>
           </div>
-          <div v-if="modules.length === 0" class="px-5 py-8 text-center text-sm text-slate-600">
-            You are not on any module yet. Ask your super admin to add you.
-          </div>
+          <CardEmptyState
+            v-if="modules.length === 0"
+            compact
+            variant="projects"
+            title="No modules assigned yet"
+            description="Ask your Super Admin to add you to a module."
+          />
           <div class="flex-1 overflow-y-auto">
             <button
               v-for="module in modules"
@@ -227,9 +222,13 @@ async function decide(ticket, status, verb) {
           {{ decisionError }}
         </div>
 
-        <div v-if="queue.length === 0" class="px-5 py-8 text-center text-sm text-slate-600">
-          Nothing waiting. Work appears here when a developer moves it to review.
-        </div>
+        <CardEmptyState
+          v-if="queue.length === 0"
+          compact
+          variant="review"
+          title="Nothing waiting for review"
+          description="Work appears here when a developer moves it to review."
+        />
 
         <div v-for="ticket in queue" :key="ticket.id" class="px-5 py-4 border-b border-slate-100 last:border-0 flex items-start justify-between gap-4 flex-wrap">
           <div class="min-w-0">

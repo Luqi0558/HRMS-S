@@ -6,6 +6,7 @@ import { useTableControls } from '../composables/useTableControls.js'
 import { attendanceService } from '../services/attendanceService.js'
 import { settingsService } from '../services/settingsService.js'
 import { employeeService } from '../services/employeeService.js'
+import CardEmptyState from '../components/CardEmptyState.vue'
 
 const route = useRoute()
 const {
@@ -88,10 +89,14 @@ const videoRef = ref(null)
 const showCameraModal = ref(false)
 const cameraError = ref('')
 const cameraLoading = ref(false)
-const attendanceDateFilter = ref('all')
+// An attendance register is an operational, today-first screen. Historical
+// rows remain available through the explicit date and "All dates" filters.
+const attendanceDateFilter = ref(todayKey())
 const attendanceStatusFilter = ref('all')
 const attendanceEmployeeFilter = ref('all')
 const attendancePresenceFilter = ref('all')
+const attendanceWorkModeFilter = ref('all')
+const showAdvancedFilters = ref(false)
 let cameraStream = null
 
 // Company-wide scope, not merely 'view'. This page is the whole punch ledger
@@ -255,7 +260,11 @@ const filteredAttendanceRows = computed(() =>
       || (attendancePresenceFilter.value === 'checked-in' && Boolean(row.checkIn))
       || (attendancePresenceFilter.value === 'active' && row.checkIn && !row.checkOut)
       || (attendancePresenceFilter.value === 'missing-checkout' && row.checkIn && !row.checkOut)
-    return matchesDate && matchesStatus && matchesEmployee && matchesPresence
+    const matchesWorkMode = attendanceWorkModeFilter.value === 'all'
+      || (attendanceWorkModeFilter.value === 'remote' && (row.workMode === 'remote' || row.dayWorkMode === 'mixed'))
+      || (attendanceWorkModeFilter.value === 'office' && row.workMode === 'office' && row.dayWorkMode !== 'mixed')
+      || (attendanceWorkModeFilter.value === 'mixed' && row.dayWorkMode === 'mixed')
+    return matchesDate && matchesStatus && matchesEmployee && matchesPresence && matchesWorkMode
   })
 )
 
@@ -266,40 +275,70 @@ const attendanceSummary = computed(() => ({
   active: filteredAttendanceRows.value.filter(row => row.checkIn && !row.checkOut).length
 }))
 
-const attendanceDates = computed(() => Array.from(new Set(state.attendance.map(row => row.date))).sort().reverse())
-
-/**
- * People to filter the ledger by, taken from the ledger itself.
- *
- * Built from the rows rather than the roster for two reasons: the roster is
- * empty for anyone without the Employees permission, which left this dropdown
- * with nothing but "All employees"; and even when it is populated it lists
- * people who have no punches on screen, so the filter offered choices that
- * could only ever return nothing.
- */
-const attendancePeople = computed(() => {
-  const byId = new Map()
-
-  state.attendance.forEach(row => {
-    if (row.employeeId && !byId.has(row.employeeId)) {
-      byId.set(row.employeeId, { id: row.employeeId, name: employeeName(row) })
-    }
-  })
-
-  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
-})
-
 const attendanceTable = useTableControls(
   filteredAttendanceRows,
   row => `${employeeName(row)} ${row.checkIn || ''} ${row.checkOut || ''} ${row.device || ''} ${row.status || ''}`
 )
 
+// An empty ledger should explain whether the selected day genuinely has no
+// punches or whether the active controls hid them. Previously Super Admin saw
+// only a column header and a large blank panel here.
+const attendanceEmptyState = computed(() => {
+  if (attendanceTable.query.value.trim()) {
+    return {
+      title: 'No matching attendance records',
+      description: 'Try another employee name or clear the search.'
+    }
+  }
+
+  if (attendanceStatusFilter.value !== 'all') {
+    const label = attendanceStatusFilter.value === 'present' ? 'on-time' : 'late'
+    return {
+      title: `No ${label} attendance records`,
+      description: 'Choose all punctuality to see every record for this day.'
+    }
+  }
+
+  if (attendanceWorkModeFilter.value !== 'all') {
+    return {
+      title: 'No attendance records for this work mode',
+      description: 'Choose all work modes to see every record for this day.'
+    }
+  }
+
+  if (attendanceDateFilter.value === 'all') {
+    return {
+      title: 'No attendance records yet',
+      description: 'Check-ins will appear here as they are recorded.'
+    }
+  }
+
+  return {
+    title: 'No attendance records for this day',
+    description: 'Select another date or return to Today to check the live register.'
+  }
+})
+
 function applyRouteFilters(query = route.query) {
-  attendanceDateFilter.value = query.date === 'today' ? todayKey() : query.date || 'all'
+  attendanceDateFilter.value = query.date === 'today' ? todayKey() : query.date || todayKey()
   attendanceStatusFilter.value = query.status || 'all'
   attendancePresenceFilter.value = query.presence || 'all'
   attendanceEmployeeFilter.value = query.employeeId || 'all'
+  attendanceWorkModeFilter.value = query.workMode || 'all'
+  showAdvancedFilters.value = Boolean(query.presence && query.presence !== 'all')
   attendanceTable.query.value = query.search || ''
+}
+
+function selectAttendanceDate(value) {
+  // Clearing the native date control returns to today's operational view;
+  // complete history is an intentional choice through the All dates button.
+  attendanceDateFilter.value = value || todayKey()
+}
+
+function clearAdvancedAttendanceFilters() {
+  attendancePresenceFilter.value = 'all'
+  attendanceEmployeeFilter.value = 'all'
+  showAdvancedFilters.value = false
 }
 
 watch(
@@ -337,14 +376,47 @@ function employeeName(row) {
     || ''
 }
 
+/**
+ * Completed sessions come from the API as `workedSeconds`. For the one open
+ * session on an active attendance day, add elapsed time locally so HR and
+ * Super Admin can see the live total without waiting for checkout.
+ */
+function totalLoggedSeconds(row) {
+  if (!row?.checkIn) return null
+
+  let total = Number(row.workedSeconds || 0)
+  const openSession = (row.sessions || []).find(session => !session.checkOut)
+  const openCheckIn = openSession?.checkIn
+
+  if (openCheckIn) {
+    const [hours, minutes] = String(openCheckIn).slice(0, 5).split(':').map(Number)
+    if (Number.isFinite(hours) && Number.isFinite(minutes)) {
+      const now = new Date()
+      const elapsed = (now.getHours() * 60 + now.getMinutes()) - (hours * 60 + minutes)
+      total += Math.max(0, elapsed * 60)
+    }
+  }
+
+  return total || (openCheckIn ? 0 : null)
+}
+
+function totalLoggedLabel(row) {
+  const total = totalLoggedSeconds(row)
+  if (total === null) return '—'
+
+  return `${Math.floor(total / 3600)}h ${String(Math.floor((total % 3600) / 60)).padStart(2, '0')}m`
+}
+
 function exportAttendanceReport() {
-  const header = ['Employee', 'Date', 'Check in', 'Check out', 'Device', 'Status']
+  const header = ['Employee', 'Date', 'Check in', 'Check out', 'Total logged', 'Device', 'Work mode', 'Status']
   const rows = filteredAttendanceRows.value.map(a => [
     employeeName(a),
     a.date,
     a.checkIn ?? '',
     a.checkOut ?? '',
+    totalLoggedLabel(a),
     a.device ?? '',
+    a.dayWorkMode === 'mixed' ? 'Mixed' : (a.workMode === 'remote' ? 'WFH' : 'Office'),
     a.status ?? ''
   ])
   const csv = [header, ...rows]
@@ -361,12 +433,12 @@ function exportAttendanceReport() {
 </script>
 
 <template>
-  <div v-if="canAccessAttendance" class="space-y-6">
-    <div class="flex items-start justify-between gap-4">
+  <div v-if="canAccessAttendance" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex items-start justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">Team attendance oversight and export</div>
       </div>
-      <button @click="exportAttendanceReport" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors shadow-sm">
+      <button @click="exportAttendanceReport" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
         Export Excel
       </button>
     </div>
@@ -375,22 +447,34 @@ function exportAttendanceReport() {
       {{ loadError }}
     </div>
 
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Records</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ attendanceSummary.total }}</div>
+    <section class="attendance-summary grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+      <div class="attendance-summary-card">
+        <div>
+          <div class="attendance-summary-label">Records</div>
+          <div class="attendance-summary-help">Check-ins saved</div>
+        </div>
+        <div class="attendance-summary-value text-slate-900">{{ attendanceSummary.total }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Present</div>
-        <div class="text-2xl font-extrabold text-emerald-600 mt-2">{{ attendanceSummary.present }}</div>
+      <div class="attendance-summary-card">
+        <div>
+          <div class="attendance-summary-label">On time</div>
+          <div class="attendance-summary-help">Within grace period</div>
+        </div>
+        <div class="attendance-summary-value text-emerald-600">{{ attendanceSummary.present }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Late</div>
-        <div class="text-2xl font-extrabold text-orange-600 mt-2">{{ attendanceSummary.late }}</div>
+      <div class="attendance-summary-card">
+        <div>
+          <div class="attendance-summary-label">Late</div>
+          <div class="attendance-summary-help">After grace period</div>
+        </div>
+        <div class="attendance-summary-value text-amber-600">{{ attendanceSummary.late }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Active now</div>
-        <div class="text-2xl font-extrabold text-blue-600 mt-2">{{ attendanceSummary.active }}</div>
+      <div class="attendance-summary-card">
+        <div>
+          <div class="attendance-summary-label">Checked in now</div>
+          <div class="attendance-summary-help">No checkout yet</div>
+        </div>
+        <div class="attendance-summary-value text-blue-600">{{ attendanceSummary.active }}</div>
       </div>
     </section>
 
@@ -450,38 +534,84 @@ function exportAttendanceReport() {
     </div>
 
 
-    <div v-if="canViewTeam" class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+    <div v-if="canViewTeam" class="orbit-table-card overflow-hidden">
       <div class="table-tools">
-        <input v-model="attendanceTable.query.value" type="search" placeholder="Filter attendance..." class="table-filter-input" />
-        <select v-model="attendanceDateFilter" class="table-filter-input max-w-[180px]">
-          <option value="all">All dates</option>
-          <option v-for="date in attendanceDates" :key="date" :value="date">{{ date }}</option>
-        </select>
+        <input v-model="attendanceTable.query.value" type="search" placeholder="Search employees..." class="table-filter-input max-w-[260px]" />
+        <input
+          type="date"
+          :value="attendanceDateFilter === 'all' ? '' : attendanceDateFilter"
+          aria-label="Attendance date"
+          class="table-filter-input max-w-[180px]"
+          @input="selectAttendanceDate($event.target.value)"
+        />
+        <button
+          type="button"
+          class="attendance-date-shortcut orbit-button orbit-button-secondary px-3 py-2 text-xs font-bold"
+          :class="{ 'is-active': attendanceDateFilter === todayKey() }"
+          @click="attendanceDateFilter = todayKey()"
+        >
+          Today
+        </button>
         <select v-model="attendanceStatusFilter" class="table-filter-input max-w-[180px]">
-          <option value="all">All statuses</option>
-          <option value="present">Present</option>
+          <option value="all">All punctuality</option>
+          <option value="present">On time</option>
           <option value="late">Late</option>
         </select>
+        <select v-model="attendanceWorkModeFilter" class="table-filter-input max-w-[170px]">
+          <option value="all">All work modes</option>
+          <option value="remote">WFH / remote</option>
+          <option value="office">Office</option>
+          <option value="mixed">Mixed location</option>
+        </select>
+        <button
+          type="button"
+          class="attendance-advanced-toggle orbit-button orbit-button-secondary px-3 py-2 text-xs font-bold"
+          :class="{ 'is-active': showAdvancedFilters || attendanceDateFilter === 'all' || attendancePresenceFilter !== 'all' || attendanceEmployeeFilter !== 'all' }"
+          @click="showAdvancedFilters = !showAdvancedFilters"
+        >
+          Advanced filters
+        </button>
+        <div class="table-count">{{ attendanceTable.filteredRows.value.length }} records</div>
+      </div>
+      <div v-if="showAdvancedFilters" class="attendance-advanced-filters">
+        <div class="text-xs font-bold text-slate-600">Audit and exception filters</div>
         <select v-model="attendancePresenceFilter" class="table-filter-input max-w-[190px]">
           <option value="all">All punch states</option>
           <option value="checked-in">Checked in</option>
           <option value="active">Active now</option>
           <option value="missing-checkout">Missing checkout</option>
         </select>
-        <select v-model="attendanceEmployeeFilter" class="table-filter-input max-w-[220px]">
-          <option value="all">All employees</option>
-          <option v-for="employee in attendancePeople" :key="employee.id" :value="employee.id">{{ employee.name }}</option>
-        </select>
-        <div class="table-count">{{ attendanceTable.filteredRows.value.length }} records</div>
+        <div v-if="attendanceEmployeeFilter !== 'all'" class="attendance-filter-chip">
+          Employee filter applied
+        </div>
+        <button
+          type="button"
+          class="attendance-date-shortcut orbit-button orbit-button-secondary px-3 py-2 text-xs font-bold"
+          :class="{ 'is-active': attendanceDateFilter === 'all' }"
+          @click="attendanceDateFilter = 'all'"
+        >
+          All dates / history
+        </button>
+        <button type="button" class="attendance-clear-filters" @click="clearAdvancedAttendanceFilters">Clear advanced</button>
       </div>
       <div class="table-scroll" @scroll="attendanceTable.loadMoreRows">
-      <table class="w-full text-sm">
+      <CardEmptyState
+        v-if="attendanceTable.filteredRows.value.length === 0"
+        class="attendance-empty-state"
+        compact
+        variant="people"
+        :title="attendanceEmptyState.title"
+        :description="attendanceEmptyState.description"
+      />
+      <table v-else class="orbit-data-table w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left bg-slate-50/80">
             <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Employee</th>
             <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Check in</th>
             <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Check out</th>
+            <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Total logged</th>
             <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Device</th>
+            <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Work mode</th>
             <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Photo</th>
             <th class="px-4 py-3 font-medium text-slate-600 text-xs uppercase tracking-wide">Status</th>
           </tr>
@@ -491,7 +621,13 @@ function exportAttendanceReport() {
             <td class="px-4 py-3 text-slate-900 font-medium">{{ employeeName(a) }}</td>
             <td class="px-4 py-3 font-mono text-xs text-slate-700">{{ a.checkIn }}</td>
             <td class="px-4 py-3 font-mono text-xs text-slate-700">{{ a.checkOut ?? '—' }}</td>
+            <td class="px-4 py-3 font-mono text-xs font-semibold text-slate-900">{{ totalLoggedLabel(a) }}</td>
             <td class="px-4 py-3 text-slate-900 capitalize">{{ a.device }}</td>
+            <td class="px-4 py-2.5">
+              <span class="attendance-work-mode-badge text-[11px] px-2 py-0.5 rounded-full font-semibold" :class="a.dayWorkMode === 'mixed' ? 'attendance-work-mode-badge--mixed bg-amber-100 text-amber-700' : (a.workMode === 'remote' ? 'attendance-work-mode-badge--remote bg-violet-100 text-violet-700' : 'attendance-work-mode-badge--office bg-slate-100 text-slate-700')">
+                {{ a.dayWorkMode === 'mixed' ? 'Mixed' : (a.workMode === 'remote' ? 'WFH' : 'Office') }}
+              </span>
+            </td>
             <td class="px-4 py-2.5">
               <div class="w-10 h-10 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center">
                 <img v-if="photoUrls[a.id]" :src="photoUrls[a.id]" alt="check-in photo" class="w-full h-full object-cover cursor-zoom-in hover:opacity-80 transition-opacity" @click="openPhoto(a)" />

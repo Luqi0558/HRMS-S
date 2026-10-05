@@ -16,11 +16,6 @@ class SettingsController extends Controller
     ) {
     }
 
-    /**
-     * Readable by any signed-in user: the client needs the working day to
-     * render attendance, and leave allowances to show a balance. None of it
-     * is sensitive.
-     */
     public function index(): JsonResponse
     {
         return response()->json([
@@ -29,17 +24,12 @@ class SettingsController extends Controller
                 'attendance' => $this->settings->group('attendance'),
                 'leave' => $this->settings->group('leave'),
                 'claims' => $this->settings->group('claims'),
+                'finance' => $this->settings->group('finance'),
                 'pettyCash' => $this->settings->group('pettyCash'),
             ],
         ]);
     }
 
-    /**
-     * The dropdown options: job titles and technical stacks.
-     *
-     * Readable by anyone signed in — onboarding and the invite form need them,
-     * and they are not sensitive.
-     */
     public function lists(): JsonResponse
     {
         return response()->json(['lists' => $this->lists->all()]);
@@ -66,20 +56,10 @@ class SettingsController extends Controller
 
         return response()->json([
             'lists' => $result['lists'],
-            // So the UI can say how many people still hold it rather than
-            // implying nothing was affected.
             'stillAssigned' => $result['stillAssigned'],
         ]);
     }
 
-    /**
-     * Outbound integration credentials.
-     *
-     * Deliberately not part of index(), which any signed-in user may read. The
-     * Teams webhook URL is a credential in its own right — anyone holding it
-     * can post into the channel — so it is served only to whoever may edit
-     * Settings, behind the same guard as the write.
-     */
     public function integrations(): JsonResponse
     {
         return response()->json([
@@ -90,7 +70,7 @@ class SettingsController extends Controller
     public function update(Request $request, string $group): JsonResponse
     {
         abort_unless(
-            in_array($group, ['company', 'attendance', 'leave', 'claims', 'pettyCash', 'integrations'], true),
+            in_array($group, ['company', 'attendance', 'leave', 'claims', 'finance', 'pettyCash', 'integrations'], true),
             404,
             'Unknown settings group.',
         );
@@ -98,6 +78,22 @@ class SettingsController extends Controller
         $values = $request->validate([
             'values' => ['required', 'array'],
         ])['values'];
+
+        // These defaults become financial terms on newly created modules, so
+        // validate them at the API boundary rather than trusting the Settings
+        // page's client-side checks.
+        if ($group === 'finance') {
+            $values = $request->validate([
+                'values' => ['required', 'array'],
+                'values.defaultCommissionType' => ['required', 'in:percent,fixed'],
+                'values.defaultCommissionValue' => ['required', 'numeric', 'min:0', 'max:100000000'],
+                'values.superAdminApprovalRequired' => ['required', 'boolean'],
+            ])['values'];
+
+            if ($values['defaultCommissionType'] === 'percent' && (float) $values['defaultCommissionValue'] > 100) {
+                abort(422, 'Default commission percentage cannot exceed 100.');
+            }
+        }
 
         $this->settings->putGroup($group, $values);
 

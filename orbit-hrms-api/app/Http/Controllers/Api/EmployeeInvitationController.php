@@ -5,10 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Employee\InviteEmployeeRequest;
 use App\Http\Resources\EmployeeResource;
+use App\Mail\EmployeeInvitationMail;
 use App\Models\Employee;
 use App\Services\InvitationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail;
 
 class EmployeeInvitationController extends Controller
 {
@@ -30,10 +32,18 @@ class EmployeeInvitationController extends Controller
             $request->validated(),
             $request->user()->id,
         );
+        $emailQueued = $this->queueInvitationEmail($result);
+        $emailDeliveryEnabled = $this->hasDeliverableMailTransport();
 
         return response()->json([
-            'message' => "Invitation created for {$result['employee']->name}.",
+            'message' => !$emailDeliveryEnabled
+                ? "Invitation created for {$result['employee']->name}, but email delivery is not configured for this environment."
+                : ($emailQueued
+                ? "Invitation created and email queued for {$result['employee']->name}."
+                : "Invitation created for {$result['employee']->name}, but the email could not be queued."),
             'employee' => new EmployeeResource($result['employee']),
+            'emailQueued' => $emailQueued,
+            'emailDeliveryEnabled' => $emailDeliveryEnabled,
             'invite' => [
                 'token' => $result['token'],
                 'expiresAt' => $result['invitation']->expires_at->toIso8601String(),
@@ -55,15 +65,64 @@ class EmployeeInvitationController extends Controller
             ], 422);
         }
 
+        // A resend revokes the still-valid token. Do not strand an invitee by
+        // replacing their only working link when this environment cannot send
+        // any email (the local `log` and `array` transports are mail sinks).
+        if (!$this->hasDeliverableMailTransport()) {
+            return response()->json([
+                'message' => 'Email delivery is not configured for this environment. Configure SMTP before resending the invitation.',
+                'error' => 'mail_delivery_not_configured',
+            ], 409);
+        }
+
         $result = $this->invitations->resendInvitation($employee, $request->user()->id);
+        $emailQueued = $this->queueInvitationEmail([...$result, 'employee' => $employee]);
+        $emailDeliveryEnabled = $this->hasDeliverableMailTransport();
 
         return response()->json([
-            'message' => "New invitation created for {$employee->name}.",
+            'message' => !$emailDeliveryEnabled
+                ? "New invitation created for {$employee->name}, but email delivery is not configured for this environment."
+                : ($emailQueued
+                ? "New invitation created and email queued for {$employee->name}."
+                : "New invitation created for {$employee->name}, but the email could not be queued."),
+            'emailQueued' => $emailQueued,
+            'emailDeliveryEnabled' => $emailDeliveryEnabled,
             'invite' => [
                 'token' => $result['token'],
                 'expiresAt' => $result['invitation']->expires_at->toIso8601String(),
                 'path' => "/accept-invite?token={$result['token']}",
             ],
         ]);
+    }
+
+    /**
+     * The employee record and invitation are already durable at this point.
+     * A mail transport outage must be visible to HR but must not undo either.
+     */
+    private function queueInvitationEmail(array $result): bool
+    {
+        $employee = $result['employee'];
+        $inviteUrl = rtrim((string) config('app.frontend_url'), '/')
+            .'/accept-invite?token='.rawurlencode($result['token']);
+
+        try {
+            Mail::to($employee->email)->queue(new EmployeeInvitationMail(
+                employeeName: $employee->name,
+                inviteUrl: $inviteUrl,
+                expiresAt: $result['invitation']->expires_at->toDayDateTimeString(),
+            ));
+
+            return true;
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return false;
+        }
+    }
+
+    /** Log/array transports are intentional local-development sinks, not inbox delivery. */
+    private function hasDeliverableMailTransport(): bool
+    {
+        return !in_array((string) config('mail.default'), ['array', 'log'], true);
     }
 }

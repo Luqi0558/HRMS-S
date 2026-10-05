@@ -45,6 +45,8 @@ class LeaveRequestController extends Controller
             // policy has them disabled.
             'days' => ['required', 'numeric', 'min:0.5', 'max:365'],
             'reason' => ['nullable', 'string', 'max:1000'],
+            'contact' => ['nullable', 'string', 'max:255'],
+            'attachment' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
         ]);
 
         return response()->json([
@@ -53,6 +55,17 @@ class LeaveRequestController extends Controller
                 $this->leave->create($request->user(), $validated)
             ),
         ], 201);
+    }
+
+    /** Streams a request's supporting document. Access is checked in the service. */
+    public function attachment(Request $request, int $leaveRequest): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $record = $this->leave->findForAttachment($request->user(), $leaveRequest);
+
+        return \Illuminate\Support\Facades\Storage::disk('local')->download(
+            $record->attachment_path,
+            $record->attachment_name ?: 'leave-'.$record->id.'.'.pathinfo($record->attachment_path, PATHINFO_EXTENSION),
+        );
     }
 
     public function decide(Request $request, int $leaveRequest): JsonResponse

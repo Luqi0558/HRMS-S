@@ -86,6 +86,52 @@ class AttendancePhotoTest extends TenantTestCase
             ->assertJsonPath('attendance.hasCheckInPhoto', false);
     }
 
+    public function test_camera_policy_rejects_a_photo_less_check_in_at_the_api(): void
+    {
+        app(SettingsService::class)->put('attendance', 'cameraCheckinRequired', true);
+
+        $this->postJson('/api/attendance/check-in', ['device' => 'laptop'], $this->auth('worker@test.com'))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('photo');
+
+        $this->assertDatabaseCount('attendance', 0);
+    }
+
+    public function test_a_remote_check_in_persists_the_wfh_work_mode(): void
+    {
+        $this->postJson('/api/attendance/check-in', [
+            'device' => 'camera',
+            'workMode' => 'remote',
+        ], $this->auth('worker@test.com'))
+            ->assertCreated()
+            ->assertJsonPath('attendance.workMode', 'remote');
+
+        $this->assertDatabaseHas('attendance', [
+            'employee_id' => $this->worker->id,
+            'work_mode' => 'remote',
+        ]);
+    }
+
+    public function test_a_person_can_continue_the_day_from_home_after_an_office_checkout(): void
+    {
+        $headers = $this->auth('worker@test.com');
+
+        $this->postJson('/api/attendance/check-in', ['device' => 'laptop', 'workMode' => 'office'], $headers)
+            ->assertCreated()
+            ->assertJsonPath('attendance.workMode', 'office');
+        $this->postJson('/api/attendance/check-out', [], $headers)->assertOk();
+
+        $this->postJson('/api/attendance/check-in', ['device' => 'laptop', 'workMode' => 'remote'], $headers)
+            ->assertCreated()
+            ->assertJsonPath('attendance.workMode', 'remote')
+            ->assertJsonPath('attendance.dayWorkMode', 'mixed');
+
+        $row = Attendance::with('sessions')->where('employee_id', $this->worker->id)->firstOrFail();
+        $this->assertSame('mixed', $row->work_mode);
+        $this->assertCount(2, $row->sessions);
+        $this->assertSame('remote', $row->sessions->last()->work_mode);
+    }
+
     public function test_a_non_image_upload_is_rejected(): void
     {
         $this->post('/api/attendance/check-in', [

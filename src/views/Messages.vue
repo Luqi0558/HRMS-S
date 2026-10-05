@@ -876,7 +876,7 @@ async function retryMessage(message) {
 </script>
 
 <template>
-  <div class="space-y-4">
+  <div class="orbit-page space-y-4">
     <!-- The page title lives in the topbar; only the counts stay here. -->
     <div class="flex items-center justify-between gap-3">
       <div class="text-sm text-slate-600">Direct messages and admin broadcasts.</div>
@@ -891,7 +891,7 @@ async function retryMessage(message) {
          redundant panel header is gone — message previews truncate, so the
          extra width shows more of each one. -->
     <section class="grid grid-cols-1 xl:grid-cols-[380px_1fr] gap-4 h-[calc(100vh-10.5rem)] min-h-[420px]">
-      <div class="relative bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm h-full min-h-0 flex flex-col">
+      <div class="orbit-card relative overflow-hidden h-full min-h-0 flex flex-col">
         <!-- The "Chats" heading duplicated the page title above and cost the
              list ~52px of height; the count moved into the page header. -->
         <!-- Search sits above the composer controls: it is how you find an
@@ -1085,7 +1085,7 @@ async function retryMessage(message) {
         </div>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl shadow-sm h-full min-h-0 flex flex-col overflow-hidden">
+      <div class="orbit-card h-full min-h-0 flex flex-col overflow-hidden">
         <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-3 flex-shrink-0">
           <div v-if="messageMode === 'broadcast' && !selectedConversation" class="min-w-0">
             <div class="text-lg font-bold text-slate-900">New broadcast</div>

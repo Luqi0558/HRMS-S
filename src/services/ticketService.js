@@ -48,6 +48,29 @@ export const ticketService = {
     return data.ticket
   },
 
+  /** Uploads a file to a ticket. Returns the ticket with its attachments. */
+  async attach(id, file) {
+    const body = new FormData()
+    body.append('file', file)
+
+    const data = await apiClient.post(`/tickets/${id}/attachments`, body)
+
+    return data.ticket
+  },
+
+  /** Downloads an attachment; behind auth, so fetched as a blob. */
+  async downloadAttachment(ticketId, attachment) {
+    const blob = await apiClient.blob(`/tickets/${ticketId}/attachments/${attachment.id}`)
+    const url = URL.createObjectURL(blob)
+
+    const link = document.createElement('a')
+    link.href = url
+    link.download = attachment.name || `attachment-${attachment.id}`
+    link.click()
+
+    URL.revokeObjectURL(url)
+  },
+
   /** Starting a timer stops any already running one, server-side. */
   async startTimer(id) {
     const data = await apiClient.post(`/tickets/${id}/start-timer`)

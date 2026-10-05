@@ -9,12 +9,9 @@ const route = useRoute()
 const router = useRouter()
 const {
   state,
-  ticketSeconds,
-  projectSecondsToday,
-  formatDuration,
   formatDateTime,
   visibleNotifications,
-  unreadNotifications,
+  unreadNotificationCount,
   markNotificationRead,
   markAllNotificationsRead
 } = useStore()
@@ -42,13 +39,6 @@ const currentProjectManager = computed(() => {
   return currentProject.value.manager
     ?? state.employees.find(employee => employee.id === currentProject.value.managerId)
     ?? null
-})
-
-const currentProjectTotal = computed(() => {
-  if (!currentProject.value) return 0
-  return state.tickets
-    .filter(ticket => ticket.projectId === currentProject.value.id)
-    .reduce((total, ticket) => total + ticketSeconds(ticket), 0)
 })
 
 const isDashboard = computed(() => route.name === 'dashboard')
@@ -82,7 +72,9 @@ const pageTitle = computed(() => ROUTE_TITLES[route.name] || '')
 const headerDate = computed(() => formatDateTime(now.value, {
   weekday: 'long',
   month: 'long',
-  day: 'numeric',
+  day: 'numeric'
+}))
+const headerTime = computed(() => formatDateTime(now.value, {
   hour: 'numeric',
   minute: '2-digit'
 }))
@@ -101,8 +93,33 @@ function notificationTime(createdAt) {
   return formatDateTime(createdAt)
 }
 
+function notificationTypeLabel(type) {
+  const labels = {
+    leave: 'Leave',
+    medical: 'Medical',
+    assets: 'Assets',
+    payroll: 'Payroll',
+    tickets: 'Tasks',
+    projects: 'Projects',
+    attendance: 'Attendance'
+  }
+  return labels[type] || 'Update'
+}
+
+function notificationTypeInitial(type) {
+  return notificationTypeLabel(type).slice(0, 1)
+}
+
+function isNotificationUnread(notification) {
+  return !(notification.readBy || []).includes(state.currentUser.id)
+}
+
 function openNotifications() {
   showNotifications.value = !showNotifications.value
+}
+
+function toggleSidebar() {
+  window.dispatchEvent(new CustomEvent('orbit:toggle-sidebar'))
 }
 
 function openNotification(notification) {
@@ -121,13 +138,6 @@ const filteredNotifications = computed(() => {
   return visibleNotifications.value
 })
 
-const notificationTypeCounts = computed(() => {
-  return visibleNotifications.value.reduce((groups, notification) => {
-    const type = notification.type || 'general'
-    groups[type] = (groups[type] || 0) + 1
-    return groups
-  }, {})
-})
 // Your own status, shown as a dot on your avatar. Clicking toggles it — two
 // states is all an HRMS needs, and 'Active' is stored as no override at all so
 // it keeps following the connection.
@@ -159,34 +169,43 @@ async function toggleMyPresence() {
 </script>
 
 <template>
-  <header class="h-16 flex items-center justify-between px-5 bg-[#e6eef8]/92 backdrop-blur-xl border-b border-white shadow-[0_10px_32px_rgba(31,41,55,0.09)] flex-shrink-0">
-    <div v-if="currentProject" class="topbar-project-meta">
+  <header class="orbit-topbar h-16 flex items-center justify-between px-5 flex-shrink-0">
+    <div class="topbar-title-area">
+      <button
+        type="button"
+        class="topbar-menu-button"
+        aria-label="Toggle sidebar"
+        @click="toggleSidebar"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16" />
+        </svg>
+      </button>
+      <div v-if="currentProject" class="topbar-project-meta">
       <div class="topbar-meta-label text-[10px] uppercase tracking-[0.08em] text-slate-500 font-bold leading-none">Project Manager</div>
       <div class="topbar-meta-value text-sm font-bold text-slate-950 leading-none mt-1">{{ currentProjectManager?.name || '-' }}</div>
     </div>
-    <div v-else-if="isDashboard" class="topbar-dashboard-title">
-      <div class="text-lg font-extrabold text-slate-950 leading-tight">Welcome, {{ state.currentUser.name }}!</div>
-      <!-- <div class="text-xs font-medium text-slate-500 mt-0.5">Here's your work overview for today</div> -->
+      <div v-else-if="isDashboard" class="topbar-dashboard-title">
+      <div class="text-lg font-extrabold text-slate-950 leading-tight">Welcome back, {{ state.currentUser.name }}! <span aria-hidden="true">👋</span></div>
+      <div class="topbar-dashboard-subtitle">Here's what's happening in Orbit HRMS today.</div>
     </div>
     <!-- Every other page showed an empty topbar while repeating its title in
          the body. Surfacing it here removes that duplication and gives the
          page content the vertical space back. -->
-    <div v-else class="topbar-dashboard-title">
+      <div v-else class="topbar-dashboard-title">
       <div class="text-lg font-extrabold text-slate-950 leading-tight">{{ pageTitle }}</div>
-    </div>
-    <div class="flex items-center gap-5">
-      <div v-if="currentProject" class="topbar-project-stats flex items-center gap-6 text-right">
-        <div>
-          <div class="topbar-meta-label text-[10px] uppercase tracking-[0.08em] text-slate-500 font-bold leading-none">Logged Today</div>
-          <div class="topbar-meta-value text-[15px] text-slate-950 font-extrabold leading-tight mt-1">{{ formatDuration(projectSecondsToday(currentProject.id)) }}</div>
-        </div>
-        <div>
-          <div class="topbar-meta-label text-[10px] uppercase tracking-[0.08em] text-slate-500 font-bold leading-none">Logged Total</div>
-          <div class="topbar-meta-value text-[15px] text-slate-950 font-extrabold leading-tight mt-1">{{ formatDuration(currentProjectTotal) }}</div>
-        </div>
       </div>
-      <div v-else-if="isDashboard" class="topbar-dashboard-date text-right">
-        <div class="topbar-meta-value text-base font-extrabold text-slate-950">{{ headerDate }}</div>
+    </div>
+    <div class="flex items-center gap-4">
+      <div v-if="isDashboard" class="topbar-dashboard-date">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <rect x="4" y="5" width="16" height="15" rx="2" />
+          <path d="M8 3v4M16 3v4M4 10h16" />
+        </svg>
+        <div>
+          <div class="topbar-date-label">{{ headerDate }}</div>
+          <div class="topbar-time-label">at {{ headerTime }}</div>
+        </div>
       </div>
       <button
         @click="emit('toggleNightMode')"
@@ -209,66 +228,75 @@ async function toggleMyPresence() {
         <button
           @click="openNotifications"
           title="Notifications"
-          class="relative w-9 h-9 rounded-full border border-slate-200 bg-white text-slate-700 flex items-center justify-center hover:bg-slate-50 transition-colors shadow-sm"
+          class="orbit-icon-button relative w-9 h-9 flex items-center justify-center transition-colors"
         >
           <svg viewBox="0 0 24 24" class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
             <path d="M13.73 21a2 2 0 0 1-3.46 0" />
           </svg>
-          <span v-if="unreadNotifications.length" class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
-            {{ unreadNotifications.length > 9 ? '9+' : unreadNotifications.length }}
+          <span v-if="unreadNotificationCount" class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
+            {{ unreadNotificationCount > 9 ? '9+' : unreadNotificationCount }}
           </span>
         </button>
 
-        <div v-if="showNotifications" class="absolute right-0 top-12 z-50 w-[400px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
-          <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
-            <div>
-              <div class="text-sm font-bold text-slate-900">Notifications</div>
-              <div class="text-xs text-slate-500">{{ unreadNotifications.length }} unread</div>
+        <div v-if="showNotifications" class="notification-popover absolute right-0 top-12 z-50 w-[400px] max-w-[calc(100vw-2rem)]" role="dialog" aria-label="Notifications">
+          <div class="notification-popover-header">
+            <div class="notification-heading">
+              <span class="notification-heading-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </span>
+              <div>
+                <div class="notification-title">Notifications</div>
+                <div class="notification-subtitle">{{ unreadNotificationCount ? `${unreadNotificationCount} unread` : 'You are all caught up' }}</div>
+              </div>
             </div>
-            <button @click="markAllNotificationsRead" class="text-xs font-semibold text-emerald-700 hover:text-emerald-800">
+            <button
+              @click="markAllNotificationsRead"
+              :disabled="unreadNotificationCount === 0"
+              class="notification-mark-read"
+            >
               Mark all read
             </button>
           </div>
-          <div class="px-4 py-3 border-b border-slate-200">
-            <div class="grid grid-cols-3 gap-2">
+          <div class="notification-toolbar">
+            <div class="notification-filter-tabs" role="tablist" aria-label="Notification state">
               <button
                 v-for="filter in [{ id: 'all', label: 'All' }, { id: 'unread', label: 'Unread' }, { id: 'read', label: 'Read' }]"
                 :key="filter.id"
                 type="button"
                 @click="notificationFilter = filter.id"
-                class="rounded-lg border px-3 py-2 text-xs font-bold transition-colors"
-                :class="notificationFilter === filter.id ? 'bg-slate-950 text-white border-slate-950' : 'border-slate-200 text-slate-700 hover:bg-slate-50'"
+                class="notification-filter-tab"
+                :class="{ 'is-active': notificationFilter === filter.id }"
               >
                 {{ filter.label }}
               </button>
             </div>
-            <div v-if="Object.keys(notificationTypeCounts).length" class="mt-3 flex flex-wrap gap-2">
-              <span v-for="(count, type) in notificationTypeCounts" :key="type" class="company-hub-badge company-hub-badge-muted capitalize">
-                {{ type }} {{ count }}
-              </span>
-            </div>
           </div>
-          <div class="max-h-96 overflow-y-auto divide-y divide-slate-200">
+          <div class="notification-list">
             <button
               v-for="notification in filteredNotifications"
               :key="notification.id"
               @click="openNotification(notification)"
-              class="w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors"
+              class="notification-item"
+              :class="{ 'is-unread': isNotificationUnread(notification) }"
             >
-              <div class="flex items-start gap-3">
-                <span class="mt-1 h-2 w-2 rounded-full shrink-0" :class="notification.readBy?.includes(state.currentUser.id) ? 'bg-slate-300' : 'bg-emerald-500'"></span>
-                <div class="min-w-0">
-                  <div class="flex items-start justify-between gap-2">
-                    <div class="text-sm font-bold text-slate-900">{{ notification.title }}</div>
-                    <span class="company-hub-badge company-hub-badge-info capitalize">{{ notification.type || 'general' }}</span>
-                  </div>
-                  <div class="text-xs text-slate-600 mt-1 leading-relaxed">{{ notification.message }}</div>
-                  <div class="text-[11px] text-slate-400 mt-2">{{ notificationTime(notification.createdAt) }}</div>
-                </div>
-              </div>
+              <span class="notification-type-icon" :class="`notification-type-icon--${notification.type || 'general'}`" aria-hidden="true">
+                {{ notificationTypeInitial(notification.type) }}
+              </span>
+              <span class="notification-item-copy">
+                <span class="notification-item-topline">
+                  <span class="notification-item-title">{{ notification.title }}</span>
+                  <span class="notification-item-type">{{ notificationTypeLabel(notification.type) }}</span>
+                </span>
+                <span class="notification-item-message">{{ notification.message }}</span>
+                <span class="notification-item-time">{{ notificationTime(notification.createdAt) }}</span>
+              </span>
+              <span v-if="isNotificationUnread(notification)" class="notification-unread-dot" aria-label="Unread"></span>
             </button>
-            <div v-if="filteredNotifications.length === 0" class="app-empty-state m-3">
+            <div v-if="filteredNotifications.length === 0" class="app-empty-state notification-empty-state">
               <div class="app-empty-title">No notifications here</div>
               <div class="app-empty-copy">Try another filter or wait for new activity.</div>
             </div>

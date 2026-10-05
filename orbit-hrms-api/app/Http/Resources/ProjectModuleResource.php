@@ -7,6 +7,23 @@ use Illuminate\Http\Resources\Json\JsonResource;
 
 class ProjectModuleResource extends JsonResource
 {
+    /**
+     * Whether the viewer may see a module's money. Remembered on the request:
+     * a project list renders many modules, and each check reads the grid.
+     */
+    private function canSeeMoney(Request $request): bool
+    {
+        if (! $request->attributes->has('canSeeModuleMoney')) {
+            $user = $request->user();
+            $request->attributes->set(
+                'canSeeModuleMoney',
+                $user && app(\App\Services\PermissionService::class)->can($user, 'Finance', 'finance'),
+            );
+        }
+
+        return (bool) $request->attributes->get('canSeeModuleMoney');
+    }
+
     public function toArray(Request $request): array
     {
         return [
@@ -25,12 +42,16 @@ class ProjectModuleResource extends JsonResource
 
             // Money is a string, not a float: JSON numbers are doubles, and
             // a budget rendered through one can lose precision.
-            'budget' => (string) $this->budget,
-            'commission' => [
+            //
+            // Only for holders of the Finance right. Modules go to everyone on
+            // the project, and this used to hand every developer the client's
+            // budget and the manager's commission terms along with them.
+            'budget' => $this->when($this->canSeeMoney($request), fn () => (string) $this->budget),
+            'commission' => $this->when($this->canSeeMoney($request), fn () => [
                 'type' => $this->commission_type,
                 'value' => (string) $this->commission_value,
                 'status' => $this->commission_status,
-            ],
+            ]),
 
             'ticketCount' => $this->whenCounted('tickets'),
             'openTicketCount' => $this->when(

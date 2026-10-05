@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import CardEmptyState from './CardEmptyState.vue'
 import TicketTimer from './TicketTimer.vue'
 import TimesheetChart from './TimesheetChart.vue'
 import { useDashboard } from '../composables/useDashboard.js'
@@ -57,7 +58,7 @@ const loggedToday = computed(() => employeeSecondsToday(me.value))
        other dashboards use it; without it the attendance panel renders
        full width and dwarfs everything under it. Child order matters —
        header first, attendance second, everything else from third. -->
-  <div class="space-y-6 dashboard-inline-attendance">
+  <div class="orbit-dashboard role-dashboard intern-dashboard space-y-5 dashboard-inline-attendance">
     <div class="space-y-6">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -84,24 +85,24 @@ const loggedToday = computed(() => employeeSecondsToday(me.value))
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('open'))" @keydown.enter="goToRoute(myTicketsRoute('open'))" @keydown.space.prevent="goToRoute(myTicketsRoute('open'))" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('open'))" @keydown.enter="goToRoute(myTicketsRoute('open'))" @keydown.space.prevent="goToRoute(myTicketsRoute('open'))" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">My open tasks</div>
           <div class="kpi-value text-slate-900 mt-2">{{ myTickets.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Assigned to you</div>
         </div>
-        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('review'))" @keydown.enter="goToRoute(myTicketsRoute('review'))" @keydown.space.prevent="goToRoute(myTicketsRoute('review'))" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute('review'))" @keydown.enter="goToRoute(myTicketsRoute('review'))" @keydown.space.prevent="goToRoute(myTicketsRoute('review'))" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Awaiting review</div>
           <div class="kpi-value text-slate-900 mt-2">{{ awaitingReview.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Handed over, with QA</div>
         </div>
         <!-- Moved out of the header, where it sat against the punch control and
              crowded it. Same tile QA has. -->
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Logged today</div>
           <div class="kpi-value text-slate-900 mt-2">{{ formatDuration(loggedToday) }}</div>
           <div class="text-xs text-slate-600 mt-1">Your own time</div>
         </div>
-        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute())" @keydown.enter="goToRoute(myTicketsRoute())" @keydown.space.prevent="goToRoute(myTicketsRoute())" class="dashboard-click-card kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div role="button" tabindex="0" @click="goToRoute(myTicketsRoute())" @keydown.enter="goToRoute(myTicketsRoute())" @keydown.space.prevent="goToRoute(myTicketsRoute())" class="dashboard-click-card orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Your modules</div>
           <div class="kpi-value text-slate-900 mt-2">{{ modules.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Where your work sits</div>
@@ -147,11 +148,13 @@ const loggedToday = computed(() => employeeSecondsToday(me.value))
             <div class="text-lg font-bold text-slate-900">Who to ask</div>
             <div class="text-sm text-slate-600">The lead of each module you are on.</div>
           </div>
-          <!-- A real state on somebody's first day, so it says what to do rather
-               than rendering an empty box. -->
-          <div v-if="supervisors.length === 0" class="px-5 py-8 text-center text-sm text-slate-600">
-            You are not on a module yet. Your HR or super admin will add you.
-          </div>
+          <CardEmptyState
+            v-if="supervisors.length === 0"
+            compact
+            variant="people"
+            title="No module lead assigned yet"
+            description="Your HR or Super Admin will add you to a module."
+          />
           <div class="flex-1 overflow-y-auto">
             <div v-for="supervisor in supervisors" :key="supervisor.id" class="px-5 py-3 border-b border-slate-100 last:border-0 flex items-center justify-between gap-4">
               <div class="min-w-0">
@@ -172,9 +175,13 @@ const loggedToday = computed(() => employeeSecondsToday(me.value))
           <div class="text-lg font-bold text-slate-900">My tasks</div>
           <span class="text-sm font-semibold text-slate-500">{{ myTickets.length }}</span>
         </div>
-        <div v-if="myTickets.length === 0" class="px-5 py-8 text-center text-sm text-slate-600">
-          Nothing assigned yet.
-        </div>
+        <CardEmptyState
+          v-if="myTickets.length === 0"
+          compact
+          variant="projects"
+          title="No tasks assigned yet"
+          description="Tasks assigned to you will appear here."
+        />
         <div v-for="ticket in myTickets" :key="ticket.id" class="px-5 py-4 border-b border-slate-100 last:border-0 flex items-start justify-between gap-4 flex-wrap">
           <div class="min-w-0">
             <div v-if="ticket.reference" class="text-[10px] font-mono text-slate-500">{{ ticket.reference }}</div>

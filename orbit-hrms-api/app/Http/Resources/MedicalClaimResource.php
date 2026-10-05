@@ -24,6 +24,14 @@ class MedicalClaimResource extends JsonResource
             'submittedAt' => $this->created_at?->toDateString(),
             'status' => $this->status,
             'hasReceipt' => filled($this->receipt_path),
+            // The review steps before a decision. `status` stays 'pending'
+            // through them - it is what moves money - so the stage is its own
+            // field rather than a status value.
+            'reviewStage' => $this->reviewStage(),
+            'viewedAt' => $this->viewed_at?->toIso8601String(),
+            'viewedByName' => $this->whenLoaded('viewer', fn () => $this->viewer?->name),
+            'processingAt' => $this->processing_at?->toIso8601String(),
+            'processingByName' => $this->whenLoaded('processor', fn () => $this->processor?->name),
             'reviewedAt' => $this->reviewed_at?->toIso8601String(),
             'reviewComment' => $this->review_comment,
             'employeeName' => $this->whenLoaded('employee', fn () => $this->employee?->name),

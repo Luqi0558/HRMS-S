@@ -2,14 +2,18 @@
 
 namespace App\Services;
 
+use App\Models\Attendance;
 use App\Models\Employee;
+use App\Models\PayrollRun;
 use App\Models\Salary;
 use App\Models\SalarySlip;
 use App\Models\SalarySlipRequest;
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -40,7 +44,6 @@ class PayrollService
         'house_allowance' => 0.12,
         'medical_allowance' => 0.06,
         'tax_deduction' => 0.05,
-        'attendance_deduction' => 0.03,
     ];
 
     public function __construct(
@@ -121,7 +124,11 @@ class PayrollService
     {
         $row = $this->payrollRow($user);
 
-        $query = SalarySlipRequest::with(['employee:id,name,department', 'reviewer:id,name', 'slip']);
+        $query = SalarySlipRequest::with([
+            'employee:id,name,department', 'reviewer:id,name', 'payrollRun:id,period,status', 'slip',
+            // Named on the Payroll page's audit timeline.
+            'slip.issuer:id,name', 'slip.approver:id,name', 'slip.payer:id,name',
+        ]);
 
         $visibleIds = $this->scopes->visibleEmployeeIds($user, $row['scope']);
         if ($visibleIds !== null) {
@@ -137,7 +144,13 @@ class PayrollService
 
     public function requestSlip(User $user, array $attributes): SalarySlipRequest
     {
-        $employee = $this->requireEmployee($user);
+        // Payroll is a company run, not a request employees have to raise in
+        // order to be paid. HR prepares each eligible employee's record.
+        $this->assertMayManagePay($user);
+        $employee = Employee::find($attributes['employeeId'] ?? null);
+        if (! $employee) {
+            throw new NotFoundHttpException('Employee not found.');
+        }
 
         // Normalised to the first of the month: the period is a month, and two
         // requests differing only by day-of-month would defeat the unique key.
@@ -147,6 +160,8 @@ class PayrollService
             throw new ConflictHttpException('That pay period has not started yet.');
         }
 
+        $run = $this->openRunForPeriod($user, $period);
+
         if (SalarySlipRequest::where('employee_id', $employee->id)
             ->whereDate('period', $period->toDateString())->exists()) {
             throw new ConflictHttpException('You have already requested a slip for that month.');
@@ -154,9 +169,133 @@ class PayrollService
 
         return SalarySlipRequest::create([
             'employee_id' => $employee->id,
+            'payroll_run_id' => $run->id,
             'period' => $period->toDateString(),
             'status' => 'pending',
         ]);
+    }
+
+    // --- monthly payroll runs ------------------------------------------
+
+    /**
+     * The monthly register visible to the two payroll control roles. It never
+     * exposes salary figures itself; its only job is to show where each month
+     * is in the workflow.
+     */
+    public function listRuns(User $user): Collection
+    {
+        $this->assertMaySeeCompanyPayroll($user);
+
+        return PayrollRun::with([
+            'preparer:id,name', 'submitter:id,name', 'releaser:id,name',
+            'slips:id,payroll_run_id,status',
+        ])->orderByDesc('period')->get();
+    }
+
+    /** HR opens a draft monthly cycle before preparing its employee slips. */
+    public function openRun(User $user, string $period, ?string $notes = null): PayrollRun
+    {
+        $this->assertMayManagePay($user);
+
+        $month = Carbon::parse($period)->startOfMonth();
+        if ($month->isAfter(now()->startOfMonth())) {
+            throw new ConflictHttpException('That pay period has not started yet.');
+        }
+
+        $run = $this->openRunForPeriod($user, $month);
+
+        if ($notes !== null && $run->status === 'draft') {
+            $run->update(['notes' => $notes]);
+        }
+
+        return $run->refresh()->load([
+            'preparer:id,name', 'submitter:id,name', 'releaser:id,name',
+            'slips:id,payroll_run_id,status',
+        ]);
+    }
+
+    /**
+     * HR submits a complete, generated month. This is intentionally distinct
+     * from creating individual slips: the Super Admin signs off a register,
+     * not a succession of unrelated employee rows.
+     */
+    public function submitRun(User $user, int $runId): PayrollRun
+    {
+        $this->assertMayManagePay($user);
+
+        return DB::transaction(function () use ($user, $runId) {
+            $run = PayrollRun::lockForUpdate()->find($runId);
+            if (! $run) {
+                throw new NotFoundHttpException('Payroll run not found.');
+            }
+            if ($run->status !== 'draft') {
+                throw new ConflictHttpException('Only a draft payroll run can be submitted.');
+            }
+
+            $slips = SalarySlip::where('payroll_run_id', $run->id)->lockForUpdate()->get();
+            if ($slips->isEmpty()) {
+                throw new ConflictHttpException('Generate at least one payslip before submitting this run.');
+            }
+            if (SalarySlipRequest::where('payroll_run_id', $run->id)->where('status', 'pending')->exists()) {
+                throw new ConflictHttpException('Resolve every prepared payroll record before submitting this run.');
+            }
+            if ($slips->contains(fn (SalarySlip $slip) => $slip->status !== 'generated')) {
+                throw new ConflictHttpException('Only generated slips can be submitted for release.');
+            }
+
+            $run->update([
+                'status' => 'submitted',
+                'submitted_by' => $this->employeeFor($user)?->id,
+                'submitted_at' => now(),
+            ]);
+
+            return $run->refresh()->load([
+                'preparer:id,name', 'submitter:id,name', 'releaser:id,name',
+                'slips:id,payroll_run_id,status',
+            ]);
+        });
+    }
+
+    /**
+     * Super Admin releases every generated slip in the submitted register in
+     * one atomic action. This makes it impossible to accidentally pay only a
+     * selectively authorised subset of a monthly run.
+     */
+    public function releaseRun(User $user, int $runId): PayrollRun
+    {
+        $this->assertMayReleasePayroll($user);
+
+        return DB::transaction(function () use ($user, $runId) {
+            $run = PayrollRun::lockForUpdate()->find($runId);
+            if (! $run) {
+                throw new NotFoundHttpException('Payroll run not found.');
+            }
+            if ($run->status !== 'submitted') {
+                throw new ConflictHttpException('Only a submitted payroll run can be released.');
+            }
+
+            $slips = SalarySlip::where('payroll_run_id', $run->id)->lockForUpdate()->get();
+            if ($slips->isEmpty() || $slips->contains(fn (SalarySlip $slip) => $slip->status !== 'generated')) {
+                throw new ConflictHttpException('This payroll run is not ready to release.');
+            }
+
+            $releaserId = $this->employeeFor($user)?->id;
+            SalarySlip::where('payroll_run_id', $run->id)->update([
+                'status' => 'approved',
+                'approved_by' => $releaserId,
+                'approved_at' => now(),
+            ]);
+            $run->update([
+                'status' => 'released',
+                'released_by' => $releaserId,
+                'released_at' => now(),
+            ]);
+
+            return $run->refresh()->load([
+                'preparer:id,name', 'submitter:id,name', 'releaser:id,name',
+                'slips:id,payroll_run_id,status',
+            ]);
+        });
     }
 
     /**
@@ -184,9 +323,15 @@ class PayrollService
         }
 
         $reviewer = $this->employeeFor($user);
+        $run = $request->payrollRun ?? $this->openRunForPeriod($user, $request->period);
 
-        $decided = DB::transaction(function () use ($request, $decision, $overrides, $comment, $reviewer) {
+        if ($run->status !== 'draft') {
+            throw new ConflictHttpException('Payroll records can only be changed while their monthly run is a draft.');
+        }
+
+        $decided = DB::transaction(function () use ($request, $run, $decision, $overrides, $comment, $reviewer) {
             $request->update([
+                'payroll_run_id' => $run->id,
                 'status' => $decision,
                 'reviewed_by' => $reviewer?->id,
                 'reviewed_at' => now(),
@@ -274,6 +419,14 @@ class PayrollService
             throw new NotFoundHttpException('Slip not found.');
         }
 
+        // Retain the existing endpoint for older clients, while making a
+        // run-owned slip follow the safer register-level release action.
+        if ($slip->payroll_run_id) {
+            $this->releaseRun($user, $slip->payroll_run_id);
+
+            return $slip->refresh()->load(['employee:id,name', 'approver:id,name']);
+        }
+
         if ($slip->status !== 'generated') {
             throw new ConflictHttpException('Only a generated slip can be released.');
         }
@@ -320,6 +473,8 @@ class PayrollService
             'paid_at' => now(),
         ]);
 
+        $this->markRunPaidIfSettled($slip->payroll_run_id, $this->employeeFor($user)?->id);
+
         // The one payroll event an employee genuinely wants to hear about.
         $this->messages->notify([$slip->employee_id], [
             'title' => 'Salary paid',
@@ -339,6 +494,85 @@ class PayrollService
      * money has left, and the correction belongs in the next run rather than
      * in rewriting a settled month.
      */
+    /**
+     * Corrects the figures on a slip that is open for correction.
+     *
+     * reopenSlip() returns a released slip to 'generated' so it can be fixed,
+     * but nothing could then change it: the Payroll page "saved" corrections
+     * in the browser only, so the screen showed one net pay and the slip the
+     * employee downloads another. Only a generated slip in a draft run may be
+     * amended — released or paid figures are an authorisation already given.
+     *
+     * The attendance deduction is not editable here: it is calculated from
+     * attendance records and stored with its summary so it stays auditable.
+     */
+    public function amendSlip(User $user, int $slipId, array $changes): SalarySlip
+    {
+        $this->assertMayManagePay($user);
+
+        $slip = SalarySlip::with('payrollRun')->find($slipId);
+
+        if (! $slip) {
+            throw new NotFoundHttpException('Slip not found.');
+        }
+
+        if ($slip->status !== 'generated') {
+            throw new ConflictHttpException(
+                $slip->status === 'paid'
+                    ? 'A paid slip cannot be changed.'
+                    : 'Reopen this slip for correction before changing it.'
+            );
+        }
+
+        if ($slip->payrollRun && $slip->payrollRun->status !== 'draft') {
+            throw new ConflictHttpException('Payroll records can only be changed while their monthly run is a draft.');
+        }
+
+        $components = [
+            'base_salary' => (float) ($changes['baseSalary'] ?? $slip->base_salary),
+            'house_allowance' => (float) ($changes['houseAllowance'] ?? $slip->house_allowance),
+            'medical_allowance' => (float) ($changes['medicalAllowance'] ?? $slip->medical_allowance),
+            'bonus' => (float) ($changes['bonus'] ?? $slip->bonus),
+            'tax_deduction' => (float) ($changes['taxDeduction'] ?? $slip->tax_deduction),
+            'attendance_deduction' => (float) $slip->attendance_deduction,
+            'advance_deduction' => (float) ($changes['advanceDeduction'] ?? $slip->advance_deduction),
+        ];
+
+        if ($components['base_salary'] <= 0) {
+            throw ValidationException::withMessages(['baseSalary' => 'Base salary must be greater than zero.']);
+        }
+
+        $netPay = $this->netPay($components);
+
+        if ($netPay < 0) {
+            throw ValidationException::withMessages(['taxDeduction' => 'Total deductions cannot exceed total earnings.']);
+        }
+
+        $before = (float) $slip->net_pay;
+
+        $slip->update(array_merge($components, [
+            'net_pay' => $netPay,
+            'notes' => array_key_exists('notes', $changes) ? $changes['notes'] : $slip->notes,
+        ]));
+
+        // The employee may already have downloaded this slip; a changed net
+        // pay is something they should hear about, an unchanged one is not.
+        if (round($before, 2) !== round($netPay, 2)) {
+            $this->messages->notify([$slip->employee_id], [
+                'title' => 'Payslip corrected',
+                'body' => sprintf(
+                    'Your payslip for %s was corrected. Net pay is now %s.',
+                    $slip->period->format('F Y'),
+                    number_format($netPay, 2),
+                ),
+                'type' => 'salary',
+                'routeName' => 'payroll',
+            ]);
+        }
+
+        return $slip->refresh()->load('employee:id,name');
+    }
+
     public function reopenSlip(User $user, int $slipId): SalarySlip
     {
         $this->assertMayManagePay($user);
@@ -355,6 +589,40 @@ class PayrollService
 
         if ($slip->status === 'generated') {
             throw new ConflictHttpException('This slip is already open for correction.');
+        }
+
+        if ($slip->payroll_run_id) {
+            return DB::transaction(function () use ($slip) {
+                $run = PayrollRun::lockForUpdate()->find($slip->payroll_run_id);
+
+                if ($run?->status === 'paid') {
+                    throw new ConflictHttpException('A paid payroll run cannot be reopened.');
+                }
+
+                // A release is an authorisation of the whole register. Editing
+                // a row therefore returns every released row to generated, so
+                // the corrected monthly total must be submitted and released
+                // again as one coherent record.
+                SalarySlip::where('payroll_run_id', $slip->payroll_run_id)
+                    ->where('status', 'approved')
+                    ->update([
+                        'status' => 'generated',
+                        'approved_by' => null,
+                        'approved_at' => null,
+                    ]);
+
+                if ($run) {
+                    $run->update([
+                        'status' => 'draft',
+                        'released_by' => null,
+                        'released_at' => null,
+                        'submitted_by' => null,
+                        'submitted_at' => null,
+                    ]);
+                }
+
+                return $slip->refresh()->load('employee:id,name');
+            });
         }
 
         $slip->update([
@@ -374,7 +642,7 @@ class PayrollService
      */
     public function monthlyCost(User $user, ?string $period = null): array
     {
-        $this->assertMayManagePay($user);
+        $this->assertMaySeeCompanyPayroll($user);
 
         $month = Carbon::parse($period ?? now())->startOfMonth();
 
@@ -404,6 +672,41 @@ class PayrollService
 
     // --- internals -------------------------------------------------------
 
+    /** Finds the company month, creating its HR-owned draft if needed. */
+    private function openRunForPeriod(User $user, Carbon $period): PayrollRun
+    {
+        $month = $period->copy()->startOfMonth()->toDateString();
+
+        return PayrollRun::firstOrCreate(
+            ['period' => $month],
+            [
+                'status' => 'draft',
+                'prepared_by' => $this->employeeFor($user)?->id,
+            ],
+        );
+    }
+
+    /** Marks the run paid only after every released item is paid. */
+    private function markRunPaidIfSettled(?int $runId, ?int $payerId): void
+    {
+        if (! $runId) {
+            return;
+        }
+
+        $run = PayrollRun::find($runId);
+        if (! $run || $run->status !== 'released') {
+            return;
+        }
+
+        if (! SalarySlip::where('payroll_run_id', $run->id)->where('status', '!=', 'paid')->exists()) {
+            $run->update([
+                'status' => 'paid',
+                'paid_by' => $payerId,
+                'paid_at' => now(),
+            ]);
+        }
+    }
+
     /**
      * Builds and stores the slip for an approved request.
      *
@@ -424,14 +727,17 @@ class PayrollService
             throw new ConflictHttpException('No salary is on record for that employee.');
         }
 
-        $components = array_merge($this->componentsFor($salary), array_filter(
+        $attendance = $this->attendanceAdjustment($employee, $request->period, (float) $salary->base_salary);
+
+        $components = array_merge($this->componentsFor($salary), [
+            'attendance_deduction' => $attendance['deduction'],
+        ], array_filter(
             [
                 'base_salary' => $overrides['baseSalary'] ?? null,
                 'house_allowance' => $overrides['houseAllowance'] ?? null,
                 'medical_allowance' => $overrides['medicalAllowance'] ?? null,
                 'bonus' => $overrides['bonus'] ?? null,
                 'tax_deduction' => $overrides['taxDeduction'] ?? null,
-                'attendance_deduction' => $overrides['attendanceDeduction'] ?? null,
                 'advance_deduction' => $overrides['advanceDeduction'] ?? null,
             ],
             fn ($value) => $value !== null,
@@ -439,10 +745,12 @@ class PayrollService
 
         return SalarySlip::create(array_merge($components, [
             'employee_id' => $request->employee_id,
+            'payroll_run_id' => $request->payroll_run_id,
             'salary_slip_request_id' => $request->id,
             'period' => $request->period->toDateString(),
             'net_pay' => $this->netPay($components),
             'notes' => $overrides['notes'] ?? null,
+            'attendance_summary' => $attendance['summary'],
             'issued_by' => $reviewer?->id,
             'issued_at' => now(),
         ]));
@@ -461,7 +769,7 @@ class PayrollService
                 ?? round($base * self::DEFAULT_RATES['medical_allowance'])),
             'bonus' => 0.0,
             'tax_deduction' => round($base * self::DEFAULT_RATES['tax_deduction']),
-            'attendance_deduction' => round($base * self::DEFAULT_RATES['attendance_deduction']),
+            'attendance_deduction' => 0.0,
             'advance_deduction' => 0.0,
         ];
     }
@@ -477,6 +785,44 @@ class PayrollService
             - (float) $components['advance_deduction'];
     }
 
+    /**
+     * A missing punch is not automatically unpaid leave: it may be a public
+     * holiday or incomplete sync. Only explicit absent and half-day records
+     * become a deduction; the stored summary makes the calculation auditable.
+     *
+     * @return array{deduction: float, summary: array<string, int|float|string>}
+     */
+    private function attendanceAdjustment(Employee $employee, Carbon $period, float $baseSalary): array
+    {
+        $start = $period->copy()->startOfMonth();
+        $end = $period->copy()->endOfMonth();
+        $records = Attendance::query()
+            ->where('employee_id', $employee->id)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->get(['status']);
+
+        $absentDays = $records->where('status', 'absent')->count();
+        $halfDays = $records->where('status', 'half_day')->count();
+        $lateDays = $records->where('status', 'late')->count();
+        $paidLeaveDays = $records->where('status', 'on_leave')->count();
+        $unpaidDays = $absentDays + ($halfDays * 0.5);
+        $dailyRate = round($baseSalary / max(1, $start->daysInMonth), 2);
+
+        return [
+            'deduction' => round($dailyRate * $unpaidDays, 2),
+            'summary' => [
+                'period' => $start->toDateString(),
+                'absentDays' => $absentDays,
+                'halfDays' => $halfDays,
+                'lateDays' => $lateDays,
+                'paidLeaveDays' => $paidLeaveDays,
+                'unpaidDays' => $unpaidDays,
+                'dailyRate' => $dailyRate,
+                'rule' => 'Explicit absence and half-day records only',
+            ],
+        ];
+    }
+
     /** The caller's Payroll row, or 403 if they hold none. */
     private function payrollRow(User $user): array
     {
@@ -490,14 +836,37 @@ class PayrollService
     }
 
     /**
-     * Writing pay needs Payroll.create, which only HR holds. Super admin
-     * reaches it through the blanket grant.
+     * HR prepares the run and records its payment. Super Admin is deliberately
+     * excluded here: its role is the independent release step in approveSlip.
      */
     private function assertMayManagePay(User $user): void
     {
-        if (! $this->permissions->can($user, 'Payroll', 'create')) {
+        if ($user->role !== 'hr' || ! $this->permissions->can($user, 'Payroll', 'create')) {
             throw new AccessDeniedHttpException('You may not manage payroll.');
         }
+    }
+
+    /** Super Admin is the independent authoriser of a submitted payroll run. */
+    private function assertMayReleasePayroll(User $user): void
+    {
+        if ($user->role !== 'super_admin') {
+            throw new AccessDeniedHttpException('You may not release payroll for payment.');
+        }
+    }
+
+    /** HR prepares company payroll; Super Admin sees it to release it. */
+    private function assertMaySeeCompanyPayroll(User $user): void
+    {
+        if ($user->role === 'hr' && $this->permissions->can($user, 'Payroll', 'view')) {
+            return;
+        }
+
+        if ($user->role === 'super_admin'
+            && $this->permissions->can($user, 'Payroll Approval', 'approve')) {
+            return;
+        }
+
+        throw new AccessDeniedHttpException('You may not view company payroll.');
     }
 
     /**

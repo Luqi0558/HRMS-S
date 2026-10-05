@@ -7,24 +7,11 @@ use App\Models\Invitation;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 
-/**
- * The seven people who were hardcoded in the frontend's mock.js, plus the
- * Super Admin the old login dropdown offered. Same names, emails, roles and
- * departments, so the app behaves as it did before the API existed.
- *
- * Every active account shares one password — this is a development fixture and
- * must never be run against production data. DatabaseSeeder refuses to call it
- * outside local/testing for that reason.
- */
+
 class DemoUserSeeder extends Seeder
 {
     public const PASSWORD = 'password123';
 
-    /**
-     * Mirrors mock.js exactly. Hina Malik stays 'invited' on purpose: she is
-     * the fixture for the accept-invite flow, and an invitation is issued for
-     * her below.
-     */
     private const PEOPLE = [
         ['Ayesha Khan',  'ayesha.khan@company.com',  'employee',    'Engineering',     'active',  '1998-07-22', '2024-08-05'],
         ['Bilal Raza',   'bilal.raza@company.com',   'employee',    'Design',          'active',  '1997-07-19', '2023-07-24'],

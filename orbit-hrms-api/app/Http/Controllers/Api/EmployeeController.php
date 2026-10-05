@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Employee\SetEmployeeBlockedRequest;
 use App\Http\Requests\Employee\UpdateEmployeeRequest;
 use App\Http\Resources\EmployeeResource;
 use App\Services\EmployeeService;
@@ -55,6 +56,23 @@ class EmployeeController extends Controller
 
         return response()->json([
             'message' => 'Employee updated.',
+            'employee' => new EmployeeResource($updated),
+        ]);
+    }
+
+    /** Blocks or restores an active sign-in and returns the persisted record. */
+    public function setBlocked(SetEmployeeBlockedRequest $request, int $employee): JsonResponse
+    {
+        $updated = $this->employees->setBlocked(
+            $request->user(),
+            $employee,
+            $request->boolean('blocked'),
+        );
+
+        return response()->json([
+            'message' => $updated->status === 'blocked'
+                ? 'Employee profile blocked and active sessions ended.'
+                : 'Employee profile restored.',
             'employee' => new EmployeeResource($updated),
         ]);
     }

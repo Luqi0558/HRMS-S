@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '../store/index.js'
 // A static display map (labels and colour classes), not data — this stays.
@@ -8,6 +8,7 @@ import TicketTimer from '../components/TicketTimer.vue'
 import { projectService } from '../services/projectService.js'
 import { ticketService } from '../services/ticketService.js'
 import { employeeService } from '../services/employeeService.js'
+import { settingsService } from '../services/settingsService.js'
 import { ApiError } from '../services/apiClient.js'
 
 const route = useRoute()
@@ -28,6 +29,7 @@ const {
   setProjects,
   setTickets,
   setEmployees,
+  setServerSettings,
   upsertProject,
   upsertTicket
 } = useStore()
@@ -35,6 +37,7 @@ const {
 const isLoading = ref(true)
 const loadError = ref('')
 const isSavingDelivery = ref(false)
+const staffingCandidates = ref([])
 
 const projectSlug = computed(() => String(route.params.projectSlug || ''))
 
@@ -63,14 +66,22 @@ async function loadData() {
     // Non-fatal on its own: an employee holds no Employees permission, and the
     // board still renders without the roster — only assignee pickers are
     // affected, which fall back to module members.
-    const [project, employees] = await Promise.allSettled([
+    const [project, employees, candidates, settings] = await Promise.allSettled([
       projectService.find(projectSlug.value),
-      employeeService.list()
+      employeeService.list(),
+      projectService.staffingCandidates(projectSlug.value),
+      settingsService.all()
     ])
+
+    if (settings.status === 'fulfilled') setServerSettings(settings.value)
 
     if (employees.status === 'fulfilled') {
       setEmployees(employees.value.data)
     }
+
+    // Managers cannot browse company employment records outside their current
+    // team. The project-authorised staffing list is used only to form a team.
+    staffingCandidates.value = candidates.status === 'fulfilled' ? candidates.value : []
 
     if (project.status === 'rejected') {
       throw project.reason
@@ -91,7 +102,31 @@ async function loadData() {
   }
 }
 
-onMounted(loadData)
+// Tickets are collaborative state. The app-wide sync feed carries messages and
+// notifications only, so refresh just this project's ticket collection while
+// the board is open. This avoids a manual browser refresh after a lead, QA, or
+// another teammate changes a status.
+let ticketRefreshTimer = null
+
+async function refreshProjectTickets() {
+  if (!projectId.value) return
+
+  try {
+    const tickets = await ticketService.list({ project_id: projectId.value })
+    setTickets(tickets.data)
+  } catch {
+    // The visible board remains usable; the next interval retries quietly.
+  }
+}
+
+onMounted(() => {
+  loadData()
+  ticketRefreshTimer = window.setInterval(refreshProjectTickets, 5000)
+})
+
+onBeforeUnmount(() => {
+  if (ticketRefreshTimer) window.clearInterval(ticketRefreshTimer)
+})
 
 // The slug changes when navigating between project categories without
 // unmounting the view, so the data has to follow it.
@@ -124,10 +159,11 @@ const canViewModuleFinance = computed(() => can('Finance', 'finance'))
 const assignableEmployees = computed(() => state.employees.filter(e => e.role === 'employee'))
 const availableProjectEmployees = computed(() => {
   const teamIds = project.value?.teamMembers || []
-  return assignableEmployees.value.filter(employee => !teamIds.includes(employee.id))
+  return staffingCandidates.value.filter(employee => !teamIds.includes(employee.id))
 })
 
 const columns = ['todo', 'in_progress', 'review', 'done']
+const ticketSearch = ref('')
 const draggingTicketId = ref(null)
 const activeDropColumn = ref(null)
 // Held as an id, not as the object. upsertTicket() replaces the entry in
@@ -143,11 +179,18 @@ const selectedTicket = computed(() =>
 )
 const ticketDraft = ref(null)
 const newComment = ref('')
-const newAttachmentName = ref('')
+// A File picked in the ticket modal, uploaded by addTicketAttachment().
+const newAttachmentFile = ref(null)
+// Bumped to reset the file input after an upload; a file input cannot be
+// cleared through v-model.
+const attachmentInputKey = ref(0)
+const uploadingAttachment = ref(false)
 const showAddEmployee = ref(false)
 const showAddModuleEmployee = ref(false)
 const selectedEmployeeId = ref(null)
 const selectedModuleEmployeeId = ref(null)
+const memberError = ref('')
+const savingMembers = ref(false)
 const showAddModule = ref(false)
 const editingModule = ref(null)
 const ticketError = ref('')
@@ -162,13 +205,21 @@ const moduleEditForm = ref({
   commissionType: 'percent',
   commissionValue: ''
 })
-const newModuleForm = ref({
-  name: '',
-  description: '',
-  budget: '',
-  commissionType: 'percent',
-  commissionValue: ''
-})
+function freshModuleForm() {
+  const finance = state.settings.finance || {}
+
+  return {
+    name: '',
+    description: '',
+    budget: '',
+    commissionType: ['percent', 'fixed'].includes(finance.defaultCommissionType)
+      ? finance.defaultCommissionType
+      : 'percent',
+    commissionValue: finance.defaultCommissionValue ?? ''
+  }
+}
+
+const newModuleForm = ref(freshModuleForm())
 const newTicketForm = ref({
   title: '',
   description: '',
@@ -272,13 +323,16 @@ const moduleAssignedEmployees = computed(() => {
 })
 const availableModuleEmployees = computed(() => {
   const moduleIds = activeModule.value?.teamMembers || []
-  const projectIds = project.value?.teamMembers || []
-  return state.employees.filter(employee => employee.role === 'employee' && projectIds.includes(employee.id) && !moduleIds.includes(employee.id))
+  return staffingCandidates.value.filter(employee => !moduleIds.includes(employee.id))
 })
+const selectedModuleContributor = computed(() =>
+  staffingCandidates.value.find(employee => employee.id === selectedModuleEmployeeId.value) ?? null
+)
 
 function ticketsIn(status) {
   if (!activeModule.value || !canAccessActiveModule.value) return []
-  return state.tickets.filter(t => t.projectId === projectId.value && ticketModuleId(t) === activeModule.value.id && t.status === status && matchesKanbanTicketFilter(t))
+  const query = ticketSearch.value.trim().toLowerCase()
+  return state.tickets.filter(t => t.projectId === projectId.value && ticketModuleId(t) === activeModule.value.id && t.status === status && matchesKanbanTicketFilter(t) && (!query || `${t.reference || ''} ${t.title || ''} ${t.description || ''}`.toLowerCase().includes(query)))
 }
 
 function matchesKanbanTicketFilter(ticket) {
@@ -371,6 +425,10 @@ function isTicketOverdue(ticket) {
 
 const overdueTickets = computed(() => state.tickets.filter(ticket => ticket.projectId === projectId.value && isTicketOverdue(ticket)))
 const activeModuleOverdueTickets = computed(() => activeModule.value ? moduleOverdueTickets(activeModule.value.id) : 0)
+const activeModuleTickets = computed(() => activeModule.value ? moduleTickets(activeModule.value.id) : [])
+const activeModuleProgress = computed(() => activeModuleTickets.value.length ? Math.round((activeModuleTickets.value.filter(ticket => ticket.status === 'done').length / activeModuleTickets.value.length) * 100) : 0)
+const activeModuleNextDue = computed(() => activeModuleTickets.value.filter(ticket => ticket.deadline && ticket.status !== 'done').sort((a, b) => String(a.deadline).localeCompare(String(b.deadline)))[0]?.deadline || null)
+const projectLoggedTotal = computed(() => state.tickets.filter(ticket => ticket.projectId === projectId.value).reduce((total, ticket) => total + ticketSeconds(ticket), 0))
 
 function canManageModuleDelivery(module = activeModule.value) {
   if (!project.value || !module) return false
@@ -492,7 +550,7 @@ function closeTicket() {
   selectedTicketId.value = null
   ticketDraft.value = null
   newComment.value = ''
-  newAttachmentName.value = ''
+  newAttachmentFile.value = null
   if (route.query.ticket) {
     const query = { ...route.query }
     delete query.ticket
@@ -579,24 +637,39 @@ function ticketActivity(ticket) {
   return [...comments, ...logs, ...attachments].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
 }
 
-function addTicketAttachment() {
-  if (!selectedTicket.value || !newAttachmentName.value.trim()) return
-  if (!selectedTicket.value.attachments) selectedTicket.value.attachments = []
-  const attachmentName = newAttachmentName.value.trim()
-  selectedTicket.value.attachments.unshift({
-    id: Date.now(),
-    name: attachmentName,
-    uploadedBy: state.currentUser.name,
-    uploadedAt: new Date().toISOString()
-  })
-  logActivity({
-    module: 'ticket',
-    action: 'attachment added',
-    details: `${state.currentUser.name} attached ${attachmentName} to "${selectedTicket.value.title}".`,
-    targetId: selectedTicket.value.id,
-    targetType: 'ticket'
-  })
-  newAttachmentName.value = ''
+/**
+ * Uploads the picked file to the ticket.
+ *
+ * This used to push a typed name with a timestamp id into the ticket in
+ * memory: no file, nothing saved, and the board's five-second refresh wiped
+ * it. The API stores the file and tells the people on the ticket.
+ */
+async function addTicketAttachment() {
+  if (!selectedTicket.value || !newAttachmentFile.value || uploadingAttachment.value) return
+
+  ticketError.value = ''
+  uploadingAttachment.value = true
+  try {
+    upsertTicket(await ticketService.attach(selectedTicket.value.id, newAttachmentFile.value))
+    newAttachmentFile.value = null
+    attachmentInputKey.value += 1
+  } catch (error) {
+    ticketError.value = error instanceof ApiError
+      ? (error.fieldError?.('file') || error.message)
+      : 'Could not upload that file. Please try again.'
+  } finally {
+    uploadingAttachment.value = false
+  }
+}
+
+async function downloadTicketAttachment(attachment) {
+  if (!selectedTicket.value) return
+  ticketError.value = ''
+  try {
+    await ticketService.downloadAttachment(selectedTicket.value.id, attachment)
+  } catch (error) {
+    ticketError.value = error?.message || 'That attachment could not be downloaded.'
+  }
 }
 
 async function addComment() {
@@ -613,15 +686,6 @@ async function addComment() {
     return
   }
 
-  const recipients = [selectedTicket.value.assigneeId, selectedTicket.value.assignedById, project.value?.managerId]
-    .filter(id => id && id !== state.currentUser.id)
-  pushNotification({
-    title: 'New ticket comment',
-    message: `${state.currentUser.name} commented on "${selectedTicket.value.title}".`,
-    type: 'ticket',
-    userIds: [...new Set(recipients)],
-    route: activeModuleRoute()
-  })
   logActivity({
     module: 'ticket',
     action: 'comment posted',
@@ -675,13 +739,6 @@ async function saveTicketChanges() {
     return
   }
 
-  pushNotification({
-    title: 'Ticket updated',
-    message: `${state.currentUser.name} updated "${selectedTicket.value.title}".`,
-    type: 'ticket',
-    userIds: [...new Set([selectedTicket.value.assigneeId, selectedTicket.value.assignedById, project.value?.managerId].filter(id => id && id !== state.currentUser.id))],
-    route: activeModuleRoute()
-  })
   logActivity({
     module: 'ticket',
     action: 'ticket updated',
@@ -704,6 +761,7 @@ function endDrag() {
 
 function highlightColumn(column) {
   if (!canUpdateTicketStatus.value) return
+  if (column === 'done' && !canSignOff.value) return
   activeDropColumn.value = column
 }
 
@@ -740,13 +798,6 @@ async function moveTicket(ticketId, status) {
     return
   }
 
-  pushNotification({
-    title: 'Ticket status changed',
-    message: `"${ticket.title}" moved to ${statusMeta[status].label}.`,
-    type: 'ticket',
-    userIds: [...new Set([ticket.assigneeId, ticket.assignedById, project.value?.managerId].filter(id => id && id !== state.currentUser.id))],
-    route: activeModuleRoute()
-  })
   logActivity({
     module: 'ticket',
     action: 'status changed',
@@ -758,6 +809,10 @@ async function moveTicket(ticketId, status) {
 
 function dropTicket(status) {
   if (!canUpdateTicketStatus.value) return
+  if (status === 'done' && !canSignOff.value) {
+    ticketError.value = 'Done is a reviewer sign-off stage. Move the ticket to Review for approval.'
+    return
+  }
   if (!draggingTicketId.value) return
   moveTicket(draggingTicketId.value, status)
   endDrag()
@@ -773,62 +828,87 @@ function teamPreview(projectId) {
 }
 
 function openAddEmployee() {
+  memberError.value = ''
   selectedEmployeeId.value = availableProjectEmployees.value[0]?.id ?? null
   showAddEmployee.value = true
 }
 
 function openAddModuleEmployee() {
   if (!activeModule.value) return
+  memberError.value = ''
   selectedModuleEmployeeId.value = availableModuleEmployees.value[0]?.id ?? null
   showAddModuleEmployee.value = true
 }
 
-function addEmployeeToProject() {
+function memberErrorMessage(error) {
+  return error instanceof ApiError
+    ? error.message
+    : 'Could not update the project team. Please try again.'
+}
+
+function staffingName(employeeId) {
+  return staffingCandidates.value.find(employee => employee.id === employeeId)?.name
+    ?? assignee(employeeId)
+}
+
+async function addEmployeeToProject() {
   if (!canManageProjectMembers.value || !project.value || !selectedEmployeeId.value) return
-  if (!project.value.teamMembers) project.value.teamMembers = []
-  if (!project.value.teamMembers.includes(selectedEmployeeId.value)) {
-    project.value.teamMembers.push(selectedEmployeeId.value)
-    pushNotification({
-      title: 'Added to project',
-      message: `You were added to ${project.value.name}.`,
-      type: 'project',
-      userIds: [selectedEmployeeId.value],
-    route: { name: 'project-detail', params: { projectSlug: project.value.slug } }
-    })
+  const employeeId = selectedEmployeeId.value
+  const currentProject = project.value
+  const memberIds = [...new Set([...(currentProject.teamMembers || []), employeeId])]
+
+  savingMembers.value = true
+  memberError.value = ''
+  try {
+    const updated = await projectService.syncMembers(currentProject.slug, memberIds)
+    upsertProject(updated)
     logActivity({
       module: 'project',
       action: 'employee added',
-      details: `${assignee(selectedEmployeeId.value)} was added to ${project.value.name}.`,
-      targetId: project.value.id,
+      details: `${staffingName(employeeId)} was added to ${currentProject.name}.`,
+      targetId: currentProject.id,
       targetType: 'project'
     })
+    showAddEmployee.value = false
+    selectedEmployeeId.value = null
+  } catch (error) {
+    memberError.value = memberErrorMessage(error)
+  } finally {
+    savingMembers.value = false
   }
-  showAddEmployee.value = false
-  selectedEmployeeId.value = null
 }
 
-function addEmployeeToModule() {
+async function addEmployeeToModule() {
   if (!canManageProjectMembers.value || !activeModule.value || !selectedModuleEmployeeId.value) return
-  if (!activeModule.value.teamMembers) activeModule.value.teamMembers = []
-  if (!activeModule.value.teamMembers.includes(selectedModuleEmployeeId.value)) {
-    activeModule.value.teamMembers.push(selectedModuleEmployeeId.value)
-    pushNotification({
-      title: 'Added to module',
-      message: `You were added to ${activeModule.value.name}.`,
-      type: 'project',
-      userIds: [selectedModuleEmployeeId.value],
-      route: activeModuleRoute()
-    })
+  const employeeId = selectedModuleEmployeeId.value
+  const module = activeModule.value
+  const currentProject = project.value
+  const memberIds = [...new Set([...(module.teamMembers || []), employeeId])]
+
+  savingMembers.value = true
+  memberError.value = ''
+  try {
+    // The API automatically keeps the parent project roster in sync.
+    await projectService.syncModuleMembers(
+      module.id,
+      memberIds,
+      selectedModuleContributor.value?.role === 'team_lead' ? employeeId : null
+    )
+    await loadData()
     logActivity({
       module: 'project',
       action: 'employee added to module',
-      details: `${assignee(selectedModuleEmployeeId.value)} was added to ${project.value.name} / ${activeModule.value.name}.`,
-      targetId: activeModule.value.id,
+      details: `${staffingName(employeeId)} was added to ${currentProject.name} / ${module.name}.`,
+      targetId: module.id,
       targetType: 'module'
     })
+    showAddModuleEmployee.value = false
+    selectedModuleEmployeeId.value = null
+  } catch (error) {
+    memberError.value = memberErrorMessage(error)
+  } finally {
+    savingMembers.value = false
   }
-  showAddModuleEmployee.value = false
-  selectedModuleEmployeeId.value = null
 }
 
 function canManageModules() {
@@ -838,13 +918,7 @@ function canManageModules() {
 
 function openAddModule() {
   moduleError.value = ''
-  newModuleForm.value = {
-    name: '',
-    description: '',
-    budget: '',
-    commissionType: 'percent',
-    commissionValue: ''
-  }
+  newModuleForm.value = freshModuleForm()
   showAddModule.value = true
 }
 
@@ -874,9 +948,15 @@ async function addModule() {
     module = await projectService.createModule(project.value.slug, {
       name,
       description: newModuleForm.value.description.trim() || null,
-      budget: Number(newModuleForm.value.budget || 0),
-      commissionType: newModuleForm.value.commissionType,
-      commissionValue: Number(newModuleForm.value.commissionValue || 0)
+      // Money only from someone who holds the Finance right; the API applies
+      // the company defaults for anyone else.
+      ...(canViewModuleFinance.value
+        ? {
+            budget: Number(newModuleForm.value.budget || 0),
+            commissionType: newModuleForm.value.commissionType,
+            commissionValue: Number(newModuleForm.value.commissionValue || 0)
+          }
+        : {})
     })
   } catch (error) {
     moduleError.value = error instanceof ApiError
@@ -949,11 +1029,15 @@ async function saveModuleEdit() {
     commissionType: moduleEditForm.value.commissionType,
     commissionValue: Number(moduleEditForm.value.commissionValue || 0)
   }
+  // Someone without the Finance right never receives a module's money, so
+  // their form holds blanks there. Comparing or sending those would read as
+  // "set the budget to 0" — the money is left out of the edit entirely.
+  const editsMoney = canViewModuleFinance.value
   const changes = []
   if (before.name !== next.name) changes.push(`name from "${before.name}" to "${next.name}"`)
   if (before.description !== next.description) changes.push('description')
-  if (before.budget !== next.budget) changes.push(`budget from ${formatCurrency(before.budget)} to ${formatCurrency(next.budget)}`)
-  if (before.commissionType !== next.commissionType || before.commissionValue !== next.commissionValue) {
+  if (editsMoney && before.budget !== next.budget) changes.push(`budget from ${formatCurrency(before.budget)} to ${formatCurrency(next.budget)}`)
+  if (editsMoney && (before.commissionType !== next.commissionType || before.commissionValue !== next.commissionValue)) {
     changes.push(`commission from ${before.commissionValue}${before.commissionType === 'percent' ? '%' : ' fixed'} to ${next.commissionValue}${next.commissionType === 'percent' ? '%' : ' fixed'}`)
   }
   if (changes.length === 0) {
@@ -968,9 +1052,9 @@ async function saveModuleEdit() {
     saved = await projectService.updateModule(module.id, {
       name: next.name,
       description: next.description || null,
-      budget: next.budget,
-      commissionType: next.commissionType,
-      commissionValue: next.commissionValue
+      ...(editsMoney
+        ? { budget: next.budget, commissionType: next.commissionType, commissionValue: next.commissionValue }
+        : {})
     })
   } catch (error) {
     moduleEditError.value = error instanceof ApiError
@@ -988,13 +1072,6 @@ async function saveModuleEdit() {
     details,
     targetId: module.id,
     targetType: 'module'
-  })
-  pushNotification({
-    title: 'Module updated',
-    message: details,
-    type: 'project',
-    roles: ['super_admin'],
-    route: moduleRoute(module.id)
   })
   editingModule.value = null
 }
@@ -1055,13 +1132,6 @@ async function addTicket() {
     return
   }
 
-  pushNotification({
-    title: 'New ticket assigned',
-    message: `"${ticket.title}" was created in ${activeModule.value.name}.`,
-    type: 'ticket',
-    userIds: [...new Set([ticket.assigneeId, ticket.assignedById, project.value?.managerId].filter(id => id && id !== state.currentUser.id))],
-    route: activeModuleRoute()
-  })
   logActivity({
     module: 'ticket',
     action: 'ticket created',
@@ -1082,8 +1152,8 @@ async function addTicket() {
 
 <template>
   <div v-if="project && !isHR" class="project-detail-page space-y-6">
-    <div class="flex items-center justify-between gap-4">
-      <div class="min-w-0">
+    <div class="kanban-project-hero">
+      <div class="min-w-0 kanban-project-heading">
         <div class="flex items-center gap-2 text-sm leading-tight">
           <button @click="router.push({ name: 'projects' })" class="font-medium text-slate-500 hover:text-emerald-700 transition-colors">Project Categories</button>
           <span class="text-slate-400">/</span>
@@ -1101,7 +1171,7 @@ async function addTicket() {
         <button v-if="!isModuleBoard && canManageModules()" @click="openAddModule" class="border border-slate-200 bg-white text-slate-700 text-sm font-medium rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors">
           + Add module
         </button>
-        <button v-if="isModuleBoard && canManageProjectMembers && activeModule" @click="openAddModuleEmployee" class="border border-emerald-200 bg-emerald-50 text-emerald-700 text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-100 transition-colors">
+        <button v-if="isModuleBoard && canManageProjectMembers && activeModule" @click="openAddModuleEmployee" class="kanban-primary-action text-sm font-medium rounded-lg px-4 py-2 transition-colors">
           Add to module
         </button>
         <button v-if="isModuleBoard && canManageModules() && activeModule" @click="openEditModule(activeModule)" class="border border-slate-200 bg-white text-slate-700 text-sm font-medium rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors">
@@ -1112,6 +1182,8 @@ async function addTicket() {
         </button>
       </div>
     </div>
+
+    <section v-if="isModuleBoard && activeModule" class="kanban-summary-card"><div class="kanban-progress-block"><div class="flex items-end justify-between gap-3"><div><div class="kanban-summary-label">Project progress</div><div class="mt-1 text-xs text-slate-500">{{ activeModule.name }}</div></div><strong class="kanban-progress-value">{{ activeModuleProgress }}%</strong></div><div class="kanban-progress-track"><span :style="{ width: `${activeModuleProgress}%` }"></span></div></div><div class="kanban-summary-stat"><span>☷</span><div><b>{{ activeModuleTickets.length }}</b><small>Total tasks</small></div></div><div class="kanban-summary-stat"><span>◷</span><div><b>{{ formatDuration(projectSecondsToday(projectId)) }}</b><small>Logged today</small></div></div><div class="kanban-summary-stat"><span>◴</span><div><b>{{ formatDuration(projectLoggedTotal) }}</b><small>Logged total</small></div></div><div class="kanban-summary-stat"><span>♙</span><div><b>{{ activeModule.teamMembers?.length || 0 }}</b><small>Team members</small></div></div><div class="kanban-summary-stat"><span>▣</span><div><b>{{ activeModuleNextDue ? dueDateLabel(activeModuleNextDue) : '—' }}</b><small>Next due date</small></div></div></section>
 
     <div v-if="isModuleBoard && isModuleCompleted" class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">
       This module was delivered{{ activeModule.deliveredAt ? ` on ${activeModule.deliveredAt}` : '' }}. New ticket creation is locked until the module is reopened.
@@ -1216,7 +1288,7 @@ async function addTicket() {
       </div>
     </section>
 
-    <div v-if="isModuleBoard && activeModule" class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div v-if="isModuleBoard && activeModule" class="kanban-filter-bar">
       <div class="flex items-center gap-2">
         <select v-model="kanbanTicketFilterModel" class="table-filter-input w-full sm:w-[180px]">
           <option value="all">All tickets</option>
@@ -1225,6 +1297,7 @@ async function addTicket() {
           <option value="review">In review</option>
           <option value="overdue">Overdue tickets</option>
         </select>
+        <label class="kanban-search-field"><span>⌕</span><input v-model="ticketSearch" type="search" placeholder="Search tasks in this project..." /></label>
         <span v-if="kanbanTicketFilter !== 'all'" class="company-hub-badge company-hub-badge-info">{{ kanbanTicketFilterLabel }}</span>
       </div>
       <div class="flex items-center justify-end gap-2">
@@ -1244,19 +1317,18 @@ async function addTicket() {
     </div>
 
     <div v-if="isModuleBoard && activeModule" class="overflow-x-auto pb-2">
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 min-w-[1120px]">
+      <div class="kanban-board-grid min-w-[1120px]">
         <div
           v-for="col in columns"
           :key="col"
           @dragover.prevent="highlightColumn(col)"
           @dragleave="activeDropColumn = null"
           @drop.prevent="dropTicket(col)"
-          :class="activeDropColumn === col ? 'ring-2 ring-emerald-400 bg-emerald-50/40' : 'bg-slate-50'"
-          class="rounded-xl p-3 border border-slate-200 flex flex-col h-[68vh] transition-all"
+          :class="[activeDropColumn === col ? 'ring-2 ring-emerald-400' : '', `kanban-column-${col}`, col === 'done' && !canSignOff ? 'kanban-column-locked' : '']"
+          class="kanban-column flex flex-col h-[68vh] transition-all"
         >
-          <div class="flex items-center justify-between px-1 mb-2.5 pb-2 border-b border-slate-200">
-            <span class="text-xs font-medium text-slate-900">{{ statusMeta[col].label }}</span>
-            <span class="text-[11px] text-slate-600">{{ ticketsIn(col).length }}</span>
+          <div class="kanban-column-header">
+            <span class="flex items-center gap-2"><i class="kanban-status-dot"></i><b>{{ statusMeta[col].label }}</b><em>{{ ticketsIn(col).length }}</em></span><span v-if="col === 'done' && !canSignOff" class="kanban-column-lock">Reviewer sign-off</span><button type="button" class="kanban-column-menu" aria-label="Column options">•••</button>
           </div>
           <div class="modal-scroll-hidden flex-1 overflow-y-auto pr-1 space-y-2">
             <div
@@ -1271,51 +1343,18 @@ async function addTicket() {
                 canUpdateTicketStatus ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
                 isTicketOverdue(t) ? 'overdue-ticket-card' : 'bg-white border-slate-200'
               ]"
-              class="border rounded-xl p-3.5 shadow-sm transition-all hover:border-emerald-300 hover:shadow-md hover:-translate-y-px"
+              class="kanban-ticket-card border rounded-xl p-3.5 transition-all hover:border-emerald-300 hover:shadow-md hover:-translate-y-px"
             >
-              <!-- No status pill: ticketsIn() filters each column on that exact
-                   status, so a card can only ever be sitting under its own label
-                   and the pill just repeated the column header. The overdue flag
-                   takes the space instead — it is the one thing about a card that
-                   its column cannot tell you. -->
-              <div class="flex items-start justify-between gap-2 mb-2">
-                <div class="min-w-0">
-                  <!-- The identifier people quote in Teams and in conversation, so
-                       it sits above the title rather than being buried in the modal. -->
-                  <div v-if="t.reference" class="text-[10px] font-mono text-slate-500 mb-0.5 truncate">{{ t.reference }}</div>
-                  <div class="text-sm text-slate-900 leading-snug font-semibold">{{ t.title }}</div>
-                </div>
-                <span v-if="isTicketOverdue(t)" class="overdue-badge shrink-0 text-[10px]">Overdue</span>
-              </div>
-
-              <div class="flex items-center gap-2 flex-wrap mb-2.5">
-                <!-- The dot carries the priority colour so the word itself does
-                     not have to shout. -->
-                <span class="inline-flex items-center gap-1.5 text-[11px] font-semibold capitalize" :class="priorityTone[t.priority]">
-                  <span class="w-1.5 h-1.5 rounded-full bg-current shrink-0"></span>{{ t.priority }}
+              <div class="kanban-ticket-title">{{ t.title }}</div>
+              <div class="kanban-ticket-quick-row">
+                <span class="kanban-ticket-due" :class="isTicketOverdue(t) ? 'overdue-date-text' : ''" :title="t.deadline ? `Due ${dueDateLabel(t.deadline)}` : 'No due date'">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
+                  {{ t.deadline ? dueDateLabel(t.deadline) : 'No due date' }}
                 </span>
-              </div>
-
-              <div class="space-y-1 text-[11px] text-slate-500">
-                <!-- Hidden when the ticket is your own: on a personal board every
-                     card would repeat your own name. A lead or manager looking at
-                     the same board still needs it, so it is not removed outright. -->
-                <div v-if="!isOwnTicket(t)" class="truncate">
-                  For <span class="text-slate-700 font-medium">{{ ticketAssigneeName(t) }}</span>
-                </div>
-                <div v-if="t.assignedById && !isOwnAssignment(t)" class="truncate">
-                  Assigned by <span class="text-slate-700 font-medium">{{ ticketAssignedByName(t) }}</span>
-                </div>
-                <div class="truncate">
-                  Due <span class="font-medium" :class="isTicketOverdue(t) ? 'overdue-date-text' : 'text-slate-700'">{{ dueDateLabel(t.deadline) }}</span>
-                </div>
-              </div>
-              <div class="flex items-center justify-between gap-2 pt-2.5 mt-3 border-t border-slate-200">
-                <span class="text-[10px] text-slate-600 uppercase tracking-wide font-semibold">Total logged</span>
                 <TicketTimer :ticket="t" :readonly="!canUseTicketTimer" />
               </div>
             </div>
-            <div v-if="ticketsIn(col).length === 0" class="text-[11px] text-slate-600 text-center py-4">No tickets</div>
+            <div v-if="ticketsIn(col).length === 0" class="kanban-empty-state"><span>⌕</span><b>No tickets yet</b><p>Tasks under review will appear here.</p><button v-if="canCreateTickets && !isModuleCompleted" type="button" @click="openAddTicket">+ Add a task</button></div>
           </div>
         </div>
       </div>
@@ -1458,12 +1497,24 @@ async function addTicket() {
                       <div class="truncate text-sm font-semibold text-slate-900">{{ attachment.name }}</div>
                       <div class="text-[11px] text-slate-500">{{ attachment.uploadedBy }} · {{ formatDate(attachment.uploadedAt) }}</div>
                     </div>
-                    <span class="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold">File</span>
+                    <button @click="downloadTicketAttachment(attachment)" class="text-[11px] uppercase tracking-[0.14em] text-emerald-700 hover:text-emerald-800 font-semibold">Download</button>
                   </div>
                 </div>
                 <div class="flex gap-2 mt-3">
-                  <input v-model="newAttachmentName" type="text" class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500" placeholder="Attachment name or reference" />
-                  <button @click="addTicketAttachment" class="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 transition-colors">Add</button>
+                  <input
+                    :key="attachmentInputKey"
+                    type="file"
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.gif,.webp,.zip"
+                    @change="newAttachmentFile = $event.target.files[0] || null"
+                    class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                  />
+                  <button
+                    @click="addTicketAttachment"
+                    :disabled="!newAttachmentFile || uploadingAttachment"
+                    class="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 transition-colors disabled:opacity-60"
+                  >
+                    {{ uploadingAttachment ? 'Uploading…' : 'Upload' }}
+                  </button>
                 </div>
               </div>
 
@@ -1583,8 +1634,8 @@ async function addTicket() {
           <div class="space-y-3">
             <input v-model="newModuleForm.name" type="text" placeholder="Project/module name, e.g. Website for Client X" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700" />
             <textarea v-model="newModuleForm.description" rows="3" placeholder="Scope, client notes, or delivery details" class="w-full resize-none text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700"></textarea>
-            <input v-model="newModuleForm.budget" type="number" min="0" placeholder="Client budget for this module/project" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700" />
-            <div class="grid grid-cols-2 gap-2">
+            <input v-if="canViewModuleFinance" v-model="newModuleForm.budget" type="number" min="0" placeholder="Client budget for this module/project" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700" />
+            <div v-if="canViewModuleFinance" class="grid grid-cols-2 gap-2">
               <select v-model="newModuleForm.commissionType" class="w-full text-[13px] border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-700">
                 <option value="percent">Commission %</option>
                 <option value="fixed">Fixed commission</option>
@@ -1655,8 +1706,9 @@ async function addTicket() {
       <!-- Add employee to module modal -->
       <div v-if="showAddModuleEmployee && activeModule" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showAddModuleEmployee = false">
         <div class="bg-white rounded-xl p-6 w-full max-w-md border border-slate-200 shadow-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
-          <div class="font-semibold text-[15px] text-slate-900 mb-1">Add employee to module</div>
-          <div class="text-sm text-slate-600 mb-4">Only employees assigned to {{ activeModule.name }} can see and access its tickets.</div>
+          <div class="font-semibold text-[15px] text-slate-900 mb-1">Add contributor to module</div>
+          <div class="text-sm text-slate-600 mb-4">Choose an active delivery contributor. This also adds them to the parent project category.</div>
+          <div v-if="selectedModuleContributor?.role === 'team_lead'" class="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">This Team Lead will become accountable for this module.</div>
 
           <div v-if="availableModuleEmployees.length" class="space-y-3 max-h-80 overflow-y-auto mb-4">
             <button
@@ -1674,22 +1726,24 @@ async function addTicket() {
               </div>
               <div>
                 <div class="text-sm font-medium text-slate-900">{{ employee.name }}</div>
-                <div class="text-xs text-slate-600">{{ employee.department }}</div>
+                <div class="text-xs text-slate-600">{{ employee.role.replace('_', ' ') }} · {{ employee.department }}</div>
               </div>
             </button>
           </div>
           <div v-else class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 mb-4">
-            All project-level employees are already assigned to this module. Add someone to the project category first if needed.
+            No eligible delivery contributors are available for this module.
           </div>
 
+          <div v-if="memberError" class="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{{ memberError }}</div>
+
           <div class="flex gap-2">
-            <button @click="showAddModuleEmployee = false" class="flex-1 text-[13px] border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
+            <button :disabled="savingMembers" @click="showAddModuleEmployee = false" class="flex-1 text-[13px] border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium disabled:opacity-60">Cancel</button>
             <button
               @click="addEmployeeToModule"
-              :disabled="!selectedModuleEmployeeId"
+              :disabled="!selectedModuleEmployeeId || savingMembers"
               class="flex-1 bg-emerald-600 text-white text-[13px] font-medium rounded-lg py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
             >
-              Add to module
+              {{ savingMembers ? 'Saving...' : selectedModuleContributor?.role === 'team_lead' ? 'Assign lead & add' : 'Add to module' }}
             </button>
           </div>
         </div>
@@ -1698,8 +1752,8 @@ async function addTicket() {
       <!-- Add employee modal -->
       <div v-if="showAddEmployee" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showAddEmployee = false">
         <div class="bg-white rounded-xl p-6 w-full max-w-md border border-slate-200 shadow-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
-          <div class="font-semibold text-[15px] text-slate-900 mb-1">Add employee to project</div>
-          <div class="text-sm text-slate-600 mb-4">Select an employee to add to {{ project.name }}.</div>
+          <div class="font-semibold text-[15px] text-slate-900 mb-1">Add contributor to project</div>
+          <div class="text-sm text-slate-600 mb-4">Select an active delivery contributor for {{ project.name }}.</div>
 
           <div v-if="availableProjectEmployees.length" class="space-y-3 max-h-80 overflow-y-auto mb-4">
             <button
@@ -1717,22 +1771,24 @@ async function addTicket() {
               </div>
               <div>
                 <div class="text-sm font-medium text-slate-900">{{ employee.name }}</div>
-                <div class="text-xs text-slate-600">{{ employee.department }}</div>
+                <div class="text-xs text-slate-600">{{ employee.role.replace('_', ' ') }} · {{ employee.department }}</div>
               </div>
             </button>
           </div>
           <div v-else class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 mb-4">
-            All employees are already added to this project.
+            No eligible delivery contributors are available for this project.
           </div>
 
+          <div v-if="memberError" class="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{{ memberError }}</div>
+
           <div class="flex gap-2">
-            <button @click="showAddEmployee = false" class="flex-1 text-[13px] border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium">Cancel</button>
+            <button :disabled="savingMembers" @click="showAddEmployee = false" class="flex-1 text-[13px] border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium disabled:opacity-60">Cancel</button>
             <button
               @click="addEmployeeToProject"
-              :disabled="!selectedEmployeeId"
+              :disabled="!selectedEmployeeId || savingMembers"
               class="flex-1 bg-emerald-600 text-white text-[13px] font-medium rounded-lg py-2 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
             >
-              Add employee
+              {{ savingMembers ? 'Saving...' : 'Add to project' }}
             </button>
           </div>
         </div>

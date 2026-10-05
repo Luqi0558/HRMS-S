@@ -2,10 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Mail\LeaveRequestSubmittedMail;
+use App\Mail\MedicalClaimSubmittedMail;
 use App\Models\Employee;
 use App\Models\LeaveApproval;
 use App\Models\LeaveRequest;
 use App\Models\MedicalClaim;
+use App\Models\Notification;
 use App\Models\Project;
 use App\Models\ProjectModule;
 use App\Models\User;
@@ -16,6 +19,7 @@ use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Tests\TenantTestCase;
@@ -217,6 +221,33 @@ class AttendanceLeaveClaimTest extends TenantTestCase
             ->assertCreated()
             ->assertJsonPath('request.status', 'pending')
             ->assertJsonPath('request.days', 3);
+    }
+
+    public function test_a_leave_request_notifies_hr_and_super_admin(): void
+    {
+        $superAdmin = $this->makeEmployee('boss@test.com', 'super_admin');
+        Mail::fake();
+
+        $this->postJson('/api/leave-requests', [
+            'type' => 'Annual leave',
+            'fromDate' => now()->addWeek()->toDateString(),
+            'toDate' => now()->addWeek()->addDays(2)->toDateString(),
+            'days' => 3,
+            'reason' => 'Family trip',
+        ], $this->auth('worker@test.com'))->assertCreated();
+
+        $notifications = Notification::where('title', 'Leave request submitted')
+            ->where('type', 'leave')
+            ->get();
+
+        $this->assertCount(2, $notifications);
+        $this->assertTrue($notifications->pluck('employee_id')->contains($this->hr->id));
+        $this->assertTrue($notifications->pluck('employee_id')->contains($superAdmin->id));
+        $this->assertTrue($notifications->every(fn (Notification $notice) => $notice->route_name === 'leave-requests'));
+
+        Mail::assertQueued(LeaveRequestSubmittedMail::class, 2);
+        Mail::assertQueued(LeaveRequestSubmittedMail::class, fn (LeaveRequestSubmittedMail $mail) => $mail->hasTo('hr@test.com'));
+        Mail::assertQueued(LeaveRequestSubmittedMail::class, fn (LeaveRequestSubmittedMail $mail) => $mail->hasTo('boss@test.com'));
     }
 
     /** Two requests for the same dates would double-count against the balance. */
@@ -484,6 +515,76 @@ class AttendanceLeaveClaimTest extends TenantTestCase
             ->assertJsonPath('claim.status', 'pending');
     }
 
+    public function test_a_medical_claim_notifies_and_emails_hr_and_super_admin_with_allowance_context(): void
+    {
+        $superAdmin = $this->makeEmployee('medical-boss@test.com', 'super_admin');
+        MedicalClaim::create([
+            'employee_id' => $this->employee->id,
+            'type' => 'Earlier treatment',
+            'amount' => 25000,
+            'approved_amount' => 25000,
+            'incurred_on' => now()->toDateString(),
+            'status' => 'approved',
+        ]);
+        Mail::fake();
+
+        $this->postJson('/api/medical-claims', [
+            'type' => 'Pharmacy claim',
+            'amount' => 4200,
+            'description' => 'Prescription medication',
+        ], $this->auth('worker@test.com'))->assertCreated();
+
+        $notifications = Notification::where('title', 'Medical claim submitted')
+            ->where('type', 'medical')
+            ->get();
+
+        $this->assertCount(2, $notifications);
+        $this->assertTrue($notifications->pluck('employee_id')->contains($this->hr->id));
+        $this->assertTrue($notifications->pluck('employee_id')->contains($superAdmin->id));
+        Mail::assertQueued(MedicalClaimSubmittedMail::class, 2);
+        Mail::assertQueued(MedicalClaimSubmittedMail::class, function (MedicalClaimSubmittedMail $mail): bool {
+            return $mail->annualAllowance === 'PKR 100,000.00'
+                && $mail->usedThisYear === 'PKR 25,000.00'
+                && $mail->remainingBeforeClaim === 'PKR 75,000.00'
+                && $mail->remainingIfApproved === 'PKR 70,800.00'
+                && $mail->description === 'Prescription medication';
+        });
+    }
+
+    public function test_hr_can_file_a_medical_claim_but_only_super_admin_can_review_it(): void
+    {
+        $superAdmin = $this->makeEmployee('hr-claim-boss@test.com', 'super_admin');
+        Mail::fake();
+
+        $this->postJson('/api/medical-claims', [
+            'type' => 'Consultation fee',
+            'amount' => 3000,
+            'description' => 'Specialist consultation',
+        ], $this->auth('hr@test.com'))->assertCreated();
+
+        $claim = MedicalClaim::firstOrFail();
+        $this->assertSame($this->hr->id, $claim->employee_id);
+        $this->assertDatabaseHas('notifications', [
+            'employee_id' => $superAdmin->id,
+            'title' => 'HR medical claim submitted',
+        ]);
+        $this->assertDatabaseMissing('notifications', [
+            'employee_id' => $this->hr->id,
+            'title' => 'HR medical claim submitted',
+        ]);
+        Mail::assertQueued(MedicalClaimSubmittedMail::class, fn (MedicalClaimSubmittedMail $mail) => $mail->hasTo('hr-claim-boss@test.com'));
+
+        $service = app(MedicalClaimService::class);
+        try {
+            $service->decide($this->hr->user, $claim->id, 'approved');
+            $this->fail('HR must not be able to approve its own medical claim.');
+        } catch (\Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException) {
+            // Expected: own claims are an escalation to Super Admin.
+        }
+
+        $this->assertSame('approved', $service->decide($superAdmin->user, $claim->id, 'approved')->status);
+    }
+
     /** Receipts above the threshold are policy, enforced server-side. */
     public function test_a_large_claim_without_a_receipt_is_refused(): void
     {
@@ -660,6 +761,27 @@ class AttendanceLeaveClaimTest extends TenantTestCase
         ], $this->auth('boss@test.com'))->assertOk();
 
         $this->assertSame(20, app(SettingsService::class)->get('attendance', 'graceMinutes'));
+    }
+
+    public function test_super_admin_may_save_finance_defaults(): void
+    {
+        $this->makeEmployee('finance-admin@test.com', 'super_admin');
+
+        $this->putJson('/api/settings/finance', [
+            'values' => [
+                'defaultCommissionType' => 'fixed',
+                'defaultCommissionValue' => 12500,
+                'superAdminApprovalRequired' => false,
+            ],
+        ], $this->auth('finance-admin@test.com'))
+            ->assertOk()
+            ->assertJsonPath('settings.finance.defaultCommissionType', 'fixed')
+            ->assertJsonPath('settings.finance.defaultCommissionValue', 12500)
+            ->assertJsonPath('settings.finance.superAdminApprovalRequired', false);
+
+        $this->getJson('/api/settings', $this->auth('finance-admin@test.com'))
+            ->assertOk()
+            ->assertJsonPath('settings.finance.defaultCommissionType', 'fixed');
     }
 
     public function test_an_employee_may_not_write_settings(): void

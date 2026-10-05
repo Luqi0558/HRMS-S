@@ -104,11 +104,17 @@ class ProjectController extends Controller
         $validated = $request->validate([
             'employeeIds' => ['present', 'array'],
             'employeeIds.*' => ['integer', 'exists:employees,id'],
+            'leadId' => ['nullable', 'integer', 'exists:employees,id'],
         ]);
 
         return response()->json([
             'module' => new ProjectModuleResource(
-                $this->projects->syncModuleMembers($request->user(), $module, $validated['employeeIds'])
+                $this->projects->syncModuleMembers(
+                    $request->user(),
+                    $module,
+                    $validated['employeeIds'],
+                    $validated['leadId'] ?? null,
+                )
             ),
         ]);
     }
@@ -131,6 +137,27 @@ class ProjectController extends Controller
         ]);
     }
 
+    /**
+     * Finance approval deliberately has its own endpoint.  Module editors can
+     * change the agreed commission terms, but they must never be able to mark
+     * a manager payout approved or paid through the generic update endpoint.
+     */
+    public function decideModuleCommission(Request $request, int $module): JsonResponse
+    {
+        $validated = $request->validate([
+            'status' => ['required', 'in:approved,paid'],
+        ]);
+
+        return response()->json([
+            'message' => $validated['status'] === 'paid'
+                ? 'Commission marked paid.'
+                : 'Commission approved for payment.',
+            'module' => new ProjectModuleResource(
+                $this->projects->decideModuleCommission($request->user(), $module, $validated['status'])
+            ),
+        ]);
+    }
+
     public function syncMembers(SyncMembersRequest $request, string $project): JsonResponse
     {
         return response()->json([
@@ -142,6 +169,13 @@ class ProjectController extends Controller
                     $request->validated()['employeeIds'],
                 )
             ),
+        ]);
+    }
+
+    public function staffingCandidates(Request $request, string $project): JsonResponse
+    {
+        return response()->json([
+            'data' => $this->projects->staffingCandidates($request->user(), $project),
         ]);
     }
 }

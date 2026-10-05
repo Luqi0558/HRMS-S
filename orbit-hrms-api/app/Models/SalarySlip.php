@@ -15,10 +15,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class SalarySlip extends Model
 {
     protected $fillable = [
-        'employee_id', 'salary_slip_request_id', 'period', 'status',
+        'employee_id', 'payroll_run_id', 'salary_slip_request_id', 'period', 'status',
         'base_salary', 'house_allowance', 'medical_allowance', 'bonus',
         'tax_deduction', 'attendance_deduction', 'advance_deduction',
-        'net_pay', 'notes', 'issued_by', 'issued_at',
+        'net_pay', 'notes', 'attendance_summary', 'issued_by', 'issued_at',
         'approved_by', 'approved_at',
         'payment_method', 'payment_reference', 'paid_on', 'payment_notes',
         'paid_by', 'paid_at',
@@ -39,11 +39,17 @@ class SalarySlip extends Model
         'advance_deduction' => 'encrypted',
         'net_pay' => 'encrypted',
         'notes' => 'encrypted',
+        'attendance_summary' => 'encrypted:array',
     ];
 
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    public function payrollRun(): BelongsTo
+    {
+        return $this->belongsTo(PayrollRun::class);
     }
 
     public function request(): BelongsTo

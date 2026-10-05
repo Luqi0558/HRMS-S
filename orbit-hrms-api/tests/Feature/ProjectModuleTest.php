@@ -6,6 +6,7 @@ use App\Models\Employee;
 use App\Models\Project;
 use App\Models\ProjectModule;
 use App\Models\User;
+use App\Services\SettingsService;
 use Database\Seeders\RolePermissionSeeder;
 use Tests\TenantTestCase;
 
@@ -80,6 +81,23 @@ class ProjectModuleTest extends TenantTestCase
             'project_id' => $this->project->id,
             'name' => 'Onboarding Tasks',
         ]);
+    }
+
+    public function test_new_modules_use_the_saved_commission_defaults(): void
+    {
+        app(SettingsService::class)->putGroup('finance', [
+            'defaultCommissionType' => 'fixed',
+            'defaultCommissionValue' => 12500,
+            'superAdminApprovalRequired' => false,
+        ]);
+
+        $this->postJson('/api/projects/internship/modules', [
+            'name' => 'Defaulted commission module',
+        ], $this->auth('manager@test.com'))
+            ->assertCreated()
+            ->assertJsonPath('module.commission.type', 'fixed')
+            ->assertJsonPath('module.commission.value', '12500.00')
+            ->assertJsonPath('module.commission.status', 'approved');
     }
 
     /**
@@ -160,5 +178,101 @@ class ProjectModuleTest extends TenantTestCase
         ], $this->auth('manager@test.com'))->assertOk();
 
         $this->assertSame([$this->worker->id], $module->members()->pluck('employees.id')->all());
+    }
+
+    public function test_only_super_admin_can_approve_then_mark_a_commission_paid(): void
+    {
+        $module = ProjectModule::create([
+            'project_id' => $this->project->id,
+            'name' => 'Commissioned work',
+            'slug' => 'commissioned-work',
+            'commission_value' => 10,
+            'commission_status' => 'pending',
+        ]);
+        $admin = $this->makeEmployee('admin@test.com', 'super_admin')->user;
+
+        $this->patchJson("/api/modules/{$module->id}/commission", ['status' => 'approved'], $this->auth('manager@test.com'))
+            ->assertForbidden();
+
+        $this->actingAs($admin, 'sanctum');
+
+        $this->patchJson("/api/modules/{$module->id}/commission", ['status' => 'approved'], $this->tenantHeaders())
+            ->assertOk()
+            ->assertJsonPath('module.commission.status', 'approved');
+
+        $this->patchJson("/api/modules/{$module->id}/commission", ['status' => 'paid'], $this->tenantHeaders())
+            ->assertOk()
+            ->assertJsonPath('module.commission.status', 'paid');
+
+        $this->assertDatabaseHas('project_modules', [
+            'id' => $module->id,
+            'commission_status' => 'paid',
+        ]);
+    }
+
+    // --- module money ----------------------------------------------------
+
+    private function fundedModule(): ProjectModule
+    {
+        $this->project->members()->sync([$this->worker->id, $this->lead->id]);
+
+        $module = ProjectModule::create([
+            'project_id' => $this->project->id,
+            'name' => 'Client portal',
+            'slug' => 'client-portal',
+            'lead_id' => $this->lead->id,
+            'budget' => 500000,
+            'commission_type' => 'percent',
+            'commission_value' => 10,
+            'commission_status' => 'approved',
+        ]);
+        $module->members()->sync([$this->worker->id, $this->lead->id]);
+
+        return $module;
+    }
+
+    /**
+     * Modules go to everyone on the project; the client's budget and the
+     * manager's commission must not go with them.
+     */
+    public function test_a_developer_does_not_receive_module_money(): void
+    {
+        $this->fundedModule();
+
+        $this->app['auth']->forgetGuards();
+        $module = collect($this->getJson('/api/projects/internship', $this->auth('worker@test.com'))
+            ->assertOk()->json('project.modules'))->firstWhere('slug', 'client-portal');
+
+        $this->assertNotNull($module);
+        $this->assertArrayNotHasKey('budget', $module);
+        $this->assertArrayNotHasKey('commission', $module);
+    }
+
+    public function test_the_manager_still_receives_module_money(): void
+    {
+        $this->fundedModule();
+
+        $module = collect($this->getJson('/api/projects/internship', $this->auth('manager@test.com'))
+            ->assertOk()->json('project.modules'))->firstWhere('slug', 'client-portal');
+
+        $this->assertSame('500000.00', $module['budget']);
+        $this->assertSame('10.00', $module['commission']['value']);
+    }
+
+    /** A lead can edit the module, but money they never see is not theirs to change. */
+    public function test_a_lead_cannot_change_module_money(): void
+    {
+        $module = $this->fundedModule();
+
+        app(\App\Services\ProjectService::class)->updateModule(
+            User::where('email', 'lead@test.com')->firstOrFail(),
+            $module->id,
+            ['name' => 'Client portal v2', 'budget' => 0, 'commissionValue' => 50],
+        );
+
+        $module->refresh();
+        $this->assertSame('Client portal v2', $module->name);
+        $this->assertSame(500000.0, (float) $module->budget);
+        $this->assertSame(10.0, (float) $module->commission_value);
     }
 }

@@ -19,14 +19,14 @@ const emit = defineEmits(['confirm', 'cancel'])
   <Teleport to="body">
     <div
       v-if="open"
-      class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4"
+      class="orbit-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center px-4 py-4"
       role="dialog"
       aria-modal="true"
       :aria-label="title"
       @click.self="emit('cancel')"
       @keydown.esc="emit('cancel')"
     >
-      <div class="bg-white rounded-xl p-6 w-full max-w-sm border border-slate-200 shadow-2xl">
+      <div class="orbit-modal p-6 w-full max-w-sm">
         <div class="flex items-start gap-3">
           <div
             class="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
@@ -46,14 +46,14 @@ const emit = defineEmits(['confirm', 'cancel'])
         <div class="flex gap-2 mt-5">
           <button
             @click="emit('cancel')"
-            class="flex-1 text-sm border border-slate-200 rounded-lg py-2 hover:bg-slate-50 transition-colors text-slate-700 font-medium"
+            class="orbit-button orbit-button-secondary flex-1 text-sm py-2 font-medium"
           >
             {{ cancelLabel }}
           </button>
           <button
             @click="emit('confirm')"
-            class="flex-1 text-sm font-bold rounded-lg py-2 text-white transition-colors"
-            :class="tone === 'danger' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'"
+            class="orbit-button flex-1 text-sm font-bold py-2"
+            :class="tone === 'danger' ? 'orbit-button-danger' : 'orbit-button-primary'"
           >
             {{ confirmLabel }}
           </button>

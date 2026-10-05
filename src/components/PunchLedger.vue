@@ -1,11 +1,18 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import CardEmptyState from './CardEmptyState.vue'
 
 const props = defineProps({
   rows: {
     type: Array,
     required: true
     // each row: { id, name, department, checkIn, checkOut, status: 'present'|'late'|'active', hours }
+  },
+  // Dashboard cards can place the status controls beside their title while
+  // retaining the search field and result count in the ledger toolbar.
+  headerFilters: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -17,20 +24,44 @@ const statusOptions = [
   { value: 'all', label: 'All' },
   { value: 'present', label: 'On time' },
   { value: 'late', label: 'Late' },
-  { value: 'active', label: 'Active' }
+  { value: 'active', label: 'Active' },
+  { value: 'wfh', label: 'WFH' }
 ]
 
 const filteredRows = computed(() => {
   const term = query.value.trim().toLowerCase()
   return props.rows.filter(row => {
     const matchesSearch = !term || `${row.name} ${row.department || ''} ${row.status} ${row.checkIn || ''} ${row.checkOut || ''}`.toLowerCase().includes(term)
-    const matchesStatus = statusFilter.value === 'all' || row.status === statusFilter.value
+    const matchesStatus = statusFilter.value === 'all'
+      || row.status === statusFilter.value
+      || (statusFilter.value === 'wfh' && (row.workMode === 'remote' || row.dayWorkMode === 'mixed'))
     return matchesSearch && matchesStatus
   })
 })
 
 const visibleRows = computed(() => filteredRows.value.slice(0, visibleLimit.value))
 const hasMoreRows = computed(() => visibleLimit.value < filteredRows.value.length)
+const emptyState = computed(() => {
+  if (query.value.trim()) {
+    return {
+      title: 'No matching employees',
+      description: 'Try another employee name or clear the search.'
+    }
+  }
+
+  if (statusFilter.value === 'all') {
+    return {
+      title: 'No attendance records today',
+      description: 'Today\'s check-ins will appear here as they are recorded.'
+    }
+  }
+
+  const label = statusOptions.find(option => option.value === statusFilter.value)?.label?.toLowerCase() || 'matching'
+  return {
+    title: `No ${label} attendance records`,
+    description: 'Choose All to return to the complete attendance ledger.'
+  }
+})
 
 function loadMoreRows(event) {
   if (!hasMoreRows.value) return
@@ -44,30 +75,43 @@ watch([query, statusFilter], () => {
   visibleLimit.value = 10
 })
 
-function toneFor(status) {
-  if (status === 'late') return { bar: 'bg-coral', text: 'text-coral', pill: 'punch-ledger-status-late', label: 'Late' }
-  if (status === 'active') return { bar: 'bg-amber', text: 'text-amber', pill: 'punch-ledger-status-active', label: 'Active' }
-  return { bar: 'bg-teal', text: 'text-teal', pill: 'punch-ledger-status-present', label: 'On time' }
+function currentClockTime() {
+  const now = new Date()
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
 }
 
-// crude visual mapping of a 9am-6pm workday onto a 0-100 bar
-function barStyle(checkIn, checkOut) {
-  if (!checkIn) return { left: '0%', right: '100%' }
-  const toPct = (time) => {
-    const [h, m] = time.split(':').map(Number)
-    const minutes = h * 60 + m
-    const start = 8 * 60 // 8:00 window start
-    const end = 19 * 60 // 19:00 window end
-    return Math.min(100, Math.max(0, ((minutes - start) / (end - start)) * 100))
-  }
-  const left = toPct(checkIn)
-  const right = checkOut ? 100 - toPct(checkOut) : 4
-  return { left: `${left}%`, right: `${right}%` }
+function timeToMinutes(time) {
+  if (!time || !/^\d{1,2}:\d{2}$/.test(time)) return null
+  const [hours, minutes] = time.split(':').map(Number)
+  return hours * 60 + minutes
 }
+
+// An open session is normal during the workday. It becomes an exception only
+// after the expected end of the attendance window.
+function hasCheckoutOverdue(row) {
+  return Boolean(row.checkIn && !row.checkOut && timeToMinutes(currentClockTime()) >= 19 * 60)
+}
+
+function toneFor(row) {
+  if (hasCheckoutOverdue(row)) return { text: 'text-coral', pill: 'punch-ledger-status-exception', label: 'No checkout' }
+  if (row.status === 'late') return { text: 'text-amber', pill: 'punch-ledger-status-late', label: 'Late' }
+  if (row.status === 'active') return { text: 'text-teal', pill: 'punch-ledger-status-active', label: 'Active' }
+  return { text: 'text-teal', pill: 'punch-ledger-status-present', label: 'On time' }
+}
+
+function initials(name) {
+  return String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()
+}
+
+function checkoutLabel(row) {
+  if (row.checkOut) return row.checkOut
+  return hasCheckoutOverdue(row) ? 'Missing' : '—'
+}
+
 </script>
 
 <template>
-  <div class="punch-ledger">
+  <div class="punch-ledger" :class="{ 'punch-ledger--header-filters': headerFilters }">
     <div class="punch-ledger-tools">
       <input v-model="query" type="search" placeholder="Filter ledger..." class="punch-ledger-search" />
       <div class="punch-ledger-filters">
@@ -82,7 +126,7 @@ function barStyle(checkIn, checkOut) {
           {{ option.label }}
         </button>
       </div>
-      <div class="punch-ledger-count">{{ filteredRows.length }} records</div>
+      <div v-if="!headerFilters" class="punch-ledger-count">{{ filteredRows.length }} records</div>
     </div>
 
     <div class="punch-ledger-scroll" @scroll="loadMoreRows">
@@ -96,23 +140,28 @@ function barStyle(checkIn, checkOut) {
 
       <div v-for="row in visibleRows" :key="row.id || `${row.employeeId}-${row.checkIn}`" class="punch-ledger-row">
         <div class="punch-ledger-person">
+          <span class="punch-ledger-avatar" aria-hidden="true">{{ initials(row.name) }}</span>
           <span class="punch-ledger-name">{{ row.name }}</span>
-          <span class="punch-ledger-department">{{ row.department }}</span>
+          <span class="punch-ledger-department">
+            {{ row.department }}
+            <template v-if="row.dayWorkMode === 'mixed'"> · Mixed location</template>
+            <template v-else-if="row.workMode === 'remote'"> · WFH</template>
+          </span>
         </div>
         <span class="punch-ledger-time">{{ row.checkIn || '-' }}</span>
-        <span class="punch-ledger-time" :class="{ 'punch-ledger-missing': !row.checkOut }">{{ row.checkOut || 'Missing' }}</span>
-        <span class="punch-ledger-hours" :class="toneFor(row.status).text">{{ row.hours }}</span>
-        <span class="punch-ledger-status" :class="toneFor(row.status).pill">{{ toneFor(row.status).label }}</span>
-        <div class="punch-ledger-track">
-          <div
-            class="punch-ledger-bar"
-            :class="toneFor(row.status).bar"
-            :style="barStyle(row.checkIn, row.checkOut)"
-          ></div>
-        </div>
+        <span class="punch-ledger-time" :class="{ 'punch-ledger-missing': hasCheckoutOverdue(row) }">{{ checkoutLabel(row) }}</span>
+        <span class="punch-ledger-hours" :class="toneFor(row).text">{{ row.hours }}</span>
+        <span class="punch-ledger-status" :class="toneFor(row).pill"><span class="punch-ledger-status-dot"></span>{{ toneFor(row).label }}</span>
       </div>
 
-      <div v-if="filteredRows.length === 0" class="punch-ledger-empty">No punch records for this filter today.</div>
+      <CardEmptyState
+        v-if="filteredRows.length === 0"
+        class="punch-ledger-empty"
+        compact
+        variant="people"
+        :title="emptyState.title"
+        :description="emptyState.description"
+      />
       <div v-else-if="hasMoreRows" class="punch-ledger-more">Scroll to load more</div>
     </div>
   </div>

@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Starts the local Docker stack with its dedicated Docker environment.
+set -eu
+
+cd "$(dirname "$0")"
+exec docker compose --env-file docker/.env.local up -d "$@"

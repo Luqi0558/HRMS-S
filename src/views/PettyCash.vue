@@ -21,8 +21,7 @@ const {
   pettyCashPendingExpenses,
   pettyCashPendingTopUps,
   pettyCashByCategory,
-  logActivity,
-  pushNotification
+  logActivity
 } = useStore()
 
 // HR records and reconciles; only an approver signs off top-ups and
@@ -145,7 +144,6 @@ async function saveExpense() {
   if (expenseError.value) return
 
   const amount = Number(expenseForm.value.amount)
-  const needsApproval = pettyCashNeedsApproval(amount)
 
   // The API decides whether this is recorded or pending, and refuses spend
   // beyond what the tin holds — the checks above are the fast path.
@@ -174,15 +172,6 @@ async function saveExpense() {
     action: 'expense recorded',
     details: `${state.currentUser.name} recorded ${formatCurrency(amount)} for ${expenseForm.value.category}.`
   })
-  if (needsApproval) {
-    pushNotification({
-      title: 'Petty cash expense needs approval',
-      message: `${formatCurrency(amount)} for ${expenseForm.value.category} is above the approval limit.`,
-      type: 'finance',
-      roles: ['super_admin'],
-      route: { name: 'petty-cash' }
-    })
-  }
   showExpenseForm.value = false
 }
 
@@ -225,15 +214,6 @@ async function saveTopUp() {
     action: autoApproved ? 'top-up added' : 'top-up requested',
     details: `${state.currentUser.name} ${autoApproved ? 'added' : 'requested'} a ${formatCurrency(amount)} petty cash top-up.`
   })
-  if (!autoApproved) {
-    pushNotification({
-      title: 'Petty cash top-up requested',
-      message: `${state.currentUser.name} requested ${formatCurrency(amount)} for petty cash.`,
-      type: 'finance',
-      roles: ['super_admin'],
-      route: { name: 'petty-cash' }
-    })
-  }
   showTopUpForm.value = false
 }
 
@@ -283,13 +263,6 @@ async function approveTopUp(topUp) {
     module: 'petty cash',
     action: 'top-up approved',
     details: `${state.currentUser.name} approved a ${formatCurrency(topUp.amount)} top-up.`
-  })
-  pushNotification({
-    title: 'Petty cash top-up approved',
-    message: `${formatCurrency(topUp.amount)} has been added to petty cash.`,
-    type: 'finance',
-    userIds: [topUp.requestedById],
-    route: { name: 'petty-cash' }
   })
 }
 
@@ -371,33 +344,24 @@ async function saveReconciliation() {
     details: `${state.currentUser.name} counted ${formatCurrency(counted)} against a book balance of ${formatCurrency(balance.value)} (variance ${formatCurrency(variance)}).`
   })
   // A mismatch means cash is missing or unrecorded — always escalate it.
-  if (variance !== 0) {
-    pushNotification({
-      title: 'Petty cash variance found',
-      message: `Counted cash differs from the ledger by ${formatCurrency(Math.abs(variance))}.`,
-      type: 'finance',
-      roles: ['super_admin'],
-      route: { name: 'petty-cash' }
-    })
-  }
   showReconcileForm.value = false
 }
 </script>
 
 <template>
-  <div v-if="canAccess" class="space-y-6">
-    <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+  <div v-if="canAccess" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex flex-col lg:flex-row lg:items-end justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">Office float, day-to-day expenses, and cash reconciliation.</div>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button v-if="canRecord" @click="openExpenseForm()" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-emerald-700 transition-colors">
+        <button v-if="canRecord" @click="openExpenseForm()" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
           Record expense
         </button>
-        <button v-if="canRecord" @click="openTopUpForm()" class="bg-slate-950 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-black transition-colors">
+        <button v-if="canRecord" @click="openTopUpForm()" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
           {{ canApprove ? 'Add top-up' : 'Request top-up' }}
         </button>
-        <button v-if="canRecord" @click="openReconcileForm()" class="bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors">
+        <button v-if="canRecord" @click="openReconcileForm()" class="orbit-button orbit-button-secondary text-sm font-medium px-4 py-2">
           Reconcile
         </button>
       </div>
@@ -409,23 +373,23 @@ async function saveReconciliation() {
 
     <!-- Balance summary -->
     <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-      <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm" :class="isLow ? 'border-amber-300' : ''">
+      <div class="orbit-kpi kpi-tile" :class="isLow ? 'border-amber-300' : ''">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Cash in hand</div>
         <div class="text-2xl font-extrabold mt-2" :class="isLow ? 'text-amber-700' : 'text-slate-900'">{{ formatCurrency(balance) }}</div>
         <div v-if="isLow" class="text-xs font-semibold text-amber-700 mt-1">Below {{ formatCurrency(state.settings.pettyCash.lowBalanceThreshold) }} — request a top-up</div>
         <div v-else class="text-xs text-slate-600 mt-1">Available to spend</div>
       </div>
-      <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+      <div class="orbit-kpi kpi-tile">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Total float</div>
         <div class="kpi-value text-slate-900 mt-2">{{ formatCurrency(totalFloat) }}</div>
         <div class="text-xs text-slate-600 mt-1">Approved top-ups</div>
       </div>
-      <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+      <div class="orbit-kpi kpi-tile">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Total spent</div>
         <div class="kpi-value text-slate-900 mt-2">{{ formatCurrency(totalSpent) }}</div>
         <div class="text-xs text-slate-600 mt-1">{{ state.pettyCashExpenses.length }} entries</div>
       </div>
-      <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+      <div class="orbit-kpi kpi-tile">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Awaiting approval</div>
         <div class="text-2xl font-extrabold mt-2" :class="(pendingExpenses.length + pendingTopUps.length) ? 'text-amber-700' : 'text-slate-900'">
           {{ pendingExpenses.length + pendingTopUps.length }}
@@ -435,7 +399,7 @@ async function saveReconciliation() {
     </section>
 
     <!-- Approver queue -->
-    <section v-if="canApprove && (pendingTopUps.length || pendingExpenses.length)" class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+    <section v-if="canApprove && (pendingTopUps.length || pendingExpenses.length)" class="orbit-card overflow-hidden">
       <div class="px-4 py-3 border-b border-slate-200">
         <div class="text-sm font-bold text-slate-900">Waiting for your approval</div>
         <div class="text-xs text-slate-600 mt-1">Top-ups add to the float; expenses above the limit settle once approved.</div>
@@ -465,13 +429,13 @@ async function saveReconciliation() {
     </section>
 
     <!-- Tabs -->
-    <div class="flex flex-wrap gap-2">
+    <div class="orbit-tab-list flex flex-wrap gap-2">
       <button
         v-for="tab in [{ id: 'expenses', label: 'Expenses' }, { id: 'topups', label: 'Top-ups' }, { id: 'reconciliation', label: 'Reconciliation' }]"
         :key="tab.id"
         @click="activeTab = tab.id"
-        :class="activeTab === tab.id ? 'bg-slate-950 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'"
-        class="text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+        :class="activeTab === tab.id ? 'orbit-tab-active' : 'orbit-tab-idle'"
+        class="orbit-tab text-sm font-medium px-4 py-2"
       >
         {{ tab.label }}
       </button>
@@ -479,13 +443,13 @@ async function saveReconciliation() {
 
     <!-- Expenses -->
     <section v-if="activeTab === 'expenses'" class="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <div class="xl:col-span-2 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      <div class="xl:col-span-2 orbit-table-card overflow-hidden">
         <div class="table-tools">
           <input v-model="expenseTable.query.value" type="search" placeholder="Filter expenses..." class="table-filter-input" />
           <div class="table-count">{{ expenseTable.filteredRows.value.length }} records</div>
         </div>
         <div class="table-scroll" @scroll="expenseTable.loadMoreRows">
-          <table class="w-full text-sm">
+          <table class="orbit-data-table w-full text-sm">
             <thead>
               <tr class="border-b border-slate-200 text-left bg-slate-50/80">
                 <th class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Date</th>
@@ -515,7 +479,7 @@ async function saveReconciliation() {
         </div>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      <div class="orbit-card overflow-hidden">
         <div class="px-4 py-3 border-b border-slate-200 text-sm font-bold text-slate-900">Spend by category</div>
         <div class="divide-y divide-slate-200 max-h-[24rem] overflow-y-auto">
           <div v-for="row in categoryTotals" :key="row.category" class="flex items-center justify-between gap-3 px-4 py-3">
@@ -528,8 +492,8 @@ async function saveReconciliation() {
     </section>
 
     <!-- Top-ups -->
-    <section v-else-if="activeTab === 'topups'" class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-      <table class="w-full text-sm">
+    <section v-else-if="activeTab === 'topups'" class="orbit-table-card overflow-hidden">
+      <table class="orbit-data-table w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left bg-slate-50/80">
             <th class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Date</th>
@@ -557,12 +521,12 @@ async function saveReconciliation() {
     </section>
 
     <!-- Reconciliation -->
-    <section v-else class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+    <section v-else class="orbit-table-card overflow-hidden">
       <div class="px-4 py-3 border-b border-slate-200">
         <div class="text-sm font-bold text-slate-900">Reconciliation history</div>
         <div class="text-xs text-slate-600 mt-1">Counted cash against the ledger. A variance means cash is missing or a receipt was never recorded.</div>
       </div>
-      <table class="w-full text-sm">
+      <table class="orbit-data-table w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left bg-slate-50/80">
             <th class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Date</th>

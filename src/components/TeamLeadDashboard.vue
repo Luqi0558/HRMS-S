@@ -1,7 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import CardEmptyState from './CardEmptyState.vue'
 import TimesheetChart from './TimesheetChart.vue'
 import { useDashboard } from '../composables/useDashboard.js'
+import { leaveService } from '../services/leaveService.js'
 
 // Team Lead: a working engineer who also runs a squad. The top half is their
 // own IC work; everything below covers the modules they lead (module.leadId).
@@ -27,7 +29,7 @@ const {
   squadOverdueTickets,
   squadLeaveAwaitingLead,
   logActivity,
-  pushNotification
+  upsertLeaveRequest
 } = useDashboard()
 
 // The ticket detail modal lives in the parent so all roles share one instance.
@@ -55,41 +57,38 @@ function openDashboardTicket(ticket) {
   emit('open-ticket', ticket)
 }
 
-function approveSquadLeave(request) {
-  request.managerApproval = {
-    status: 'approved',
-    byId: state.currentUser.id,
-    byName: state.currentUser.name,
-    at: new Date().toISOString()
+const approvingLeaveId = ref(null)
+const leaveApprovalError = ref('')
+
+/**
+ * Records the lead-stage approval on the server.
+ *
+ * This used to only edit the request in memory — no API call — so the
+ * approval vanished on refresh, HR never saw it, and the employee was never
+ * told. The API now raises both notifications itself (the employee's, and
+ * HR's "ready for review"), and the saved record is what drops the request
+ * off this list.
+ */
+async function approveSquadLeave(request) {
+  if (approvingLeaveId.value) return
+
+  approvingLeaveId.value = request.id
+  leaveApprovalError.value = ''
+  try {
+    upsertLeaveRequest(await leaveService.decide(request.id, 'approved'))
+  } catch (error) {
+    leaveApprovalError.value = error?.message || 'Could not approve that request. Please try again.'
+    return
+  } finally {
+    approvingLeaveId.value = null
   }
-  if (!request.timeline) request.timeline = []
-  request.timeline.unshift({
-    status: 'team lead approved',
-    note: '',
-    by: state.currentUser.name,
-    role: state.currentUser.role,
-    at: new Date().toISOString()
-  })
+
   logActivity({
     module: 'leave',
     action: 'team lead approved leave',
     details: `${state.currentUser.name} approved ${employeeName(request.employeeId)}'s ${request.type}.`,
     targetId: request.id,
     targetType: 'leaveRequest'
-  })
-  pushNotification({
-    title: 'Leave approved by team lead',
-    message: `${state.currentUser.name} approved your ${request.type}.`,
-    type: 'leave',
-    userIds: [request.employeeId],
-    route: { name: 'leave-requests' }
-  })
-  pushNotification({
-    title: 'Leave ready for HR review',
-    message: `${employeeName(request.employeeId)}'s ${request.type} needs HR sign-off.`,
-    type: 'leave',
-    roles: ['hr', 'super_admin'],
-    route: { name: 'leave-requests' }
   })
 }
 </script>
@@ -100,7 +99,7 @@ function approveSquadLeave(request) {
        other dashboards use it; without it the attendance panel renders
        full width and dwarfs everything under it. Child order matters —
        header first, attendance second, everything else from third. -->
-  <div class="space-y-6 dashboard-inline-attendance">
+  <div class="orbit-dashboard role-dashboard team-lead-dashboard space-y-5 dashboard-inline-attendance">
     <div class="space-y-6">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -142,22 +141,22 @@ function approveSquadLeave(request) {
 
       <!-- My own work -->
       <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">My open tickets</div>
           <div class="kpi-value text-slate-900 mt-2">{{ leadMyOpenCount }}</div>
           <div class="text-xs text-slate-600 mt-1">Assigned to you</div>
         </div>
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Awaiting my review</div>
           <div class="kpi-value text-slate-900 mt-2">{{ leadReviewQueue.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Squad tickets in review</div>
         </div>
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Overdue</div>
           <div class="text-2xl font-extrabold mt-2" :class="leadOverdue.length ? 'text-rose-600' : 'text-slate-900'">{{ leadOverdue.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Across your modules</div>
         </div>
-        <div class="kpi-tile bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="orbit-kpi kpi-tile">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Squad checked in</div>
           <div class="kpi-value text-slate-900 mt-2">{{ leadSquadCheckedIn }} / {{ leadSquad.length }}</div>
           <div class="text-xs text-slate-600 mt-1">Today</div>
@@ -215,9 +214,13 @@ function approveSquadLeave(request) {
               <div class="text-sm font-semibold text-slate-900">{{ ticket.title }}</div>
               <div class="text-xs text-rose-600 font-semibold mt-0.5">{{ ticketAssigneeName(ticket) }} · was due {{ ticket.deadline }}</div>
             </button>
-            <div v-if="leadOverdue.length === 0" class="flex h-full items-center justify-center px-4 py-6 text-center text-sm font-semibold text-slate-500">
-              Nothing overdue.
-            </div>
+            <CardEmptyState
+              v-if="leadOverdue.length === 0"
+              compact
+              variant="review"
+              title="Nothing overdue"
+              description="Your team has no overdue tickets at the moment."
+            />
           </div>
         </div>
       </div>
@@ -247,9 +250,13 @@ function approveSquadLeave(request) {
               </div>
               <div class="text-sm font-bold text-slate-900 flex-shrink-0">{{ formatDuration(member.seconds) }}</div>
             </div>
-            <div v-if="leadSquad.length === 0" class="flex h-full items-center justify-center px-4 py-6 text-center text-sm font-semibold text-slate-500">
-              No squad members assigned yet.
-            </div>
+            <CardEmptyState
+              v-if="leadSquad.length === 0"
+              compact
+              variant="people"
+              title="No squad members assigned yet"
+              description="Team members assigned to your modules will appear here."
+            />
           </div>
         </div>
 
@@ -264,6 +271,9 @@ function approveSquadLeave(request) {
               {{ leadLeaveToApprove.length }}
             </span>
           </div>
+          <div v-if="leaveApprovalError" class="px-4 py-2 text-xs font-semibold text-rose-700 bg-rose-50 border-b border-rose-100">
+            {{ leaveApprovalError }}
+          </div>
           <div class="flex-1 min-h-0 h-[24rem] overflow-y-auto divide-y divide-slate-200">
             <div v-for="request in leadLeaveToApprove" :key="request.id" class="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
               <div class="min-w-0">
@@ -271,17 +281,25 @@ function approveSquadLeave(request) {
                 <div class="text-xs text-slate-600 mt-0.5">{{ request.type }} · {{ request.from }} to {{ request.to }}</div>
               </div>
               <div class="flex gap-2 flex-shrink-0">
-                <button @click="approveSquadLeave(request)" class="text-xs font-bold rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">
-                  Approve
+                <button
+                  @click="approveSquadLeave(request)"
+                  :disabled="approvingLeaveId !== null"
+                  class="text-xs font-bold rounded-lg px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {{ approvingLeaveId === request.id ? 'Approving…' : 'Approve' }}
                 </button>
                 <button @click="goToRoute({ name: 'leave-requests' })" class="text-xs font-bold rounded-lg px-3 py-2 border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors">
                   Review
                 </button>
               </div>
             </div>
-            <div v-if="leadLeaveToApprove.length === 0" class="flex h-full items-center justify-center px-4 py-6 text-center text-sm font-semibold text-slate-500">
-              No leave awaiting your approval.
-            </div>
+            <CardEmptyState
+              v-if="leadLeaveToApprove.length === 0"
+              compact
+              variant="calendar"
+              title="No leave awaiting your approval"
+              description="Team leave requests will appear here before HR review."
+            />
           </div>
         </div>
       </div>
@@ -306,9 +324,13 @@ function approveSquadLeave(request) {
               <div class="text-sm font-semibold text-slate-900">{{ ticket.title }}</div>
               <div class="text-xs text-slate-600 mt-0.5">{{ ticketAssigneeName(ticket) }} · due {{ ticket.deadline || '—' }}</div>
             </button>
-            <div v-if="leadReviewQueue.length === 0" class="flex h-full items-center justify-center px-4 py-6 text-center text-sm font-semibold text-slate-500">
-              Nothing waiting on you.
-            </div>
+            <CardEmptyState
+              v-if="leadReviewQueue.length === 0"
+              compact
+              variant="review"
+              title="Nothing waiting on you"
+              description="Tickets moved to review will appear here."
+            />
           </div>
         </div>
 
@@ -333,9 +355,13 @@ function approveSquadLeave(request) {
                 <div class="text-xs text-slate-500 mt-3">{{ (module.teamMembers || []).length }} members</div>
               </button>
             </div>
-            <div v-if="leadModules.length === 0" class="flex h-full items-center justify-center text-center text-sm font-semibold text-slate-500">
-              You are not leading any modules yet.
-            </div>
+            <CardEmptyState
+              v-if="leadModules.length === 0"
+              compact
+              variant="projects"
+              title="No modules to lead yet"
+              description="Modules you lead will appear here."
+            />
           </div>
         </div>
       </div>

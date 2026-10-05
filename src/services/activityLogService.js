@@ -28,17 +28,4 @@ export const activityLogService = {
     }
   },
 
-  /**
-   * Records one action.
-   *
-   * The actor is taken from the caller's token, never from this payload — a
-   * client cannot attribute an action to somebody else.
-   */
-  async record({ module, action, details, targetId, targetType }) {
-    const data = await apiClient.post('/activity-logs', {
-      module, action, details, targetId, targetType
-    })
-
-    return data.log
-  }
 }

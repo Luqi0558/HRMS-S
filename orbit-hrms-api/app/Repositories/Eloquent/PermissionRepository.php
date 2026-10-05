@@ -20,11 +20,28 @@ class PermissionRepository implements PermissionRepositoryInterface
             ->get();
     }
 
+    public function allForUpdate(): Collection
+    {
+        return DB::table('role_permissions')
+            ->orderBy('role')
+            ->orderBy('module')
+            ->lockForUpdate()
+            ->get();
+    }
+
     public function forRole(string $role): Collection
     {
         return DB::table('role_permissions')
             ->where('role', $role)
             ->orderBy('module')
             ->get();
+    }
+
+    public function update(string $role, string $module, array $attributes): void
+    {
+        DB::table('role_permissions')
+            ->where('role', $role)
+            ->where('module', $module)
+            ->update($attributes);
     }
 }

@@ -43,15 +43,16 @@ export const attendanceService = {
    * derives the path. It previously took a `photoPath` string, which the client
    * had no way to produce — the camera yields an image, not a storage location.
    */
-  async checkIn({ device = 'camera', photo } = {}) {
+  async checkIn({ device = 'camera', photo, workMode = 'office' } = {}) {
     if (!photo) {
-      const data = await apiClient.post('/attendance/check-in', { device })
+      const data = await apiClient.post('/attendance/check-in', { device, workMode })
 
       return data.attendance
     }
 
     const form = new FormData()
     form.append('device', device)
+    form.append('workMode', workMode)
     form.append('photo', photo, 'check-in.jpg')
 
     const data = await apiClient.post('/attendance/check-in', form)

@@ -52,6 +52,11 @@ class CompanySettingSeeder extends Seeder
             'receiptRequiredAbove' => 5000,
             'approvalFlow' => 'HR + Super Admin',
         ],
+        'finance' => [
+            'defaultCommissionType' => 'percent',
+            'defaultCommissionValue' => 8,
+            'superAdminApprovalRequired' => true,
+        ],
         // Petty cash spend above approvalThreshold waits for sign-off;
         // lowBalanceThreshold warns that a top-up is due.
         'pettyCash' => [

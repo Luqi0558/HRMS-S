@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 class SalarySlipRequest extends Model
 {
     protected $fillable = [
-        'employee_id', 'period', 'status',
+        'employee_id', 'payroll_run_id', 'period', 'status',
         'reviewed_by', 'reviewed_at', 'review_comment',
     ];
 
@@ -21,6 +21,11 @@ class SalarySlipRequest extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    public function payrollRun(): BelongsTo
+    {
+        return $this->belongsTo(PayrollRun::class);
     }
 
     public function reviewer(): BelongsTo

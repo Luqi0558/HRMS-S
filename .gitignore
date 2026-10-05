@@ -30,15 +30,12 @@ orbit-hrms-api/.phpunit.result.cache
 # --- Secrets ----------------------------------------------------------------
 # .env holds APP_KEY and the database password. Never commit it; commit
 # .env.example instead so the required keys stay documented.
-.env
-.env.*
 !.env.example
 orbit-hrms-api/.env
 orbit-hrms-api/.env.*
 !orbit-hrms-api/.env.example
 
 # --- Editor / OS ------------------------------------------------------------
-.vscode/*
 !.vscode/extensions.json
 .idea/
 .DS_Store
@@ -51,3 +48,4 @@ Thumbs.db
 branch_structure.json
 temp_auto_push.bat
 temp_interactive_push.bat
+config.bat

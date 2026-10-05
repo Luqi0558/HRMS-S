@@ -94,6 +94,42 @@ class ProfileService
     /**
      * @param array<string, mixed> $payload already filtered by UpdateProfileRequest
      */
+    /**
+     * Uploads or replaces the signed-in user's own documents.
+     *
+     * The Profile screen had file inputs for these but never sent them, so a
+     * CV "uploaded" there vanished on save and HR kept flagging it missing.
+     * The only way in was the one-time onboarding form, which needs an invite
+     * token. This reuses that same storage: generated names under the
+     * employee's folder, status 'submitted', verification cleared.
+     *
+     * A new file is something HR has not seen, so the onboarding review goes
+     * back to pending and the person reappears in HR's review queue.
+     *
+     * @param  array<string, \Illuminate\Http\UploadedFile>  $files  keyed as EmployeeDocument::TYPE_MAP
+     */
+    public function uploadOwnDocuments(User $user, array $files): Employee
+    {
+        $employee = $this->resolve($user);
+        $files = array_filter($files);
+
+        if ($files === []) {
+            return $this->employees->loadFullProfile($employee);
+        }
+
+        DB::transaction(function () use ($employee, $files) {
+            $this->onboarding->saveDocuments($employee, $files);
+
+            $employee->update([
+                'onboarding_review_status' => 'pending',
+                'onboarding_reviewed_by' => null,
+                'onboarding_reviewed_at' => null,
+            ]);
+        });
+
+        return $this->employees->loadFullProfile($employee->refresh());
+    }
+
     public function updateOwn(User $user, array $payload): Employee
     {
         $employee = $this->resolve($user);

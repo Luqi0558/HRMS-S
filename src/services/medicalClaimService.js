@@ -57,6 +57,17 @@ export const medicalClaimService = {
   },
 
   /**
+   * Records a review step short of a decision. Same right as deciding.
+   *
+   * @param {'view'|'processing'} stage
+   */
+  async advance(id, stage) {
+    const data = await apiClient.post(`/medical-claims/${id}/stage`, { stage })
+
+    return data.claim
+  },
+
+  /**
    * Downloads a claim's receipt.
    *
    * Fetched rather than linked: the file sits behind bearer auth and a tenant

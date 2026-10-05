@@ -19,6 +19,11 @@ class LeaveRequestResource extends JsonResource
             'to' => $this->to_date?->toDateString(),
             'days' => (float) $this->days,
             'reason' => $this->reason,
+            'contact' => $this->contact,
+            // Whether there is a file to download, and its label. The file
+            // itself comes from /leave-requests/{id}/attachment.
+            'hasAttachment' => filled($this->attachment_path),
+            'attachmentName' => $this->attachment_name,
             'status' => $this->status,
             'employeeName' => $this->whenLoaded('employee', fn () => $this->employee?->name),
             'approvals' => $this->whenLoaded('approvals', fn () => $this->approvals->map(fn ($a) => [

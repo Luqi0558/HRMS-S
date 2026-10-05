@@ -124,32 +124,32 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div v-if="canAccess" class="space-y-6">
-    <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+  <div v-if="canAccess" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex flex-col lg:flex-row lg:items-end justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">Audit trail of important actions across requests, tickets, finance, and settings.</div>
       </div>
-      <button @click="exportActivityCsv" class="bg-slate-950 text-white text-sm font-medium rounded-lg px-4 py-2 hover:bg-black transition-colors">
+      <button @click="exportActivityCsv" class="orbit-button orbit-button-primary text-sm font-medium px-4 py-2">
         Export audit CSV
       </button>
     </div>
 
     <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Total events</div>
         <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ activityRows.length }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Modules</div>
         <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ modules.length }}</div>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Recent actor</div>
         <div class="text-lg font-extrabold text-slate-900 mt-2">{{ activityRows[0]?.actorName || '-' }}</div>
       </div>
     </section>
 
-    <section class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+    <section class="orbit-card overflow-hidden">
       <div class="px-4 py-3 border-b border-slate-200">
         <div class="text-sm font-bold text-slate-900">Audit trail</div>
         <div class="text-xs text-slate-600 mt-1">Use filters to inspect who changed what and when.</div>

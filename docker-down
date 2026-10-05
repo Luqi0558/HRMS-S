@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+# Stops the local Docker stack while preserving the restored database volumes.
+set -eu
+
+if [ "${1:-}" = "-v" ] || [ "${1:-}" = "--volumes" ]; then
+    echo "Refusing to remove volumes: this would delete the local restored database." >&2
+    exit 1
+fi
+
+cd "$(dirname "$0")"
+exec docker compose --env-file docker/.env.local down "$@"

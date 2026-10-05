@@ -23,9 +23,14 @@
         <env name="CACHE_DRIVER" value="array"/>
         <!-- A real broadcaster so channel authorisation callbacks are
              registered: the null driver authorises every channel, which would
-             make the channel-auth test assert nothing. No network calls are
-             made â events are faked or dispatch is caught. -->
+             make the channel-auth test assert nothing. Tests\TestCase swaps
+             in a Pusher client that never sends, and these keys are fakes, so
+             no test can reach the production Pusher app whatever .env holds. -->
         <env name="BROADCAST_DRIVER" value="pusher"/>
+        <env name="PUSHER_APP_ID" value="test-app" force="true"/>
+        <env name="PUSHER_APP_KEY" value="test-key" force="true"/>
+        <env name="PUSHER_APP_SECRET" value="test-secret" force="true"/>
+        <env name="PUSHER_HOST" value="127.0.0.1" force="true"/>
         <!-- <env name="DB_CONNECTION" value="sqlite"/> -->
         <!-- <env name="DB_DATABASE" value=":memory:"/> -->
         <env name="MAIL_MAILER" value="array"/>

@@ -7,6 +7,7 @@ const props = defineProps({
   readonly: { type: Boolean, default: false }
 })
 const { state, ticketSeconds, formatDuration, startTicketTimer, stopTicketTimer } = useStore()
+const alertMessage = ref('')
 
 // forces a re-render every second so a running timer's elapsed time updates live
 const tick = ref(0)
@@ -24,10 +25,15 @@ const elapsedLabel = computed(() => {
   return formatDuration(ticketSeconds(props.ticket))
 })
 
-function toggle() {
+async function toggle() {
   if (props.readonly) return
-  if (isRunning.value) stopTicketTimer(props.ticket.id)
-  else startTicketTimer(props.ticket.id)
+  if (isRunning.value) {
+    const result = await stopTicketTimer(props.ticket.id)
+    if (!result?.ok) alertMessage.value = result?.message || 'Unable to stop the timer. It is still running.'
+  } else {
+    const result = await startTicketTimer(props.ticket.id)
+    if (!result?.ok) alertMessage.value = result?.message || 'Check in before starting a ticket timer.'
+  }
 }
 </script>
 
@@ -55,4 +61,25 @@ function toggle() {
       <svg v-else viewBox="0 0 24 24" class="w-3 h-3" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
     </button>
   </div>
+
+  <Teleport to="body">
+    <div v-if="alertMessage" class="ticket-timer-alert-backdrop" @click.self="alertMessage = ''">
+      <section
+        class="ticket-timer-alert"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="ticket-timer-alert-title"
+      >
+        <div class="ticket-timer-alert-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="4" y="5" width="16" height="15" rx="2" />
+            <path d="M8 3v4M16 3v4M4 10h16M12 13v3M10.5 14.5h3" />
+          </svg>
+        </div>
+        <h2 id="ticket-timer-alert-title">Check-in required</h2>
+        <p>{{ alertMessage }}</p>
+        <button type="button" class="ticket-timer-alert-action" @click="alertMessage = ''">Got it</button>
+      </section>
+    </div>
+  </Teleport>
 </template>

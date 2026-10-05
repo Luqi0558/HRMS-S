@@ -48,5 +48,20 @@ export const profileService = {
     const data = await apiClient.patch('/profile', attributes)
 
     return data.employee
+  },
+
+  /**
+   * Uploads or replaces the signed-in user's own documents. A new file goes
+   * back to HR for review.
+   *
+   * @param {Record<string, File>} files keyed cv, contract, offerLetter, ...
+   */
+  async uploadDocuments(files) {
+    const body = new FormData()
+    Object.entries(files).forEach(([key, file]) => body.append(`documents[${key}]`, file))
+
+    const data = await apiClient.post('/profile/documents', body)
+
+    return data.employee
   }
 }

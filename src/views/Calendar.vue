@@ -1,222 +1,227 @@
 <script setup>
-import { computed, ref, onMounted } from 'vue'
-import { leaveService } from '../services/leaveService.js'
-import { employeeService } from '../services/employeeService.js'
+import { computed, onMounted, ref, watch } from 'vue'
+import { calendarService } from '../services/calendarService.js'
 import { useStore } from '../store/index.js'
 
-const {
-  state, can, formatDate: formatCompanyDate,
-  setLeaveRequests, setEmployees
-} = useStore()
-const eventType = ref('all')
-const currentYear = new Date().getFullYear()
+const { can, formatDate: formatCompanyDate } = useStore()
 const canAccess = computed(() => can('Calendar', 'view'))
+const selectedType = ref('all')
+const loading = ref(false)
+const loadError = ref('')
+const events = ref([])
+const currentMonth = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
 
 const eventTypes = [
   { id: 'all', label: 'All events' },
   { id: 'birthday', label: 'Birthdays' },
   { id: 'anniversary', label: 'Anniversaries' },
-  { id: 'leave', label: 'Leaves' },
-  { id: 'ticket', label: 'Deadlines' }
+  { id: 'leave', label: 'Approved leave' }
 ]
 
-const events = computed(() => {
-  const birthdayEvents = state.employees
-    .filter(employee => employee.status === 'active' && employee.birthday)
-    .map(employee => ({
-      id: `birthday-${employee.id}`,
-      title: `${employee.name}'s birthday`,
-      date: yearlyDate(employee.birthday),
-      type: 'birthday',
-      label: 'Birthday',
-      meta: `${employee.department} - plan wishes or a small celebration`,
-      person: employee.name
-    }))
+const monthLabel = computed(() =>
+  currentMonth.value.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+)
 
-  const anniversaryEvents = state.employees
-    .filter(employee => employee.status === 'active' && employee.joiningDate)
-    .map(employee => ({
-      id: `anniversary-${employee.id}`,
-      title: `${employee.name}'s work anniversary`,
-      date: yearlyDate(employee.joiningDate),
-      type: 'anniversary',
-      label: 'Anniversary',
-      meta: `${yearsCompleted(employee.joiningDate)} year milestone - ${employee.department}`,
-      person: employee.name
-    }))
-
-  const leaveEvents = state.leaveRequests.map(request => ({
-    id: `leave-${request.id}`,
-    title: `${employeeName(request.employeeId)} leave`,
-    date: request.from,
-    type: 'leave',
-    label: 'Leave',
-    meta: `${request.duration || 'full'} day - ${request.status || 'pending'}`
-  }))
-
-  const ticketEvents = state.tickets
-    .filter(ticket => ticket.deadline)
-    .map(ticket => ({
-      id: `ticket-${ticket.id}`,
-      title: ticket.title,
-      date: ticket.deadline,
-      type: 'ticket',
-      label: 'Deadline',
-      meta: `${ticket.status.replace('_', ' ')} - ${ticket.assignee?.name ?? employeeName(ticket.assigneeId)}`
-    }))
-
-  return [...birthdayEvents, ...anniversaryEvents, ...leaveEvents, ...ticketEvents]
-    .filter(event => eventType.value === 'all' || event.type === eventType.value)
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+const gridStart = computed(() => {
+  const date = new Date(currentMonth.value)
+  date.setDate(1 - ((date.getDay() + 6) % 7))
+  return date
 })
 
-const celebrationEvents = computed(() =>
-  events.value.filter(event => ['birthday', 'anniversary'].includes(event.type))
+const gridEnd = computed(() => {
+  const date = new Date(gridStart.value)
+  date.setDate(date.getDate() + 41)
+  return date
+})
+
+const calendarDays = computed(() =>
+  Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart.value)
+    date.setDate(date.getDate() + index)
+    return {
+      date,
+      key: dateKey(date),
+      inCurrentMonth: date.getMonth() === currentMonth.value.getMonth()
+    }
+  })
+)
+
+const visibleEvents = computed(() =>
+  events.value.filter(event => selectedType.value === 'all' || event.type === selectedType.value)
 )
 
 const eventSummary = computed(() => ({
-  birthdays: events.value.filter(event => event.type === 'birthday').length,
-  anniversaries: events.value.filter(event => event.type === 'anniversary').length,
-  leaves: events.value.filter(event => event.type === 'leave').length,
-  deadlines: events.value.filter(event => event.type === 'ticket').length
+  birthdays: visibleEvents.value.filter(event => event.type === 'birthday').length,
+  anniversaries: visibleEvents.value.filter(event => event.type === 'anniversary').length,
+  leaves: visibleEvents.value.filter(event => event.type === 'leave').length
 }))
 
-function yearlyDate(value) {
-  const [, month, day] = value.split('-')
-  return `${currentYear}-${month}-${day}`
+const upcomingEvents = computed(() => {
+  const today = dateKey(new Date())
+  return visibleEvents.value
+    .filter(event => event.endDate >= today)
+    .slice()
+    .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.title.localeCompare(b.title))
+    .slice(0, 8)
+})
+
+function dateKey(date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0')
+  ].join('-')
 }
 
-function yearsCompleted(value) {
-  const startYear = Number(value.slice(0, 4))
-  const years = Math.max(1, currentYear - startYear)
-  return `${years}${years === 1 ? 'st' : years === 2 ? 'nd' : years === 3 ? 'rd' : 'th'}`
+function eventsForDay(key) {
+  return visibleEvents.value.filter(event => event.startDate <= key && event.endDate >= key)
 }
 
 function eventClasses(type) {
-  const classes = {
-    birthday: 'bg-pink-100 text-pink-700',
-    anniversary: 'bg-amber-100 text-amber-700',
-    leave: 'bg-blue-100 text-blue-700',
-    ticket: 'bg-slate-100 text-slate-700'
-  }
-  return classes[type] || classes.ticket
+  return {
+    birthday: 'bg-pink-100 text-pink-700 border-pink-200',
+    anniversary: 'bg-amber-100 text-amber-700 border-amber-200',
+    leave: 'bg-sky-100 text-sky-700 border-sky-200'
+  }[type] || 'bg-slate-100 text-slate-700 border-slate-200'
 }
 
 function eventDotClasses(type) {
-  const classes = {
+  return {
     birthday: 'bg-pink-500',
     anniversary: 'bg-amber-500',
-    leave: 'bg-blue-500',
-    ticket: 'bg-slate-500'
-  }
-  return classes[type] || classes.ticket
+    leave: 'bg-sky-500'
+  }[type] || 'bg-slate-500'
 }
 
-function celebrationHint(event) {
-  if (event.type === 'birthday') return 'Cake, team wishes, and a short birthday shoutout.'
-  if (event.type === 'anniversary') return 'Recognize contribution in standup or company announcement.'
-  return ''
+function eventLabel(type) {
+  return {
+    birthday: 'Birthday',
+    anniversary: 'Anniversary',
+    leave: 'Leave'
+  }[type] || type
 }
 
-function isToday(value) {
-  return value === new Date().toISOString().slice(0, 10)
-}
-
-function employeeName(id) {
-  return state.employees.find(employee => employee.id === Number(id))?.name || 'Unassigned'
+function isToday(key) {
+  return key === dateKey(new Date())
 }
 
 function formatDate(value) {
-  return formatCompanyDate(value, { weekday: 'short', month: 'short', day: 'numeric' })
+  return formatCompanyDate(value, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
 }
-/**
- * The calendar plots approved leave, so it has to load it. It previously read
- * whatever was already in the store — seeded mock leave, or nothing at all if
- * the user came straight here.
- */
-onMounted(async () => {
-  const [leave, employees] = await Promise.allSettled([
-    leaveService.list(),
-    employeeService.list()
-  ])
 
-  if (leave.status === 'fulfilled') setLeaveRequests(leave.value)
-  if (employees.status === 'fulfilled') setEmployees(employees.value.data)
-})
+function eventDateLabel(event) {
+  return event.startDate === event.endDate
+    ? formatDate(event.startDate)
+    : formatDate(event.startDate) + ' – ' + formatDate(event.endDate)
+}
+
+function changeMonth(offset) {
+  currentMonth.value = new Date(
+    currentMonth.value.getFullYear(),
+    currentMonth.value.getMonth() + offset,
+    1
+  )
+}
+
+function goToToday() {
+  const today = new Date()
+  currentMonth.value = new Date(today.getFullYear(), today.getMonth(), 1)
+}
+
+async function loadCalendar() {
+  if (!canAccess.value) return
+
+  loading.value = true
+  loadError.value = ''
+  try {
+    const types = selectedType.value === 'all' ? [] : [selectedType.value]
+    const data = await calendarService.events({
+      from: dateKey(gridStart.value),
+      to: dateKey(gridEnd.value),
+      types
+    })
+    events.value = data.events || []
+  } catch (error) {
+    events.value = []
+    loadError.value = error?.message || 'Unable to load the company calendar.'
+  } finally {
+    loading.value = false
+  }
+}
+
+watch([currentMonth, selectedType], loadCalendar)
+onMounted(loadCalendar)
 </script>
 
 <template>
-  <div v-if="canAccess" class="space-y-6">
-    <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+  <div v-if="canAccess" class="orbit-page calendar-page space-y-4">
+    <div class="orbit-page-header flex flex-col lg:flex-row lg:items-center justify-between gap-4">
       <div>
-        <div class="text-sm text-slate-600 mt-1">Birthdays, anniversaries, leaves, and ticket deadlines.</div>
+        <div class="text-sm text-slate-600 mt-1">Approved absences and people milestones in one company schedule.</div>
       </div>
-      <select v-model="eventType" class="table-filter-input min-w-[220px]">
-        <option v-for="type in eventTypes" :key="type.id" :value="type.id">{{ type.label }}</option>
-      </select>
+      <div class="calendar-controls">
+        <button @click="changeMonth(-1)" class="table-filter-input font-bold hover:bg-slate-50" aria-label="Previous month">‹</button>
+        <button @click="goToToday" class="table-filter-input font-semibold hover:bg-slate-50">Today</button>
+        <button @click="changeMonth(1)" class="table-filter-input font-bold hover:bg-slate-50" aria-label="Next month">›</button>
+        <select v-model="selectedType" class="table-filter-input min-w-[180px]">
+          <option v-for="type in eventTypes" :key="type.id" :value="type.id">{{ type.label }}</option>
+        </select>
+      </div>
     </div>
 
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Birthdays</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ eventSummary.birthdays }}</div>
+    <section class="calendar-period-row flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div>
+        <h2 class="text-xl font-extrabold text-slate-900">{{ monthLabel }}</h2>
+        <p class="text-xs text-slate-500 mt-1">{{ visibleEvents.length }} events in the visible calendar range.</p>
       </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Anniversaries</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ eventSummary.anniversaries }}</div>
-      </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Leaves</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ eventSummary.leaves }}</div>
-      </div>
-      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div class="text-xs font-bold uppercase tracking-wide text-slate-500">Deadlines</div>
-        <div class="text-2xl font-extrabold text-slate-900 mt-2">{{ eventSummary.deadlines }}</div>
+      <div class="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-600">
+        <span v-for="type in eventTypes.slice(1)" :key="type.id" class="inline-flex items-center gap-1.5">
+          <span class="h-2 w-2 rounded-full" :class="eventDotClasses(type.id)"></span>{{ type.label }}
+        </span>
       </div>
     </section>
 
-    <section v-if="celebrationEvents.length" class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-      <div class="text-sm font-bold text-slate-900">Celebration reminders</div>
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4">
-        <div v-for="event in celebrationEvents.slice(0, 4)" :key="`celebrate-${event.id}`" class="rounded-xl border border-slate-200 p-4">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <div class="text-sm font-bold text-slate-900">{{ event.title }}</div>
-              <div class="text-xs text-slate-500 mt-1">{{ formatDate(event.date) }}</div>
-            </div>
-            <span class="inline-flex rounded-full px-3 py-1 text-xs font-bold" :class="eventClasses(event.type)">{{ event.label }}</span>
+    <div v-if="loadError" class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      <div class="flex items-center justify-between gap-3">
+        <span>{{ loadError }}</span>
+        <button @click="loadCalendar" class="font-bold underline">Retry</button>
+      </div>
+    </div>
+
+    <section class="calendar-summary-grid grid grid-cols-2 lg:grid-cols-3 gap-3">
+      <div class="calendar-summary-card"><div><div class="calendar-summary-label">Birthdays</div><div class="calendar-summary-help">This month</div></div><div class="calendar-summary-value calendar-summary-value--birthday">{{ eventSummary.birthdays }}</div></div>
+      <div class="calendar-summary-card"><div><div class="calendar-summary-label">Anniversaries</div><div class="calendar-summary-help">This month</div></div><div class="calendar-summary-value calendar-summary-value--anniversary">{{ eventSummary.anniversaries }}</div></div>
+      <div class="calendar-summary-card"><div><div class="calendar-summary-label">Approved leave</div><div class="calendar-summary-help">Scheduled days</div></div><div class="calendar-summary-value calendar-summary-value--leave">{{ eventSummary.leaves }}</div></div>
+    </section>
+
+    <div class="calendar-workspace-grid">
+      <section class="orbit-card calendar-month-shell overflow-hidden">
+      <div class="calendar-weekdays border-b border-slate-200 bg-slate-50">
+        <div v-for="day in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']" :key="day" class="px-2 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-slate-500">{{ day }}</div>
+      </div>
+      <div v-if="loading" class="px-4 py-20 text-center text-sm text-slate-500">Loading calendar…</div>
+      <div v-else class="calendar-month-grid">
+        <div v-for="day in calendarDays" :key="day.key" class="calendar-day border-b border-r border-slate-100 p-2 last:border-r-0" :class="day.inCurrentMonth ? 'bg-white' : 'bg-slate-50/70'">
+          <div class="flex justify-end"><span class="inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold" :class="isToday(day.key) ? 'bg-emerald-600 text-white' : day.inCurrentMonth ? 'text-slate-700' : 'text-slate-400'">{{ day.date.getDate() }}</span></div>
+          <div class="mt-1.5 space-y-1">
+            <div v-for="event in eventsForDay(day.key).slice(0, 1)" :key="event.id" class="truncate rounded border px-1.5 py-0.5 text-[11px] font-semibold" :class="eventClasses(event.type)" :title="event.title + ' · ' + event.detail">{{ event.title }}</div>
+            <div v-if="eventsForDay(day.key).length > 1" class="px-1 text-[11px] font-semibold text-slate-500">+{{ eventsForDay(day.key).length - 1 }} more</div>
           </div>
-          <div class="text-xs text-slate-600 mt-3">{{ celebrationHint(event) }}</div>
         </div>
       </div>
     </section>
 
-    <section class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-      <div class="px-4 py-3 border-b border-slate-200">
-        <div class="text-sm font-bold text-slate-900">Upcoming schedule</div>
-        <div class="text-xs text-slate-600 mt-1">{{ events.length }} events found.</div>
-      </div>
-      <div class="divide-y divide-slate-200">
-        <div v-for="event in events" :key="event.id" class="grid grid-cols-1 md:grid-cols-[160px_1fr_auto] gap-3 px-4 py-4 hover:bg-slate-50/60 transition-colors">
-          <div class="flex items-center gap-2">
-            <span class="h-2.5 w-2.5 rounded-full" :class="eventDotClasses(event.type)"></span>
-            <div>
-              <div class="text-sm font-bold text-slate-900">{{ formatDate(event.date) }}</div>
-              <div v-if="isToday(event.date)" class="text-[11px] font-bold text-emerald-700 mt-0.5">Today</div>
-            </div>
+      <section class="orbit-card calendar-upcoming-panel overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-200"><div class="text-sm font-bold text-slate-900">Upcoming schedule</div><div class="text-xs text-slate-600 mt-1">The next items that need your attention.</div></div>
+        <div class="calendar-upcoming-list divide-y divide-slate-200">
+          <div v-for="event in upcomingEvents" :key="event.id" class="calendar-upcoming-event px-4 py-3 hover:bg-slate-50/60 transition-colors">
+            <div class="flex items-center justify-between gap-3"><div class="flex min-w-0 items-center gap-2"><span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="eventDotClasses(event.type)"></span><div class="truncate text-sm font-bold text-slate-900">{{ event.title }}</div></div><span class="inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="eventClasses(event.type)">{{ eventLabel(event.type) }}</span></div>
+            <div class="mt-2 flex items-start justify-between gap-3"><div class="min-w-0 text-xs text-slate-500">{{ event.detail }}</div><div class="shrink-0 text-[11px] font-semibold text-slate-600">{{ eventDateLabel(event) }}</div></div>
           </div>
-          <div>
-            <div class="text-sm font-bold text-slate-900">{{ event.title }}</div>
-            <div class="text-xs text-slate-500 mt-1 capitalize">{{ event.meta }}</div>
-          </div>
-          <span class="inline-flex w-fit rounded-full px-3 py-1 text-xs font-bold" :class="eventClasses(event.type)">{{ event.label }}</span>
+          <div v-if="!loading && upcomingEvents.length === 0" class="calendar-upcoming-empty px-4 py-10 text-center text-sm text-slate-500">No upcoming events in this calendar range.</div>
         </div>
-        <div v-if="events.length === 0" class="px-4 py-10 text-center text-sm text-slate-500">No upcoming events.</div>
-      </div>
-    </section>
+      </section>
+    </div>
   </div>
-
-  <div v-else class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-    <div class="text-lg font-semibold text-slate-900">Calendar is available for HR and Super Admin only</div>
-  </div>
+  <div v-else class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"><div class="text-lg font-semibold text-slate-900">Calendar is not available for this role</div></div>
 </template>

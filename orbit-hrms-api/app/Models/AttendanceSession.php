@@ -15,7 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class AttendanceSession extends Model
 {
     protected $fillable = [
-        'attendance_id', 'check_in', 'check_out', 'device', 'photo_path',
+        'attendance_id', 'check_in', 'check_out', 'work_mode', 'device', 'photo_path',
     ];
 
     public function isOpen(): bool

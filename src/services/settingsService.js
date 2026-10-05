@@ -3,19 +3,18 @@ import { apiClient } from './apiClient.js'
 /**
  * Company policy.
  *
- * Only the three groups below are stored server-side; the rest of
- * `state.settings` (company, finance, pettyCash, designations, stacks) is
- * still local and belongs to later phases. Callers must merge rather than
- * replace, or those groups are lost.
+ * Policy groups are persisted server-side. The settings store still merges
+ * responses per group because lists are arrays and integration credentials
+ * are loaded through their protected endpoint.
  *
  * Readable by anyone signed in — the client needs the working day to render
  * attendance and the allowances to show a balance — but writing needs
  * Settings.create.
  */
-export const SERVER_SETTING_GROUPS = ['attendance', 'leave', 'claims']
+export const SERVER_SETTING_GROUPS = ['company', 'attendance', 'leave', 'claims', 'finance', 'pettyCash', 'integrations']
 
 export const settingsService = {
-  /** @returns {Promise<object>} { attendance, leave, claims } */
+  /** @returns {Promise<object>} company policy groups, excluding integrations */
   async all() {
     const data = await apiClient.get('/settings')
 

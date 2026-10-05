@@ -9,7 +9,7 @@ import { employeeService } from '../services/employeeService.js'
 
 const route = useRoute()
 const {
-  state, can, squadMemberIds, pushNotification, logActivity,
+  state, can, squadMemberIds, logActivity,
   setLeaveRequests, upsertLeaveRequest, setServerSettings, setEmployees
 } = useStore()
 const loadError = ref('')
@@ -64,14 +64,14 @@ const visibleLeaveRequests = computed(() =>
   // only their own requests.
   (canSeeTeamLeave.value
     ? state.leaveRequests
-    : state.leaveRequests.filter(l => l.employeeId === state.currentUser.id))
+    : state.leaveRequests.filter(l => l.employeeId === (state.currentUser.employeeId ?? state.currentUser.id)))
     .filter(request => {
       const status = leaveStatus(request)
       if (leaveContextFilter.value === 'pending-approval') return status.includes('pending') || status.includes('awaiting')
       if (leaveContextFilter.value === 'approved') return status === 'approved'
       if (leaveContextFilter.value === 'rejected') return status === 'rejected'
       if (leaveContextFilter.value === 'half-day') return request.duration === 'half'
-      if (leaveContextFilter.value === 'mine') return request.employeeId === state.currentUser.id
+      if (leaveContextFilter.value === 'mine') return request.employeeId === (state.currentUser.employeeId ?? state.currentUser.id)
       return true
     })
 )
@@ -82,7 +82,7 @@ const reviewLeaveRequests = computed(() =>
     if (leaveContextFilter.value === 'approved') return status === 'approved'
     if (leaveContextFilter.value === 'rejected') return status === 'rejected'
     if (leaveContextFilter.value === 'half-day') return request.duration === 'half'
-    if (leaveContextFilter.value === 'mine') return request.employeeId === state.currentUser.id
+    if (leaveContextFilter.value === 'mine') return request.employeeId === (state.currentUser.employeeId ?? state.currentUser.id)
     return true
   })
 )
@@ -138,7 +138,7 @@ const leaveBalances = computed(() => {
   }
   return Object.entries(policies).map(([type, allowed]) => {
     const used = state.leaveRequests
-      .filter(request => request.employeeId === state.currentUser.id && request.type === type && leaveStatus(request) === 'approved')
+      .filter(request => request.employeeId === (state.currentUser.employeeId ?? state.currentUser.id) && request.type === type && leaveStatus(request) === 'approved')
       .reduce((total, request) => total + leaveDays(request), 0)
     return {
       type,
@@ -158,7 +158,7 @@ function employeeRole(id) {
 }
 
 function isOwnLeave(request) {
-  return request.employeeId === state.currentUser.id
+  return request.employeeId === (state.currentUser.employeeId ?? state.currentUser.id)
 }
 
 function approvalStatus(request, type) {
@@ -179,6 +179,37 @@ function leaveDays(request) {
   return Math.floor(difference / 86400000) + 1
 }
 
+const withdrawingId = ref(null)
+
+/** Only your own request, and only while nobody has decided it. */
+function canWithdraw(request) {
+  return Boolean(request) && isOwnLeave(request) && request.status === 'pending'
+}
+
+/**
+ * Withdraws a pending request. The endpoint existed, but there was no button,
+ * so a request made by mistake could only be rejected by someone else.
+ */
+async function withdrawLeave(request) {
+  if (!canWithdraw(request) || withdrawingId.value) return
+  if (!window.confirm(`Withdraw your ${request.type} request for ${request.from} to ${request.to}?`)) return
+
+  leaveError.value = ''
+  withdrawingId.value = request.id
+  try {
+    const updated = await leaveService.cancel(request.id)
+    upsertLeaveRequest(updated)
+    if (selectedLeaveRequest.value?.id === request.id) {
+      selectedLeaveRequest.value = state.leaveRequests.find(item => item.id === request.id) || null
+    }
+    serverBalance.value = await leaveService.balance().catch(() => serverBalance.value)
+  } catch (error) {
+    leaveError.value = error?.message || 'Unable to withdraw that request.'
+  } finally {
+    withdrawingId.value = null
+  }
+}
+
 function openLeaveDetails(request) {
   selectedLeaveRequest.value = request
 }
@@ -187,15 +218,14 @@ function closeLeaveDetails() {
   selectedLeaveRequest.value = null
 }
 
-function addLeaveTimeline(request, status, note = '') {
-  if (!request.timeline) request.timeline = []
-  request.timeline.unshift({
-    status,
-    note,
-    by: state.currentUser.name,
-    role: state.currentUser.role,
-    at: new Date().toISOString()
-  })
+async function downloadLeaveAttachment(request) {
+  if (!request?.hasAttachment) return
+  leaveError.value = ''
+  try {
+    await leaveService.downloadAttachment(request.id, request.attachmentName)
+  } catch (error) {
+    leaveError.value = error?.message || 'That attachment could not be downloaded.'
+  }
 }
 
 function leaveStatus(request) {
@@ -243,27 +273,12 @@ async function approveByManager(request) {
   // the requester, so the client-side guards above are UX, not enforcement.
   if (!await submitDecision(request, 'approved', note)) return
 
-  addLeaveTimeline(request, 'team lead approved', note)
   logActivity({
     module: 'leave',
     action: 'team lead approved leave',
     details: `${state.currentUser.name} approved ${employeeName(request.employeeId)}'s ${request.type}.`,
     targetId: request.id,
     targetType: 'leaveRequest'
-  })
-  pushNotification({
-    title: 'Leave approved by team lead',
-    message: `${state.currentUser.name} approved your ${request.type}.`,
-    type: 'leave',
-    userIds: [request.employeeId],
-    route: { name: 'leave-requests' }
-  })
-  pushNotification({
-    title: 'Leave ready for HR review',
-    message: `${employeeName(request.employeeId)}'s ${request.type} has manager approval.`,
-    type: 'leave',
-    roles: ['hr', 'super_admin'],
-    route: { name: 'leave-requests' }
   })
   reviewNotes.value[request.id] = ''
 }
@@ -276,20 +291,12 @@ async function approveByHR(request) {
   const note = reviewNotes.value[request.id] || ''
   if (!await submitDecision(request, 'approved', note)) return
 
-  addLeaveTimeline(request, 'hr approved', note)
   logActivity({
     module: 'leave',
     action: 'hr approved leave',
     details: `${state.currentUser.name} approved ${employeeName(request.employeeId)}'s ${request.type}.`,
     targetId: request.id,
     targetType: 'leaveRequest'
-  })
-  pushNotification({
-    title: 'Leave approved by HR',
-    message: `${state.currentUser.name} approved your ${request.type}.`,
-    type: 'leave',
-    userIds: [request.employeeId],
-    route: { name: 'leave-requests' }
   })
   reviewNotes.value[request.id] = ''
 }
@@ -303,20 +310,12 @@ async function approveBySuperAdmin(request) {
   // the lead stage would never arrive.
   if (!await submitDecision(request, 'approved', note)) return
 
-  addLeaveTimeline(request, 'super admin approved', note)
   logActivity({
     module: 'leave',
     action: 'super admin approved leave',
     details: `${state.currentUser.name} approved ${employeeName(request.employeeId)}'s ${request.type}.`,
     targetId: request.id,
     targetType: 'leaveRequest'
-  })
-  pushNotification({
-    title: 'Leave approved by Super Admin',
-    message: `Your ${request.type} has been approved by Super Admin.`,
-    type: 'leave',
-    userIds: [request.employeeId],
-    route: { name: 'leave-requests' }
   })
   reviewNotes.value[request.id] = ''
 }
@@ -350,20 +349,12 @@ async function rejectLeave(request) {
 
   if (!await submitDecision(request, 'rejected', note)) return
 
-  addLeaveTimeline(request, 'rejected', note)
   logActivity({
     module: 'leave',
     action: 'leave rejected',
     details: `${state.currentUser.name} rejected ${employeeName(request.employeeId)}'s ${request.type}. Reason: ${note}`,
     targetId: request.id,
     targetType: 'leaveRequest'
-  })
-  pushNotification({
-    title: 'Leave request rejected',
-    message: `Your ${request.type} was rejected. ${note}`,
-    type: 'leave',
-    userIds: [request.employeeId],
-    route: { name: 'leave-requests' }
   })
   reviewNotes.value[request.id] = ''
 }
@@ -382,8 +373,6 @@ async function applyLeaveRequest() {
     leaveError.value = 'A half day must start and end on the same date.'
     return
   }
-  const currentRole = state.currentUser.role
-
   // The API is the one that can refuse this: it checks the request against the
   // remaining allowance, rejects overlapping dates, and enforces whether half
   // days are enabled at all.
@@ -394,7 +383,9 @@ async function applyLeaveRequest() {
       fromDate: form.value.from,
       toDate: form.value.to,
       days: form.value.duration === 'half' ? 0.5 : leaveDays(form.value),
-      reason: form.value.reason
+      reason: form.value.reason,
+      contact: form.value.contact.trim() || null,
+      attachment: form.value.attachment || null
     }))
     // Re-read the balance: the days just requested are not deducted until
     // approved, but the allowance check that gates the next request is the
@@ -412,13 +403,6 @@ async function applyLeaveRequest() {
     action: 'leave requested',
     details: `${state.currentUser.name} requested ${form.value.type} from ${form.value.from} to ${form.value.to}.`
   })
-  pushNotification({
-    title: 'New leave request submitted',
-    message: `${state.currentUser.name} requested ${form.value.duration === 'half' ? 'a half day' : 'leave'} for ${form.value.type}.`,
-    type: 'leave',
-    roles: currentRole === 'hr' ? ['super_admin'] : currentRole === 'manager' ? ['hr', 'super_admin'] : ['manager', 'hr', 'super_admin'],
-    route: { name: 'leave-requests' }
-  })
   leaveError.value = ''
   form.value = { type: '', duration: 'full', from: '', to: '', contact: '', reason: '', attachment: null }
   showApplyModal.value = false
@@ -426,12 +410,12 @@ async function applyLeaveRequest() {
 </script>
 
 <template>
-  <div v-if="canApply" class="space-y-6">
-    <div class="flex items-start justify-between gap-4">
+  <div v-if="canApply" class="orbit-page space-y-6">
+    <div class="orbit-page-header flex items-start justify-between gap-4">
       <div>
         <div class="text-sm text-slate-600 mt-1">{{ canSeeTeamLeave ? 'View leave requests and apply for your own leave' : 'Track your applied leave requests' }}</div>
       </div>
-      <button @click="showApplyModal = true" class="bg-emerald-600 text-white text-sm font-medium rounded-lg px-5 py-2 hover:bg-emerald-700 transition-colors shadow-sm">
+      <button @click="showApplyModal = true" class="orbit-button orbit-button-primary text-sm font-medium px-5 py-2">
         Apply leave
       </button>
     </div>
@@ -441,7 +425,7 @@ async function applyLeaveRequest() {
     </div>
 
     <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div v-for="balance in leaveBalances" :key="balance.type" class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <div v-for="balance in leaveBalances" :key="balance.type" class="orbit-stat-card p-4">
         <div class="text-xs font-bold uppercase tracking-wide text-slate-500">{{ balance.type }}</div>
         <div class="flex items-end justify-between gap-3 mt-2">
           <div>
@@ -456,7 +440,7 @@ async function applyLeaveRequest() {
       </div>
     </section>
 
-    <div class="bg-white border border-slate-200 rounded-xl overflow-x-auto shadow-sm">
+    <div class="orbit-table-card overflow-x-auto">
       <div class="px-4 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900">{{ canSeeTeamLeave ? 'Leave requests' : 'My leave requests' }}</div>
       <div class="table-tools">
         <input v-model="leaveTable.query.value" type="search" placeholder="Filter leave requests..." class="table-filter-input" />
@@ -471,7 +455,7 @@ async function applyLeaveRequest() {
         <div class="table-count">{{ leaveTable.filteredRows.value.length }} records</div>
       </div>
       <div class="table-scroll" @scroll="leaveTable.loadMoreRows">
-      <table class="w-full text-sm">
+      <table class="orbit-data-table w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left bg-slate-50/80">
             <th v-if="canSeeTeamLeave" class="px-4 py-3 font-medium text-slate-500 text-xs uppercase tracking-wide">Employee</th>
@@ -503,7 +487,7 @@ async function applyLeaveRequest() {
               <div class="capitalize">{{ approvalStatus(request, 'hrApproval') }}</div>
               <div class="text-xs text-slate-500">{{ approvalBy(request, 'hrApproval') }}</div>
             </td>
-            <td class="px-4 py-3 capitalize text-slate-700">{{ leaveStatus(request) }}</td>
+            <td class="px-4 py-3 capitalize text-slate-700"><div>{{ leaveStatus(request) }}</div><button v-if="canWithdraw(request)" @click="withdrawLeave(request)" :disabled="withdrawingId !== null" class="mt-1 text-xs font-semibold normal-case text-rose-700 hover:text-rose-800 disabled:opacity-60">{{ withdrawingId === request.id ? 'Withdrawing…' : 'Withdraw' }}</button></td>
             <td v-if="canSeeTeamLeave" class="px-4 py-3">
               <div class="min-w-[260px] space-y-2">
               <input v-model="reviewNotes[request.id]" placeholder="Approval note / rejection reason" class="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
@@ -555,7 +539,9 @@ async function applyLeaveRequest() {
             </td>
           </tr>
           <tr v-if="leaveTable.filteredRows.value.length === 0">
-            <td :colspan="canSeeTeamLeave ? 9 : 7" class="px-4 py-8 text-center text-sm text-slate-500">No leave requests submitted yet.</td>
+            <td :colspan="canSeeTeamLeave ? 9 : 7" class="px-4 py-8 text-center text-sm text-slate-500">
+              {{ leaveTable.query.value.trim() || leaveContextFilter !== 'all' ? 'No leave requests match the current filters.' : 'No leave requests submitted yet.' }}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -563,8 +549,8 @@ async function applyLeaveRequest() {
     </div>
 
     <Teleport to="body">
-      <div v-if="showApplyModal" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showApplyModal = false">
-        <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
+      <div v-if="showApplyModal" class="orbit-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="showApplyModal = false">
+        <div class="orbit-modal p-6 w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
           <div class="flex items-start justify-between gap-4 mb-5">
             <div>
               <div class="text-lg font-bold text-slate-900">Apply leave</div>
@@ -583,7 +569,6 @@ async function applyLeaveRequest() {
                 <option>Sick leave</option>
                 <option>Casual leave</option>
                 <option>Emergency leave</option>
-                <option>Work from home</option>
               </select>
               </label>
             </div>
@@ -699,7 +684,7 @@ async function applyLeaveRequest() {
               <div class="capitalize">{{ approvalStatus(request, 'hrApproval') }}</div>
               <div class="text-xs text-slate-500">{{ approvalBy(request, 'hrApproval') }}</div>
             </td>
-            <td class="px-4 py-3 capitalize text-slate-700">{{ leaveStatus(request) }}</td>
+            <td class="px-4 py-3 capitalize text-slate-700"><div>{{ leaveStatus(request) }}</div><button v-if="canWithdraw(request)" @click="withdrawLeave(request)" :disabled="withdrawingId !== null" class="mt-1 text-xs font-semibold normal-case text-rose-700 hover:text-rose-800 disabled:opacity-60">{{ withdrawingId === request.id ? 'Withdrawing…' : 'Withdraw' }}</button></td>
             <td class="px-4 py-3">
               <div class="min-w-[260px] space-y-2">
               <input v-model="reviewNotes[request.id]" placeholder="Approval note / rejection reason" class="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
@@ -741,6 +726,11 @@ async function applyLeaveRequest() {
               </div>
             </td>
           </tr>
+          <tr v-if="hrLeaveTable.filteredRows.value.length === 0">
+            <td colspan="11" class="px-4 py-8 text-center text-sm text-slate-500">
+              {{ hrLeaveTable.query.value.trim() || leaveContextFilter !== 'all' ? 'No leave requests match the current filters.' : 'No leave requests awaiting HR review.' }}
+            </td>
+          </tr>
         </tbody>
       </table>
       </div>
@@ -752,8 +742,8 @@ async function applyLeaveRequest() {
   </div>
 
   <Teleport to="body">
-    <div v-if="selectedLeaveRequest" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="closeLeaveDetails">
-      <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
+    <div v-if="selectedLeaveRequest" class="orbit-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-4 overflow-y-auto" @click.self="closeLeaveDetails">
+      <div class="orbit-modal p-6 w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto">
         <div class="flex items-start justify-between gap-4 mb-5">
           <div>
             <div class="text-lg font-bold text-slate-900">Leave request details</div>
@@ -804,7 +794,7 @@ async function applyLeaveRequest() {
           </div>
           <div class="rounded-lg border border-slate-200 p-3">
             <div class="text-xs uppercase tracking-wide text-slate-500 font-medium">Status</div>
-            <div class="mt-1 capitalize font-semibold text-slate-900">{{ leaveStatus(selectedLeaveRequest) }}</div>
+            <div class="mt-1 capitalize font-semibold text-slate-900">{{ leaveStatus(selectedLeaveRequest) }}</div><button v-if="canWithdraw(selectedLeaveRequest)" @click="withdrawLeave(selectedLeaveRequest)" :disabled="withdrawingId !== null" class="mt-2 text-xs font-semibold rounded-lg border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50 disabled:opacity-60">{{ withdrawingId === selectedLeaveRequest.id ? 'Withdrawing…' : 'Withdraw request' }}</button>
           </div>
           <div class="md:col-span-2 rounded-lg border border-slate-200 p-3">
             <div class="text-xs uppercase tracking-wide text-slate-500 font-medium">Reason</div>
@@ -812,7 +802,14 @@ async function applyLeaveRequest() {
           </div>
           <div class="md:col-span-2 rounded-lg border border-slate-200 p-3">
             <div class="text-xs uppercase tracking-wide text-slate-500 font-medium">Attachment</div>
-            <div class="mt-1 text-slate-900">{{ selectedLeaveRequest.attachmentName || 'No attachment uploaded' }}</div>
+            <button
+              v-if="selectedLeaveRequest.hasAttachment"
+              @click="downloadLeaveAttachment(selectedLeaveRequest)"
+              class="mt-1 text-sm font-semibold text-emerald-700 hover:text-emerald-800 underline"
+            >
+              {{ selectedLeaveRequest.attachmentName || 'Download attachment' }}
+            </button>
+            <div v-else class="mt-1 text-slate-900">No attachment uploaded</div>
           </div>
           <div class="md:col-span-2 rounded-lg border border-slate-200 p-3">
             <div class="text-xs uppercase tracking-wide text-slate-500 font-medium mb-3">Approval timeline</div>

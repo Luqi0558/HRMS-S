@@ -61,8 +61,13 @@ class CompanyHubService
         ]);
 
         // An announcement nobody is told about is a page nobody visits.
-        $this->messages->notify(
-            $this->messages->employeeIdsForRoles(['employee', 'manager', 'team_lead', 'hr', 'super_admin']),
+        //
+        // Everyone employed, not a role list: the list here once omitted qa
+        // and intern, so two roles never heard a single announcement. The
+        // audience is a label on the post — every reader sees every post.
+        $this->messages->notifyOthers(
+            $user,
+            $this->messages->activeEmployeeIds(),
             [
                 'title' => $announcement->priority === 'high' ? 'Important announcement' : 'New announcement',
                 'body' => $announcement->title,
@@ -152,6 +157,17 @@ class CompanyHubService
             'details' => sprintf('%s (v%s) was %s.', $policy->title, $policy->version, $policyId ? 'updated' : 'added'),
             'targetId' => $policy->id,
             'targetType' => 'policy',
+        ]);
+
+        // A policy that needs acknowledging is a request for action, so it
+        // says so; anything else is for awareness.
+        $this->messages->notifyOthers($user, $this->messages->activeEmployeeIds(), [
+            'title' => $policy->acknowledgment_required
+                ? 'Policy needs your acknowledgement'
+                : ($policyId ? 'Policy updated' : 'New policy'),
+            'body' => sprintf('%s (v%s)', $policy->title, $policy->version),
+            'type' => 'policy',
+            'routeName' => 'company-hub',
         ]);
 
         return $policy->refresh()->load('owner:id,name');

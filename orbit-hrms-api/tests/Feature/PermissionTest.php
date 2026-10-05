@@ -116,4 +116,95 @@ class PermissionTest extends TenantTestCase
         $tickets = collect($rows)->firstWhere('module', 'Tickets');
         $this->assertFalse($tickets['create']);
     }
+
+    public function test_only_super_admin_may_read_the_company_permission_matrix(): void
+    {
+        $token = $this->signIn('employee');
+
+        $this->getJson('/api/access-control/permissions', $this->tenantHeaders([
+            'Authorization' => "Bearer {$token}",
+        ]))->assertForbidden();
+    }
+
+    public function test_super_admin_receives_the_stored_matrix_for_every_role(): void
+    {
+        $rows = $this->getJson('/api/access-control/permissions', $this->tenantHeaders([
+            'Authorization' => 'Bearer '.$this->signIn('super_admin'),
+        ]))->assertOk()->json('permissions');
+
+        $this->assertTrue(collect($rows)->pluck('role')->contains('employee'));
+        $this->assertTrue(collect($rows)->pluck('role')->contains('hr'));
+        $this->assertTrue(collect($rows)->pluck('role')->contains('super_admin'));
+    }
+
+    public function test_super_admin_can_update_an_existing_non_admin_row_and_it_is_audited(): void
+    {
+        $token = $this->signIn('super_admin');
+
+        $this->putJson('/api/access-control/permissions', [
+            'permissions' => [[
+                'role' => 'employee',
+                'module' => 'Projects',
+                'view' => false,
+                'create' => false,
+                'approve' => false,
+                'finance' => false,
+                'scope' => 'team',
+            ]],
+        ], $this->tenantHeaders([
+            'Authorization' => "Bearer {$token}",
+        ]))->assertOk()
+            ->assertJsonPath('message', 'Role permissions saved.');
+
+        $this->assertDatabaseHas('role_permissions', [
+            'role' => 'employee',
+            'module' => 'Projects',
+            'view' => false,
+        ]);
+        $this->assertDatabaseHas('activity_logs', [
+            'module' => 'access_control',
+            'action' => 'permission updated',
+            'target_type' => 'role_permission',
+        ]);
+    }
+
+    public function test_matrix_rejects_actions_when_view_is_disabled(): void
+    {
+        $token = $this->signIn('super_admin');
+
+        $this->putJson('/api/access-control/permissions', [
+            'permissions' => [[
+                'role' => 'employee',
+                'module' => 'Projects',
+                'view' => false,
+                'create' => true,
+                'approve' => false,
+                'finance' => false,
+                'scope' => 'team',
+            ]],
+        ], $this->tenantHeaders([
+            'Authorization' => "Bearer {$token}",
+        ]))->assertUnprocessable()
+            ->assertJsonValidationErrors('permissions.0.view');
+    }
+
+    public function test_matrix_rejects_changes_to_the_protected_super_admin_rows(): void
+    {
+        $token = $this->signIn('super_admin');
+
+        $this->putJson('/api/access-control/permissions', [
+            'permissions' => [[
+                'role' => 'super_admin',
+                'module' => 'All modules',
+                'view' => true,
+                'create' => false,
+                'approve' => true,
+                'finance' => true,
+                'scope' => 'all',
+            ]],
+        ], $this->tenantHeaders([
+            'Authorization' => "Bearer {$token}",
+        ]))->assertUnprocessable()
+            ->assertJsonValidationErrors('permissions.0.role');
+    }
 }

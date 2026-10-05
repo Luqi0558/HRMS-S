@@ -29,6 +29,7 @@ class AssetService
         private readonly PermissionService $permissions,
         private readonly ScopeResolver $scopes,
         private readonly ActivityLogService $activity,
+        private readonly MessageService $messages,
     ) {
     }
 
@@ -134,7 +135,7 @@ class AssetService
 
         $issuer = $this->employeeFor($user);
 
-        return DB::transaction(function () use ($asset, $employee, $issuer, $attributes) {
+        $assigned = DB::transaction(function () use ($asset, $employee, $issuer, $attributes) {
             AssetAssignment::create([
                 'asset_id' => $asset->id,
                 'employee_id' => $employee->id,
@@ -157,6 +158,16 @@ class AssetService
 
             return $asset->refresh()->load(['holder:id,name', 'openAssignment']);
         });
+
+        // After the commit, so nobody is told about a handover that rolled back.
+        $this->messages->notifyOthers($user, [$employee->id], [
+            'title' => 'Asset assigned',
+            'body' => sprintf('%s has been issued to you.', $assigned->name),
+            'type' => 'assets',
+            'routeName' => 'assets',
+        ]);
+
+        return $assigned;
     }
 
     /** Records an asset coming back, closing its open assignment. */
@@ -171,7 +182,7 @@ class AssetService
             throw new ConflictHttpException('That asset is not currently issued.');
         }
 
-        return DB::transaction(function () use ($asset, $open, $attributes, $user) {
+        $returned = DB::transaction(function () use ($asset, $open, $attributes, $user) {
             $condition = $attributes['condition'] ?? $asset->condition;
 
             $open->update([
@@ -199,6 +210,17 @@ class AssetService
 
             return $asset->refresh()->load('holder:id,name');
         });
+
+        // The holder's own record of what they gave back — useful when a
+        // return is disputed, and the only sign they get that it was logged.
+        $this->messages->notifyOthers($user, [$open->employee_id], [
+            'title' => 'Asset return recorded',
+            'body' => sprintf('%s has been marked returned.', $returned->name),
+            'type' => 'assets',
+            'routeName' => 'assets',
+        ]);
+
+        return $returned;
     }
 
     /**
@@ -233,7 +255,19 @@ class AssetService
     /** Everyone who has held this asset, newest first. */
     public function history(User $user, int $assetId): array
     {
-        $this->assetRow($user);
+        $row = $this->assetRow($user);
+        $asset = $this->find($assetId);
+
+        // Holding Assets.view is not enough on its own. Employees have a
+        // self-scoped row so they can see equipment currently issued to them;
+        // without this record check, guessing an asset ID exposed everybody
+        // else's handover history.
+        $visibleIds = $this->scopes->visibleEmployeeIds($user, $row['scope']);
+        if ($visibleIds !== null && ! in_array($asset->assigned_to, $visibleIds, true)) {
+            // Match the other scoped record endpoints: do not reveal that an
+            // out-of-scope asset exists.
+            throw new NotFoundHttpException('Asset not found.');
+        }
 
         return AssetAssignment::with(['employee:id,name', 'issuer:id,name'])
             ->where('asset_id', $assetId)

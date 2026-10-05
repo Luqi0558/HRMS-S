@@ -38,6 +38,13 @@ export const projectService = {
     return data.project
   },
 
+  /** Active delivery contributors eligible for a project owner's staffing flow. */
+  async staffingCandidates(slug) {
+    const data = await apiClient.get(`/projects/${encodeURIComponent(slug)}/staffing-candidates`)
+
+    return data.data || []
+  },
+
   /**
    * Creates a module inside a project.
    *
@@ -57,8 +64,11 @@ export const projectService = {
     return data.module
   },
 
-  async syncModuleMembers(moduleId, employeeIds) {
-    const data = await apiClient.put(`/modules/${moduleId}/members`, { employeeIds })
+  async syncModuleMembers(moduleId, employeeIds, leadId = null) {
+    const data = await apiClient.put(`/modules/${moduleId}/members`, {
+      employeeIds,
+      ...(leadId ? { leadId } : {})
+    })
 
     return data.module
   },
@@ -73,6 +83,17 @@ export const projectService = {
    */
   async setModuleDelivered(moduleId, delivered) {
     const data = await apiClient.patch(`/modules/${moduleId}/delivery`, { delivered })
+
+    return data.module
+  },
+
+  /**
+   * Commission is a finance approval, separate from ordinary module editing.
+   * The server restricts this to the Super Admin's Finance approval right so a
+   * project editor cannot silently authorise their own payout.
+   */
+  async decideModuleCommission(moduleId, status) {
+    const data = await apiClient.patch(`/modules/${moduleId}/commission`, { status })
 
     return data.module
   },

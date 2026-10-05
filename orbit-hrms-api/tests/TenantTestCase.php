@@ -30,6 +30,15 @@ abstract class TenantTestCase extends TestCase
         ]);
 
         tenancy()->initialize($this->tenant);
+
+        // Most feature tests exercise attendance-adjacent business rules, not
+        // photo upload. Keep that shared fixture lightweight; the camera
+        // policy itself is covered explicitly in AttendancePhotoTest.
+        app(\App\Services\SettingsService::class)->put(
+            'attendance',
+            'cameraCheckinRequired',
+            false,
+        );
     }
 
     protected function tearDown(): void
